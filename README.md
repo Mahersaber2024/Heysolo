@@ -41,13 +41,106 @@ The default installation path is:
 Project files, `heysolo_settings.json`, and the Python virtual environment are
 all stored in this directory.
 
-## Different-Server Setup
+## Different-Server Setup (Windows MT5 + Linux Bot)
 
-If the bot runs on a different machine than MT5, it needs network access to
-MT5's shared `Common\Files` folder (that's how the EA and the bot exchange
-files). See [`MULTI_SERVER_GUIDE.md`](MULTI_SERVER_GUIDE.md) for how to share
-that folder between two servers. If both run on the same machine, skip it -
-the bot auto-detects the folder.
+MT5 always runs on Windows, but the bot itself normally runs on a Linux
+server. In that case the bot needs network access to MT5's shared
+`Common\Files` folder - that's the only place the EA and the bot exchange
+files (Outbox events, Control files, the prop dashboard). If both run on the
+**same** Windows machine, skip this whole section - the bot auto-detects the
+folder via `%APPDATA%`.
+
+### 1. On the Windows server (MT5 side) - share the folder
+
+1. Open the Common\Files folder. Press `Win+R` and run:
+   ```text
+   %APPDATA%\MetaQuotes\Terminal\Common\Files
+   ```
+2. Go one level up to the `Files` folder's parent (`Common`), right-click it →
+   **Properties → Sharing → Advanced Sharing** → check **Share this folder**.
+3. Click **Permissions** and give the account you'll use from Linux
+   **Full Control** (Read/Write - the EA and the bot both need to write files
+   here).
+4. Under **Security** (same Properties dialog), also grant that user
+   **Modify** permission on the NTFS level - Sharing alone isn't enough.
+5. Make sure **File and Printer Sharing** is allowed through Windows Firewall
+   (Control Panel → Windows Defender Firewall → Allow an app through
+   firewall).
+6. Note the machine's local IP (`ipconfig`) and the share name, e.g.
+   `\\192.168.1.50\Common`.
+
+Use a dedicated Windows user for this share (not your personal login) and
+give it a strong password - this account is basically an open door to that
+folder from the network.
+
+### 2. On the Linux server (bot side) - mount the share
+
+1. Install the CIFS/SMB client:
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y cifs-utils
+   ```
+2. Create a mount point:
+   ```bash
+   sudo mkdir -p /mnt/mt5-common
+   ```
+3. Store the Windows credentials outside the mount command (so they don't
+   show up in `ps`/shell history):
+   ```bash
+   sudo tee /etc/mt5-share.credentials > /dev/null <<'EOF'
+   username=YOUR_WINDOWS_USER
+   password=YOUR_WINDOWS_PASSWORD
+   domain=WORKGROUP
+   EOF
+   sudo chmod 600 /etc/mt5-share.credentials
+   ```
+4. Mount the share:
+   ```bash
+   sudo mount -t cifs //192.168.1.50/Common /mnt/mt5-common \
+     -o credentials=/etc/mt5-share.credentials,uid=root,gid=root,iocharset=utf8,vers=3.0
+   ```
+   Replace `192.168.1.50` and `Common` with the IP/share name from step 1.6.
+5. Verify the mount can see the EA's data:
+   ```bash
+   ls /mnt/mt5-common/Files/TelegramBridge
+   ```
+6. Make the mount survive reboots by adding it to `/etc/fstab`:
+   ```text
+   //192.168.1.50/Common  /mnt/mt5-common  cifs  credentials=/etc/mt5-share.credentials,uid=root,gid=root,iocharset=utf8,vers=3.0,_netdev  0  0
+   ```
+
+### 3. Point the bot at the mounted folder
+
+Set `common_files_dir` to the **`Files`** subfolder inside the mount (this is
+what `heysolo_settings.py` expects - it's the same folder MT5 calls
+`Common\Files`):
+
+```json
+"common_files_dir": "/mnt/mt5-common/Files"
+```
+
+You can set this during `install.sh` (option 2 in the MT5 server prompt), by
+editing `heysolo_settings.json` directly, or later from inside Telegram via
+the **⚙️ Settings** menu. Restart the bot after changing it manually:
+
+```bash
+systemctl restart heysolo-bot
+```
+
+### Troubleshooting
+
+- **Mount fails with "Permission denied"** - double-check the Windows user
+  has both Share and NTFS (Security tab) permissions, not just one.
+- **Mount fails with "Protocol not negotiated"** - your Windows version may
+  require a different `vers=` (try `vers=2.1` or `vers=1.0`, though SMB1
+  should be avoided if possible).
+- **Files appear but the bot can't write** - check `uid=`/`gid=` in the mount
+  options match the user running the `heysolo-bot` service (it runs as
+  `root` by default in the systemd unit created by `install.sh`).
+- **Latency / dropped connections** - keep both servers on the same LAN or a
+  low-latency VPN (e.g. WireGuard) between them; the bot polls the Outbox
+  folder every `outbox_poll_seconds` (default 3s), so a slow or flaky link
+  will delay trade/log updates.
 
 ## Manual Installation
 
