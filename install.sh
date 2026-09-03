@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================
-# heysolo_bot - Complete Installer
+# heysolo_bot - Complete Installer (Updated for Bot Config)
 # Usage:
 # bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main/install.sh)
 # =============================================================
@@ -110,21 +110,16 @@ collect_bot_config(){
   title "🤖 BOT CONFIGURATION"
   header
   echo
-  BOT_TOKEN=""
-  while [[ -z "$BOT_TOKEN" ]]; do
-    read -rp "Bot Token (from @BotFather): " BOT_TOKEN
-  done
+  info "The following settings have defaults and can be changed later via /Admin menu:"
+  echo "  • Bot Token: preset in code (can be overridden)"
+  echo "  • Chat Group / Topics: defaults set (can change via Admin > Reporting Group)"
+  echo "  • Notifications: default is Bias+Trade+Results, no Logs (change via Admin > Notifications)"
   echo
-  warn "Admin IDs are numeric Telegram user IDs."
-  echo "Find your ID using @userinfobot or @getidsbot."
-  echo "(You can leave this empty - the first person to run /claim in the"
-  echo " bot becomes admin.)"
-  read -rp "Admin IDs (comma separated, optional): " ADMIN_IDS_RAW
-  read -rp "Reporting group/chat ID (optional, negative number): " CHAT_ID_RAW
-  read -rp "Symbols for the bias menu [XAUUSD,EURUSD,GBPUSD]: " SYMBOLS_RAW
-  SYMBOLS_RAW=${SYMBOLS_RAW:-"XAUUSD,EURUSD,GBPUSD"}
-
+  echo "Only a few items need setup now:"
+  echo
+  
   ADMIN_IDS_JSON="[]"
+  read -rp "Admin IDs (comma separated, optional - can be added later): " ADMIN_IDS_RAW
   if [[ -n "$ADMIN_IDS_RAW" ]]; then
     ADMIN_IDS_JSON=$(python3 - "$ADMIN_IDS_RAW" <<'PYEOF'
 import sys
@@ -135,54 +130,48 @@ PYEOF
 )
   fi
 
-  SYMBOLS_JSON=$(python3 - "$SYMBOLS_RAW" <<'PYEOF'
-import json, sys
-raw = sys.argv[1]
-symbols = [s.strip().upper() for s in raw.split(",") if s.strip()]
-print(json.dumps(symbols))
-PYEOF
-)
+  read -rp "Common Files path for MT5 bridge (leave empty to set later): " COMMON_FILES_DIR
+  COMMON_FILES_DIR=${COMMON_FILES_DIR:-""}
 
   echo
   header
-  title "🖥️  MT5 SERVER SETUP"
+  title "MT5 SERVER SETUP"
   header
   echo
   echo " 1) This server also runs MT5 (same machine - auto-detect Common\\Files)"
   echo " 2) MT5 runs on a different server (I'll share Common\\Files manually)"
   read -rp "Choice [1]: " MT5_CHOICE
   MT5_CHOICE=${MT5_CHOICE:-1}
-  COMMON_FILES_DIR=""
   if [[ "$MT5_CHOICE" == "2" ]]; then
     warn "See MULTI_SERVER_GUIDE.md for how to share MT5's Common\\Files folder."
-    read -rp "Path to the shared Common\\Files folder (leave empty to set later): " COMMON_FILES_DIR
+    if [[ -z "$COMMON_FILES_DIR" ]]; then
+      read -rp "Path to the shared Common\\Files folder (leave empty to set later): " COMMON_FILES_DIR
+    fi
   fi
 }
 
 # ============================================================
-# WRITE CONFIG FILE
+# WRITE CONFIG FILE (minimal, most defaults in code now)
 # ============================================================
 write_config_files(){
   local target="$1"
-  local chat_id_val=""
-  if [[ -n "${CHAT_ID_RAW:-}" ]]; then
-    chat_id_val="$CHAT_ID_RAW"
-  fi
 
   cat > "${target}/${SETTINGS_FILE}" <<EOF
 {
-    "bot_token": "${BOT_TOKEN}",
+    "bot_token": "",
     "admin_ids": ${ADMIN_IDS_JSON},
-    "chat_id": "${chat_id_val}",
+    "user_ids": [],
+    "chat_id": "",
     "threads": {"bias": 0, "trade": 0, "log": 0, "result": 0},
-    "symbols": ${SYMBOLS_JSON},
+    "notify": {"bias": true, "trade": true, "log": false, "result": true},
+    "notify_window": {"enabled": true, "start": "01:30", "end": "15:30"},
     "outbox_poll_seconds": 3,
     "common_files_dir": "${COMMON_FILES_DIR}",
     "installed_at": "$(date -Iseconds)"
 }
 EOF
   chmod 600 "${target}/${SETTINGS_FILE}"
-  ok "${SETTINGS_FILE} created."
+  ok "${SETTINGS_FILE} created (defaults loaded from code)."
 }
 
 # ============================================================
@@ -268,8 +257,14 @@ show_guide(){
   title "🎉 INSTALLATION COMPLETE!"
   header
   echo
+  echo " 📌 First Steps:"
+  echo "   1) Send /start to the bot on Telegram"
+  echo "   2) If no admin exists, claim the bot (becomes first admin)"
+  echo "   3) Go to /Admin > Reporting Group to set your group and topics"
+  echo "   4) Go to /Admin > Notifications to tweak which events arrive"
+  echo
   echo " 📌 Service:"
-  echo "   🔹 Bot:    systemctl status ${SERVICE_NAME}"
+  echo "   systemctl status ${SERVICE_NAME}"
   echo
   echo " 📌 View Logs:"
   echo "   journalctl -u ${SERVICE_NAME} -f"
@@ -278,7 +273,8 @@ show_guide(){
   echo " 📌 Settings File: ${INSTALL_DIR}/${SETTINGS_FILE}"
   echo
   echo " 📌 Bot Commands:"
-  echo "   /start - Open the main menu (Claim bot, ⚙️ Settings, and more)"
+  echo "   /start - Main menu (Claim, Settings, Bias, Account, Mode, Trading)"
+  echo "   /Admin (for admins) - Manage group, topics, users, notifications"
   echo
   header
 }
