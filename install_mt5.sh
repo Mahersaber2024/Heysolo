@@ -169,7 +169,7 @@ install_system_packages(){
   apt-get install -y \
     xvfb x11vnc screen wget curl openbox \
     software-properties-common \
-    jq python3 \
+    x11-utils jq python3 \
     2>/dev/null || true
 
   if ! command -v wine &>/dev/null; then
@@ -230,6 +230,7 @@ setup_vnc_password(){
 start_display(){
   if as_mt5 "screen -ls" 2>/dev/null | grep -q '\.vnc\b'; then
     info "Virtual display / VNC is already running."
+    declare -F desktop_wait_for_x >/dev/null 2>&1 && { desktop_wait_for_x 20 || true; }
     desktop_start
     return
   fi
@@ -237,12 +238,17 @@ start_display(){
   as_mt5 "screen -dmS vnc bash -c '
     export DISPLAY=:${DISPLAY_NUM};
     Xvfb :${DISPLAY_NUM} -screen 0 ${SCREEN_RES} >/dev/null 2>&1 &
-    sleep 2;
+    for i in \$(seq 1 30); do xdpyinfo >/dev/null 2>&1 && break; sleep 1; done;
     openbox >/dev/null 2>&1 &
     sleep 1;
     x11vnc -display :${DISPLAY_NUM} -forever -shared -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg;
     sleep infinity'"
-  sleep 3
+  # wait for X itself instead of hoping 3 seconds was enough
+  if declare -F desktop_wait_for_x >/dev/null 2>&1; then
+    desktop_wait_for_x 40 || true
+  else
+    sleep 5
+  fi
   desktop_start
   ok "Display and VNC active on port ${VNC_PORT} (screen: vnc)."
 }

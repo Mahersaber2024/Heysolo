@@ -66,7 +66,7 @@ desktop_install_packages(){
   apt-get update -y >/dev/null 2>&1 || true
   apt-get install -y \
     pcmanfm feh tint2 wmctrl xdotool zenity \
-    icoutils imagemagick \
+    icoutils imagemagick x11-utils \
     >/dev/null 2>&1 || true
   command -v tint2   >/dev/null 2>&1 || warn "tint2 missing (taskbar will be unavailable)."
   command -v pcmanfm >/dev/null 2>&1 || warn "pcmanfm missing (falling back to feh wallpaper, no desktop icons)."
@@ -75,6 +75,48 @@ desktop_install_packages(){
 
 desktop_prepare_dirs(){
   su - "${MT5_USER}" -c "mkdir -p '${ASSET_DIR}' '${ICON_DIR}' '${BIN_DIR}' '${DESKTOP_DIR}' '${MT5_HOME}/.config/pcmanfm/${PCMAN_PROFILE}'"
+}
+
+# ============================================================
+# X / DESKTOP-MANAGER READINESS
+#   Calling `pcmanfm --set-wallpaper` before `pcmanfm --desktop` is up pops a
+#   modal GTK box on the VNC screen ("Desktop manager is not active.") and the
+#   installer sits there until somebody clicks OK. So: never guess with sleep,
+#   poll - and never let a GUI call block the script.
+# ============================================================
+desktop_wait_for_x(){
+  local tries="${1:-30}"
+  while (( tries-- > 0 )); do
+    if as_mt5 "xdpyinfo -display :${DISPLAY_NUM} >/dev/null 2>&1" >/dev/null 2>&1; then
+      return 0
+    fi
+    if as_mt5 "xset -display :${DISPLAY_NUM} q >/dev/null 2>&1" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  warn "Display :${DISPLAY_NUM} did not come up in time."
+  return 1
+}
+
+desktop_manager_active(){
+  as_mt5 "pgrep -f 'pcmanfm --desktop' >/dev/null 2>&1" >/dev/null 2>&1
+}
+
+desktop_wait_for_manager(){
+  local tries="${1:-15}"
+  while (( tries-- > 0 )); do
+    desktop_manager_active && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# Run a GUI command as mt5user with no stdin and a hard timeout, so a stray
+# dialog can never freeze the installer.
+as_mt5_nogui_block(){
+  local secs="${1}"; shift
+  su - "${MT5_USER}" -c "export DISPLAY=:${DISPLAY_NUM}; timeout ${secs} $1" </dev/null >/dev/null 2>&1 || true
 }
 
 # ============================================================
@@ -117,11 +159,17 @@ desktop_apply_wallpaper(){
   [[ -s "${WALLPAPER_PATH}" ]] || desktop_fetch_wallpaper
   [[ -s "${WALLPAPER_PATH}" ]] || return 0
   desktop_write_pcmanfm_conf
-  if command -v pcmanfm >/dev/null 2>&1; then
-    as_mt5 "pcmanfm --profile=${PCMAN_PROFILE} --set-wallpaper='${WALLPAPER_PATH}' --wallpaper-mode=stretch" >/dev/null 2>&1 || true
-  fi
+  desktop_wait_for_x 20 || { warn "Skipping the wallpaper for now (no display)."; return 0; }
+
+  # feh writes the root window directly - no dialogs, no desktop manager needed.
   if command -v feh >/dev/null 2>&1; then
-    as_mt5 "feh --bg-fill '${WALLPAPER_PATH}'" >/dev/null 2>&1 || true
+    as_mt5_nogui_block 10 "feh --bg-fill '${WALLPAPER_PATH}'"
+  fi
+
+  # pcmanfm only when its desktop process is confirmed alive, otherwise it
+  # throws the "Desktop manager is not active." modal and waits for a click.
+  if command -v pcmanfm >/dev/null 2>&1 && desktop_manager_active; then
+    as_mt5_nogui_block 10 "pcmanfm --profile=${PCMAN_PROFILE} --set-wallpaper='${WALLPAPER_PATH}' --wallpaper-mode=stretch"
   fi
   ok "Wallpaper applied to the VNC desktop."
 }
@@ -311,8 +359,8 @@ desktop_ensure_taskbar(){
     apt-get install -y tint2 wmctrl >/dev/null 2>&1 || true
     command -v tint2 >/dev/null 2>&1 || { warn "Could not install tint2, skipping taskbar."; return 0; }
   fi
-  as_mt5 "DISPLAY=:${DISPLAY_NUM} nohup tint2 >/dev/null 2>&1 & disown" 2>/dev/null || true
-  sleep 1
+  as_mt5 "nohup tint2 >/dev/null 2>&1 & disown" </dev/null >/dev/null 2>&1 || true
+  sleep 2
   if as_mt5 "pgrep -x tint2" >/dev/null 2>&1; then
     ok "Taskbar running - minimized windows appear at the bottom of the VNC screen."
   else
@@ -325,11 +373,13 @@ desktop_ensure_taskbar(){
 # ============================================================
 desktop_start(){
   desktop_prepare_dirs
+  desktop_wait_for_x 30 || { warn "Desktop layer skipped - display :${DISPLAY_NUM} is not up."; return 0; }
   if command -v pcmanfm >/dev/null 2>&1; then
-    if ! as_mt5 "pgrep -f 'pcmanfm --desktop'" >/dev/null 2>&1; then
+    if ! desktop_manager_active; then
       desktop_write_pcmanfm_conf
-      as_mt5 "DISPLAY=:${DISPLAY_NUM} nohup pcmanfm --desktop --profile=${PCMAN_PROFILE} >/dev/null 2>&1 & disown" 2>/dev/null || true
-      sleep 2
+      as_mt5 "nohup pcmanfm --desktop --profile=${PCMAN_PROFILE} >/dev/null 2>&1 & disown" </dev/null >/dev/null 2>&1 || true
+      desktop_wait_for_manager 15 \
+        || warn "pcmanfm --desktop did not start - using feh for the wallpaper (no desktop icons)."
     fi
   fi
   desktop_apply_wallpaper
