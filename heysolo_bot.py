@@ -400,17 +400,22 @@ def should_relay(event_type: str) -> tuple[bool, str]:
     return True, ""
 
 
-def parse_event(path: Path) -> tuple[str, int, str, str]:
+def parse_event(path: Path) -> tuple[str, int, str, str, str]:
     raw = path.read_text(encoding="utf-8", errors="ignore")
     header, _, body = raw.partition("---\n")
-    event_type, thread_id, photo = "LOG", THREAD_LOG, ""
+    event_type, thread_id, photo, account = "LOG", THREAD_LOG, "", ""
     for ln in header.splitlines():
         if ln.startswith("TYPE="):
             event_type = ln.split("=", 1)[1].strip().upper()
             thread_id = _EVENT_TYPE_TO_THREAD.get(event_type, THREAD_LOG)
         elif ln.startswith("PHOTO="):
             photo = ln.split("=", 1)[1].strip()
-    return event_type, thread_id, photo, body
+        elif ln.startswith("ACCOUNT="):
+            # Optional: only present if the EA is updated to export it. Used
+            # to tag which account an event came from when several report to
+            # the same group. Absent header -> behaviour is unchanged.
+            account = ln.split("=", 1)[1].strip()
+    return event_type, thread_id, photo, account, body
 
 
 async def watch_outbox(app: Application):
@@ -419,7 +424,7 @@ async def watch_outbox(app: Application):
         try:
             for evt in sorted(OUTBOX_DIR.glob("*.evt")):
                 try:
-                    event_type, thread_id, photo_name, text = parse_event(evt)
+                    event_type, thread_id, photo_name, account, text = parse_event(evt)
                     photo_path = PHOTOS_DIR / photo_name if photo_name else None
 
                     allowed, reason = should_relay(event_type)
@@ -431,6 +436,12 @@ async def watch_outbox(app: Application):
                             photo_path.unlink(missing_ok=True)
                         evt.unlink(missing_ok=True)
                         continue
+
+                    # Tag which account this came from, but only once a second
+                    # account has actually reported - keeps single-account
+                    # feeds exactly as before.
+                    if account and len(list_accounts()) > 1:
+                        text = f"[{account}]\n{text}"
 
                     if photo_path and photo_path.exists():
                         with open(photo_path, "rb") as f:
@@ -510,7 +521,15 @@ def bias_keyboard(login: str, st: AccountState) -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup(rows)
 
 
-def bias_header(st: "AccountState") -> str:
+def _account_tag(login: str) -> str:
+    """One extra line naming the account - shown only when more than one
+    account has reported, so single-account setups stay exactly as before."""
+    if len(list_accounts()) > 1:
+        return f"{G_ACCOUNT} <code>{login}</code>\n"
+    return ""
+
+
+def bias_header(login: str, st: "AccountState") -> str:
     """Header above the symbol grid. Spells out the active mode, because tapping
     a symbol does nothing while the EA is in Auto."""
     manual = (st.mode == "MANUAL")
@@ -521,10 +540,40 @@ def bias_header(st: "AccountState") -> str:
         f"{glyph} Mode: <b>Auto</b> - the EA decides; switch to Manual to set a bias."
     )
     return (
+        f"{_account_tag(login)}"
         f"{G_BIAS} <b>Bias</b>\n"
         f"{mode_line}\n"
         f"<i>{G_BULL} bullish  {G_BEAR} bearish  {G_FLAT} none  {G_NEUTRAL} from EA SymbolsInput</i>"
     )
+
+
+# ---- Multi-account switcher (only ever shown when 2+ accounts have reported) ----
+def accounts_list_view(user_id: int) -> dict:
+    accounts = list_accounts()
+    active = resolve_login(user_id)
+    rows = []
+    for a in accounts:
+        d = read_dashboard(a["login"]) or {}
+        mark = G_ROW if a["login"] == active else G_NEUTRAL
+        bal = f"{d['balance']:,.0f}" if d else "-"
+        label = f"{mark} {a['login']} \u00b7 {a['broker'] or '-'} \u00b7 {bal} {a['currency'] or ''}".strip()
+        rows.append([InlineKeyboardButton(label, callback_data=f"ACC_VIEW_{a['login']}")])
+    text = (
+        f"{G_ACCOUNT} <b>Accounts</b> ({len(accounts)})\n"
+        f"{G_ROW} Active: <code>{active or '-'}</code>\n"
+        "Tap an account to view it or make it active."
+    )
+    return {"text": text, "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
+
+
+def account_detail_view(user_id: int, login: str) -> dict:
+    active = resolve_login(user_id)
+    text = format_stats_message(login)
+    kb_rows = []
+    if login != active:
+        kb_rows.append([InlineKeyboardButton(f"{G_OK} Set as active", callback_data=f"ACC_SET_{login}")])
+    kb_rows.append([InlineKeyboardButton(f"{G_BACK} All accounts", callback_data="ACC_LIST")])
+    return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
 
 async def guard(update: Update) -> bool:
@@ -640,13 +689,14 @@ def status_panel_view() -> dict:
     topics_ok = all(t.get(k) for k in ("bias", "trade", "log", "result"))
     accounts = list_accounts()
     syms = get_symbols_for_login(accounts[0]["login"]) if accounts else []
+    accounts_line = ', '.join(a["login"] for a in accounts) if accounts else "none yet"
     text = (
         f"{G_ACCOUNT} <b>Status</b>\n"
         f"{G_ROW} Group: <code>{settings.get_chat_id() or 'not set'}</code>\n"
         f"{G_ROW} Topics: {G_OK + ' ready' if topics_ok else G_WAIT + ' not created'}\n"
         f"{G_ROW} Admins: <code>{', '.join(str(i) for i in settings.get_admin_ids()) or 'none'}</code>\n"
         f"{G_ROW} Users: <code>{', '.join(str(i) for i in settings.get_user_ids()) or 'none'}</code>\n"
-        f"{G_ROW} Accounts: <code>{len(accounts)}</code>\n"
+        f"{G_ROW} Accounts ({len(accounts)}): <code>{accounts_line}</code>\n"
         f"{G_ROW} Symbols (from EA): <code>{', '.join(syms) or 'waiting for EA'}</code>\n"
         f"{G_ROW} Notify: <code>{', '.join(k for k, v in settings.get_notify().items() if v) or 'all off'}</code>\n"
         f"{G_ROW} Window: <code>{window_line}</code>\n"
@@ -899,7 +949,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if kb is None:
             await msg.reply_text(NO_SYMBOLS_TEXT, parse_mode=ParseMode.HTML)
             return
-        await msg.reply_text(bias_header(st), reply_markup=kb, parse_mode=ParseMode.HTML)
+        await msg.reply_text(bias_header(login, st), reply_markup=kb, parse_mode=ParseMode.HTML)
     elif toggle_kind(text) == "Mode":
         prev = "Manual" if st.mode == "MANUAL" else "Auto"
         st.mode = "AUTO" if st.mode == "MANUAL" else "MANUAL"
@@ -930,7 +980,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML, reply_markup=build_main_keyboard(uid, st),
         )
     elif text == BTN_ACCOUNT:
-        await msg.reply_text(format_stats_message(login), parse_mode=ParseMode.HTML)
+        if len(list_accounts()) > 1:
+            v = accounts_list_view(uid)
+            await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        else:
+            await msg.reply_text(format_stats_message(login), parse_mode=ParseMode.HTML)
 
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -943,8 +997,44 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_admin_callback(update, context, data)
         return
 
+    uid = update.effective_user.id
+
+    if data == "ACC_LIST":
+        await q.answer()
+        v = accounts_list_view(uid)
+        await q.edit_message_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        return
+
+    if data.startswith("ACC_VIEW_"):
+        await q.answer()
+        target_login = data[len("ACC_VIEW_"):]
+        v = account_detail_view(uid, target_login)
+        await q.edit_message_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        return
+
+    if data.startswith("ACC_SET_"):
+        target_login = data[len("ACC_SET_"):]
+        if target_login not in {a["login"] for a in list_accounts()}:
+            await q.answer("That account is no longer reporting.", show_alert=True)
+            return
+        _active_login[uid] = target_login
+        await q.answer(f"Active account: {target_login}")
+        st = get_state(target_login)
+        v = account_detail_view(uid, target_login)
+        await q.edit_message_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        # Mode/Trading live on the reply keyboard (not the inline one above),
+        # so it needs its own message to refresh with the new account's state.
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"{G_OK} Switched to account <code>{target_login}</code>. "
+                 "Bias, Mode and Trading now act on it.",
+            reply_markup=build_main_keyboard(uid, st),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
     await q.answer()
-    login = resolve_login(update.effective_user.id)
+    login = resolve_login(uid)
     if login is None:
         return
     st = get_state(login)
@@ -954,7 +1044,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if kb is None:
             await q.edit_message_text(NO_SYMBOLS_TEXT, parse_mode=ParseMode.HTML)
             return
-        await q.edit_message_text(bias_header(st), reply_markup=kb, parse_mode=ParseMode.HTML)
+        await q.edit_message_text(bias_header(login, st), reply_markup=kb, parse_mode=ParseMode.HTML)
 
     elif data.startswith("SYM_"):
         if st.mode != "MANUAL":
@@ -989,7 +1079,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                      0: f"{G_FLAT} Cleared"}[int(val)]
         await q.answer(emoji_msg)
         kb = bias_keyboard(login, st)
-        await q.edit_message_text(bias_header(st), reply_markup=kb, parse_mode=ParseMode.HTML)
+        await q.edit_message_text(bias_header(login, st), reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
 STARTUP_TEXT = (
@@ -1009,6 +1099,8 @@ async def send_startup_notice(bot):
     text = STARTUP_TEXT
     if accounts:
         text += f"\n📊 Accounts detected: <b>{len(accounts)}</b>"
+        if len(accounts) > 1:
+            text += f" <code>({', '.join(a['login'] for a in accounts)})</code>"
         syms = get_symbols_for_login(accounts[0]["login"])
         if syms:
             text += f"\n💠 Symbols: <code>{', '.join(syms)}</code>"
