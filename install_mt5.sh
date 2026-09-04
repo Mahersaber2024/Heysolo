@@ -97,6 +97,7 @@ install_system_packages(){
   apt-get update -y
   apt-get install -y \
     xvfb x11vnc screen wget openbox \
+    tint2 wmctrl \
     software-properties-common \
     jq python3 \
     2>/dev/null || true
@@ -158,6 +159,7 @@ setup_vnc_password(){
 start_display(){
   if as_mt5 "screen -ls" 2>/dev/null | grep -q '\.vnc\b'; then
     info "Virtual display / VNC is already running."
+    ensure_taskbar
     return
   fi
   info "Starting the virtual display (Xvfb) and VNC..."
@@ -166,10 +168,71 @@ start_display(){
     Xvfb :${DISPLAY_NUM} -screen 0 ${SCREEN_RES} >/dev/null 2>&1 &
     sleep 2;
     openbox >/dev/null 2>&1 &
+    sleep 1;
+    tint2 >/dev/null 2>&1 &
     x11vnc -display :${DISPLAY_NUM} -forever -shared -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg;
     sleep infinity'"
   sleep 2
+  ensure_taskbar
   ok "Display and VNC active on port ${VNC_PORT} (screen: vnc)."
+}
+
+# Adds/repairs the tint2 taskbar on the shared desktop. Safe to call any
+# time - e.g. on a display that was started by an older version of this
+# script, before minimized windows had anywhere to go.
+ensure_taskbar(){
+  if as_mt5 "pgrep -x tint2" >/dev/null 2>&1; then
+    return
+  fi
+  info "Starting the taskbar (tint2) so minimized windows can be recovered..."
+  as_mt5 "DISPLAY=:${DISPLAY_NUM} nohup tint2 >/dev/null 2>&1 & disown" 2>/dev/null || true
+  sleep 1
+  if as_mt5 "pgrep -x tint2" >/dev/null 2>&1; then
+    ok "Taskbar running - minimized windows now show up as buttons at the bottom of the VNC screen."
+  else
+    warn "Could not start tint2 (is it installed? apt-get install tint2)."
+  fi
+}
+
+# CLI fallback: list every window on the shared desktop and let you bring
+# one back, without even needing to click anything in VNC.
+list_and_restore_windows(){
+  if ! as_mt5 "command -v wmctrl" >/dev/null 2>&1; then
+    err "wmctrl is not installed. Run: apt-get install -y wmctrl"
+    press_enter
+    return
+  fi
+  echo
+  header
+  title "OPEN WINDOWS (including minimized)"
+  header
+  local list
+  list=$(as_mt5 "DISPLAY=:${DISPLAY_NUM} wmctrl -l" 2>/dev/null || true)
+  if [[ -z "$list" ]]; then
+    warn "No windows found (is the display running? use option 1/2 first)."
+    press_enter
+    return
+  fi
+  local i=1
+  declare -a WIDS=()
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    local wid title_part
+    wid=$(awk '{print $1}' <<< "$line")
+    title_part=$(cut -d' ' -f5- <<< "$line")
+    WIDS+=("$wid")
+    echo "  ${i}) ${title_part}"
+    ((i++))
+  done <<< "$list"
+  echo
+  read -rp "Bring which window to front? number (Enter to skip): " WIDX
+  if [[ "$WIDX" =~ ^[0-9]+$ ]] && (( WIDX >= 1 && WIDX <= ${#WIDS[@]} )); then
+    local wid="${WIDS[$((WIDX-1))]}"
+    as_mt5 "DISPLAY=:${DISPLAY_NUM} wmctrl -ir '${wid}' -b remove,hidden" 2>/dev/null || true
+    as_mt5 "DISPLAY=:${DISPLAY_NUM} wmctrl -ia '${wid}'" 2>/dev/null || true
+    ok "Restored. Reconnect VNC (or refresh it) to see it."
+  fi
+  press_enter
 }
 
 print_vnc_access(){
@@ -405,6 +468,10 @@ show_final_guide(){
   echo " Attach to one specific terminal (optional, to look directly):"
   echo "    su - ${MT5_USER}; screen -r <name>   |   Ctrl+A then D to detach without closing"
   echo
+  echo " Lost a minimized window in VNC? It's now in the taskbar at the bottom"
+  echo " of the screen (click it) - or use menu option 7 (Find/restore a"
+  echo " minimized window) from here over SSH, no VNC needed."
+  echo
   echo " Turn VNC on/off (to watch charts):"
   echo "    su - ${MT5_USER} -c \"x11vnc -display :${DISPLAY_NUM} -forever -shared -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg\""
   echo "    su - ${MT5_USER} -c 'pkill x11vnc'"
@@ -480,6 +547,8 @@ main_menu(){
     echo -e " ${BOLD}4)${NC} Turn VNC on/off"
     echo -e " ${BOLD}5)${NC} Remove a terminal"
     echo -e " ${BOLD}6)${NC} Guide / VNC access info"
+    echo -e " ${BOLD}7)${NC} Find / restore a minimized window"
+    echo -e " ${BOLD}8)${NC} Repair taskbar (tint2)"
     echo -e " ${BOLD}0)${NC} Exit"
     echo
     header
@@ -491,6 +560,8 @@ main_menu(){
       4) require_root; toggle_vnc_viewing ;;
       5) uninstall_terminal ;;
       6) show_final_guide; press_enter ;;
+      7) require_root; list_and_restore_windows ;;
+      8) require_root; ensure_taskbar; press_enter ;;
       0) echo "Goodbye!"; exit 0 ;;
       *) warn "Invalid."; sleep 1 ;;
     esac
