@@ -643,7 +643,12 @@ ensure_mql5_local_dir(){
 # right after the installer wizard finishes.
 resolve_mql5_dir(){
   local wineprefix="$1"
-  find "${wineprefix}/drive_c/users" -maxdepth 6 -type d -iname 'MQL5' 2>/dev/null | head -n1
+  local dir
+  dir=$(find "${wineprefix}/drive_c/users" -maxdepth 8 -type d -iname 'MQL5' 2>/dev/null | head -n1)
+  if [[ -z "${dir}" ]]; then
+    dir=$(find "${wineprefix}/drive_c/Program Files"* -maxdepth 3 -type d -iname 'MQL5' 2>/dev/null | head -n1)
+  fi
+  echo "${dir}"
 }
 
 # Copies the shared Experts/Include/Indicators/set/Templates folders into
