@@ -273,30 +273,45 @@ ok "Python environment ready."
 # SYSTEMD SERVICE
 # ============================================================
 create_service(){
-info "Creating systemd service..."
-cat > "${SERVICE_FILE}" <<EOF
+    info "Creating systemd service..."
+
+    if [[ ! -f "${INSTALL_DIR}/heysolo_bot.py" ]]; then
+        err "Entry point not found: ${INSTALL_DIR}/heysolo_bot.py"
+        exit 1
+    fi
+
+    cat > "${SERVICE_FILE}" <<EOF
 [Unit]
 Description=Heysolo Telegram Bot
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/venv/bin/python3 main.py
-Restart=always
+ExecStart=${INSTALL_DIR}/venv/bin/python3 ${INSTALL_DIR}/heysolo_bot.py
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
-systemctl enable "${SERVICE_NAME}" 2>/dev/null || true
-systemctl start "${SERVICE_NAME}" 2>/dev/null || true
-systemctl restart "${SERVICE_NAME}" 2>/dev/null || true
-ok "Service created and started."
+    systemctl daemon-reload
+    systemctl enable "${SERVICE_NAME}"
+    systemctl restart "${SERVICE_NAME}"
+
+    if systemctl is-active --quiet "${SERVICE_NAME}"; then
+        ok "Service created and started successfully."
+    else
+        err "Service failed to start."
+        journalctl -u "${SERVICE_NAME}" -n 30 --no-pager
+        exit 1
+    fi
 }
+
 
 # ============================================================
 # POST INSTALL GUIDE
