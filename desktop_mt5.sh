@@ -96,7 +96,7 @@ desktop_install_packages(){
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
   apt-get update -y >/dev/null 2>&1 || true
   apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
-    pcmanfm feh tint2 wmctrl xdotool zenity dbus-x11 \
+    pcmanfm feh tint2 wmctrl xdotool zenity dbus-x11 autocutsel \
     icoutils imagemagick x11-utils xprop \
     >/dev/null 2>&1 || true
   command -v tint2   >/dev/null 2>&1 || warn "tint2 missing (taskbar will be unavailable)."
@@ -589,6 +589,37 @@ desktop_launch_manager(){
 }
 
 # ============================================================
+# CLIPBOARD (VNC copy/paste)
+#   Symptom without this: you copy something once, and every later paste keeps
+#   returning that FIRST text forever. On a bare Xvfb there is no clipboard
+#   manager, so when the app that owned the selection exits (or wine drops it)
+#   the X CLIPBOARD keeps the last cached value and never updates again.
+#   autocutsel owns both selections permanently and keeps CLIPBOARD <-> PRIMARY
+#   in sync, which is what makes copy/paste behave like a normal desktop.
+# ============================================================
+desktop_ensure_clipboard(){
+  step "starting the clipboard keeper (autocutsel)"
+  if ! command -v autocutsel >/dev/null 2>&1; then
+    apt-get install -y autocutsel >/dev/null 2>&1 || true
+    command -v autocutsel >/dev/null 2>&1 || {
+      warn "autocutsel missing - VNC copy/paste may keep pasting the same old text."
+      return 0
+    }
+  fi
+  # restart cleanly so a wedged instance cannot keep serving a stale value
+  pkill -u "${MT5_USER}" -x autocutsel >/dev/null 2>&1 || true
+  sleep 1
+  mt5_run_quiet 10 "setsid autocutsel -selection CLIPBOARD -fork >/dev/null 2>&1"
+  mt5_run_quiet 10 "setsid autocutsel -selection PRIMARY   -fork >/dev/null 2>&1"
+  sleep 1
+  if pgrep -u "${MT5_USER}" -x autocutsel >/dev/null 2>&1; then
+    ok "Clipboard keeper running - copy/paste over VNC now updates properly."
+  else
+    warn "autocutsel did not stay up - copy/paste may be stuck on old text."
+  fi
+}
+
+# ============================================================
 # START / REFRESH THE WHOLE DESKTOP LAYER (call after Xvfb+openbox)
 # ============================================================
 desktop_start(){
@@ -610,6 +641,7 @@ desktop_start(){
   fi
   desktop_apply_wallpaper
   desktop_ensure_taskbar
+  desktop_ensure_clipboard
   step "removing wine's junk launchers"
   purge_wine_shortcuts_local
   step "desktop layer done"
@@ -703,6 +735,7 @@ desktop_doctor(){
   echo "  x11vnc      : $(pgrep -u ${MT5_USER} -x x11vnc >/dev/null 2>&1 && echo running || echo 'NOT RUNNING')"
   echo "  pcmanfm     : $(desktop_manager_active && echo running || echo 'NOT RUNNING')"
   echo "  tint2       : $(pgrep -u ${MT5_USER} -x tint2 >/dev/null 2>&1 && echo running || echo 'NOT RUNNING')"
+  echo "  autocutsel  : $(pgrep -u ${MT5_USER} -x autocutsel >/dev/null 2>&1 && echo running || echo 'NOT RUNNING')"
   echo "  wallpaper   : $([[ -s ${WALLPAPER_PATH} ]] && du -h ${WALLPAPER_PATH} | cut -f1 || echo MISSING)"
   echo "  windows     :"
   DISPLAY=":${DISPLAY_NUM}" timeout 8 wmctrl -lx 2>/dev/null | sed 's/^/     /' || echo "     (wmctrl unavailable)"
@@ -721,6 +754,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     wallpaper) desktop_prepare_dirs; desktop_fetch_wallpaper; desktop_apply_wallpaper ;;
     icons)     desktop_sync_icons ;;
     taskbar)   desktop_write_tint2_conf; desktop_ensure_taskbar ;;
+    clipboard) desktop_ensure_clipboard ;;
     doctor)    desktop_doctor ;;
     clean)     desktop_write_openbox_rules; desktop_write_tint2_conf
                desktop_ensure_taskbar; purge_wine_shortcuts_local
@@ -728,6 +762,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                ok "Taskbar cleaned - the 'desktop 1' button is gone." ;;
     start)     desktop_start ;;
     restore)   desktop_restore_window ;;
-    *) echo "Usage: sudo bash $0 [all|packages|wallpaper|icons|taskbar|clean|start|restore|doctor]"; exit 1 ;;
+    *) echo "Usage: sudo bash $0 [all|packages|wallpaper|icons|taskbar|clipboard|clean|start|restore|doctor]"; exit 1 ;;
   esac
 fi
