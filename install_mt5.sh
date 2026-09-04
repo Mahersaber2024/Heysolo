@@ -184,13 +184,23 @@ ensure_taskbar(){
   if as_mt5 "pgrep -x tint2" >/dev/null 2>&1; then
     return
   fi
+  if ! command -v tint2 &>/dev/null; then
+    info "tint2 is not installed yet - installing it..."
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y tint2 wmctrl >/dev/null 2>&1 || true
+    if ! command -v tint2 &>/dev/null; then
+      err "Could not install tint2 (apt-get failed). Check network/apt and try option 8 again."
+      return
+    fi
+    ok "tint2 installed."
+  fi
   info "Starting the taskbar (tint2) so minimized windows can be recovered..."
   as_mt5 "DISPLAY=:${DISPLAY_NUM} nohup tint2 >/dev/null 2>&1 & disown" 2>/dev/null || true
   sleep 1
   if as_mt5 "pgrep -x tint2" >/dev/null 2>&1; then
     ok "Taskbar running - minimized windows now show up as buttons at the bottom of the VNC screen."
   else
-    warn "Could not start tint2 (is it installed? apt-get install tint2)."
+    warn "tint2 is installed but did not start. Is the display running? (option 1/2 first)"
   fi
 }
 
@@ -198,9 +208,14 @@ ensure_taskbar(){
 # one back, without even needing to click anything in VNC.
 list_and_restore_windows(){
   if ! as_mt5 "command -v wmctrl" >/dev/null 2>&1; then
-    err "wmctrl is not installed. Run: apt-get install -y wmctrl"
-    press_enter
-    return
+    info "wmctrl is not installed yet - installing it..."
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y wmctrl >/dev/null 2>&1 || true
+    if ! as_mt5 "command -v wmctrl" >/dev/null 2>&1; then
+      err "Could not install wmctrl (apt-get failed). Check network/apt and try again."
+      press_enter
+      return
+    fi
   fi
   echo
   header
