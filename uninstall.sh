@@ -51,6 +51,9 @@ TERMINALS_FILE="${MT5_STATE_DIR}/terminals.list"
 MT5_HOME="/home/${MT5_USER}"
 ASSET_DIR="${MT5_HOME}/.heysolo"
 DESKTOP_DIR="${MT5_HOME}/Desktop"
+# shared Common\Files bridge folder (install_mt5.sh) - kept separate from
+# ASSET_DIR on purpose so a "desktop only" removal never touches bot data
+SHARED_COMMON_DIR="${MT5_HOME}/.heysolo-common"
 
 BACKUP_DIR="/root/heysolo-backup-$(date +%Y%m%d-%H%M%S)"
 
@@ -146,6 +149,10 @@ show_state(){
     echo -e "  VNC desktop      : ${GREEN}FOUND${NC}  (wallpaper + icons)"
   else
     echo -e "  VNC desktop      : ${RED}not found${NC}"
+  fi
+  # shared bot<->EA bridge folder
+  if [[ -d "${SHARED_COMMON_DIR}" ]]; then
+    echo -e "  Bot bridge data  : ${GREEN}FOUND${NC}  (${SHARED_COMMON_DIR})"
   fi
   header
   echo
@@ -265,6 +272,10 @@ uninstall_mt5(){
   rm -rf "${MT5_HOME}/.wine" 2>/dev/null || true
   rm -rf "${MT5_STATE_DIR}"
   rm -rf "${MT5_HOME}/.vnc" 2>/dev/null || true
+  if [[ -d "${SHARED_COMMON_DIR}" ]]; then
+    rm -rf "${SHARED_COMMON_DIR}"
+    info "  removed shared Common\\Files bridge folder (${SHARED_COMMON_DIR})"
+  fi
   ok "MT5 terminals removed."
 
   if [[ ${PURGE_USER} -eq 1 ]]; then
