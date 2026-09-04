@@ -30,7 +30,31 @@
 #     official silent-install switch, so you connect once via VNC and
 #     click Next/Next/Install for each terminal you selected.
 # =============================================================
-set -euo pipefail
+# ------------------------------------------------------------
+# SAFETY HARNESS  (why -e and pipefail are gone)
+# ------------------------------------------------------------
+# The old header was `set -euo pipefail`. On a clean server that combination
+# killed the installer silently, mid-Step-1:
+#
+#   find ... -name '*.desktop' | grep -v '/mt5-' | xargs -r rm -f
+#
+# On a fresh box there are no .desktop files, so grep exits 1, pipefail turns
+# the whole pipeline into a failure, and -e ended the script with no message.
+# The user was dropped back at the root prompt without ever seeing the Step 1
+# summary, the upload folder or the VNC instructions - even though everything
+# had actually installed fine. Same class of bug for `tr ... | head -c 12`
+# and `find ... | head -n1` (head exits early -> SIGPIPE -> 141 -> pipefail).
+#
+# An unattended installer must never die quietly. Errors are reported and the
+# run keeps going; genuinely fatal cases call `die` on purpose.
+set -uo pipefail
+set -E
+
+HEYSOLO_CLEAN_EXIT=0
+HEYSOLO_LOG="${HEYSOLO_LOG:-/var/log/heysolo-install.log}"
+HEYSOLO_LAST_ERR=""
+
+trap 'HEYSOLO_LAST_ERR="line ${LINENO} (exit $?)"' ERR
 
 # ============================================================
 # CONFIG
@@ -84,9 +108,79 @@ press_enter(){
 require_root(){
   if [[ $EUID -ne 0 ]]; then
     err "This script must be run as root (or with sudo)."
+    echo "    sudo bash $0"
+    HEYSOLO_CLEAN_EXIT=1     # a wrong invocation is not a crash
     exit 1
   fi
 }
+
+# ============================================================
+# ERROR REPORTING  (nothing may ever fail silently again)
+# ============================================================
+# Everything printed is also appended to ${HEYSOLO_LOG} so a user who hits a
+# problem has one file to send instead of a screenshot of half a terminal.
+# NOTE the redirection order: `2>/dev/null` must come BEFORE `>> file`,
+# otherwise bash prints "Permission denied" for the failed redirect itself.
+log_line(){ printf '%s %s\n' "$(date '+%F %T' 2>/dev/null)" "$1" 2>/dev/null >> "${HEYSOLO_LOG}" || true; }
+
+start_logging(){
+  mkdir -p "$(dirname "${HEYSOLO_LOG}")" 2>/dev/null || true
+  if ! ( : 2>/dev/null >> "${HEYSOLO_LOG}" ); then
+    HEYSOLO_LOG="/tmp/heysolo-install.log"      # not root yet, or /var/log is read-only
+    ( : 2>/dev/null >> "${HEYSOLO_LOG}" ) || HEYSOLO_LOG="/dev/null"
+  fi
+  log_line "=== run started (pid $$, user $(id -un 2>/dev/null)) ==="
+}
+
+# Fatal on purpose: says what happened, where the log is, then stops.
+die(){
+  err "$1"
+  log_line "FATAL: $1"
+  echo
+  warn "Full log: ${HEYSOLO_LOG}"
+  HEYSOLO_CLEAN_EXIT=1
+  exit "${2:-1}"
+}
+
+# Run a stage. If it fails, say so loudly and carry on, so the summary,
+# the upload folder and the VNC details are always printed at the end.
+declare -a HEYSOLO_STAGE_WARNINGS=()
+guard(){                          # guard <label> <command...>
+  local label="$1"; shift
+  local rc=0
+  HEYSOLO_LAST_ERR=""
+  log_line "stage start: ${label}"
+  "$@" || rc=$?
+  if (( rc == 0 )); then
+    log_line "stage ok: ${label}"
+    return 0
+  fi
+  warn "Stage '${label}' did not finish cleanly (exit ${rc}${HEYSOLO_LAST_ERR:+, ${HEYSOLO_LAST_ERR}}) - continuing."
+  log_line "stage FAILED: ${label} (exit ${rc}) ${HEYSOLO_LAST_ERR}"
+  HEYSOLO_STAGE_WARNINGS+=("${label}")
+  return 0
+}
+
+_on_exit(){
+  local rc=$?
+  if [[ "${HEYSOLO_CLEAN_EXIT}" == "1" || ${rc} -eq 0 ]]; then
+    log_line "=== run ended (exit ${rc}) ==="
+    return 0
+  fi
+  echo
+  header
+  err "The script stopped unexpectedly (exit ${rc}${HEYSOLO_LAST_ERR:+, ${HEYSOLO_LAST_ERR}})."
+  header
+  warn "Nothing you installed was lost. Check what is already up with:"
+  echo  "    bash $0        -> option 8 (Doctor)"
+  warn "Then send this log if you need help:"
+  echo  "    ${HEYSOLO_LOG}"
+  header
+  log_line "=== run ended UNEXPECTEDLY (exit ${rc}) ${HEYSOLO_LAST_ERR} ==="
+}
+trap _on_exit EXIT
+
+start_logging
 
 # Run a command as mt5user with the virtual display exported.
 # runuser + setsid + timeout instead of `su -`: a bare `su -` opens a PAM /
@@ -131,10 +225,15 @@ as_wine(){
 
 # Delete every launcher wine created by itself, keep our own mt5-*.desktop
 purge_wine_shortcuts(){
-  local home="/home/${MT5_USER}"
-  find "${home}/Desktop" "${home}/.local/share/applications" \
-       "${home}/.gnome2/vfolders" -maxdepth 3 -name '*.desktop' 2>/dev/null \
-    | grep -v '/mt5-' | xargs -r rm -f
+  local home="/home/${MT5_USER}" d
+  # No pipe, no grep: on a fresh server there is nothing to delete, and an
+  # empty result must not look like an error. This single line is what used
+  # to abort the whole Step 1.
+  for d in "${home}/Desktop" "${home}/.local/share/applications" \
+           "${home}/.gnome2/vfolders"; do
+    [[ -d "$d" ]] || continue
+    find "$d" -maxdepth 3 -name '*.desktop' ! -name 'mt5-*' -delete 2>/dev/null || true
+  done
   rm -rf "${home}/.local/share/applications/wine" 2>/dev/null || true
   rm -f  "${home}/.config/menus/applications-merged/"*wine* 2>/dev/null || true
   find "${home}/.local/share/desktop-directories" -name '*wine*' -delete 2>/dev/null || true
@@ -327,14 +426,14 @@ setup_vnc_password(){
   if [[ -f "${VNC_PASS_FILE}" ]]; then
     info "A VNC password is already set."
     if [[ "${NONINTERACTIVE}" == "1" ]]; then return; fi
-    read -rp "Change the VNC password? (y/N): " CHNG
+    read -rp "Change the VNC password? (y/N): " CHNG || CHNG="n"
     [[ "${CHNG,,}" != "y" ]] && return
   fi
 
   # Hands-off mode: VNC_PASSWORD=... bash install_mt5.sh   (or auto-generated)
   if [[ -n "${VNC_PASSWORD:-}" || "${NONINTERACTIVE}" == "1" ]]; then
     local pw="${VNC_PASSWORD:-}"
-    [[ -z "${pw}" ]] && pw=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 12)
+    [[ -z "${pw}" ]] && pw=$(tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 12 || true)
     mkdir -p "/home/${MT5_USER}/.vnc"
     chown "${MT5_USER}:${MT5_USER}" "/home/${MT5_USER}/.vnc"
     x11vnc -storepasswd "${pw}" "${VNC_PASS_FILE}" >/dev/null 2>&1 || true
@@ -347,9 +446,19 @@ setup_vnc_password(){
   chown "${MT5_USER}:${MT5_USER}" "/home/${MT5_USER}/.vnc"
   echo
   warn "Enter a password for VNC access (at least 6 characters):"
+  local _pw_tries=0
   while true; do
-    read -rsp "VNC Password: " VNC_PASS_1; echo
-    read -rsp "Confirm: " VNC_PASS_2; echo
+    _pw_tries=$((_pw_tries+1))
+    if (( _pw_tries > 5 )); then
+      warn "Too many attempts / no usable input - generating a VNC password instead."
+      VNC_PASS_1=$(tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 12 || true)
+      [[ -z "${VNC_PASS_1}" ]] && VNC_PASS_1="Heysolo$$vnc"
+      VNC_PASS_2="${VNC_PASS_1}"
+      echo -e "   ${BOLD}VNC password: ${GREEN}${VNC_PASS_1}${NC}   (write this down)"
+      break
+    fi
+    read -rsp "VNC Password: " VNC_PASS_1 || VNC_PASS_1=""; echo
+    read -rsp "Confirm: " VNC_PASS_2 || VNC_PASS_2=""; echo
     if [[ "${VNC_PASS_1}" != "${VNC_PASS_2}" ]]; then
       warn "Passwords did not match, try again."
       continue
@@ -428,8 +537,12 @@ print_vnc_access(){
 dedupe_terminals(){
   [[ -s "${TERMINALS_FILE}" ]] || return 0
   # keep the newest line per slug, preserve order
-  tac "${TERMINALS_FILE}" | awk -F'|' 'NF && !seen[$1]++' | tac > "${TERMINALS_FILE}.tmp" \
-    && mv "${TERMINALS_FILE}.tmp" "${TERMINALS_FILE}"
+  if tac "${TERMINALS_FILE}" 2>/dev/null | awk -F'|' 'NF && !seen[$1]++' | tac \
+       > "${TERMINALS_FILE}.tmp" 2>/dev/null; then
+    mv "${TERMINALS_FILE}.tmp" "${TERMINALS_FILE}" 2>/dev/null || true
+  else
+    rm -f "${TERMINALS_FILE}.tmp" 2>/dev/null || true
+  fi
 }
 
 register_terminal(){
@@ -442,8 +555,10 @@ register_terminal(){
 
 resolve_terminal_exe(){
   local wineprefix="$1" p=""
-  p=$(find "${wineprefix}/drive_c" -maxdepth 5 -name 'terminal64.exe' 2>/dev/null | head -n1)
-  [[ -z "$p" ]] && p=$(find "${wineprefix}/drive_c" -maxdepth 5 -name 'terminal.exe' 2>/dev/null | head -n1)
+  p=$(find "${wineprefix}/drive_c" -maxdepth 5 -name 'terminal64.exe' 2>/dev/null | head -n1 || true)
+  if [[ -z "$p" ]]; then
+    p=$(find "${wineprefix}/drive_c" -maxdepth 5 -name 'terminal.exe' 2>/dev/null | head -n1 || true)
+  fi
   echo "$p"
 }
 
@@ -580,7 +695,7 @@ select_installers(){
   done
   echo "   a) All"
   echo
-  read -rp "Enter numbers separated by commas (e.g. 1,3) or 'a' for all: " CHOICE
+  read -rp "Enter numbers separated by commas (e.g. 1,3) or 'a' for all: " CHOICE || CHOICE=""
   SELECTED_EXES=()
   if [[ "${CHOICE,,}" == "a" ]]; then
     SELECTED_EXES=("${AVAILABLE_EXES[@]}")
@@ -639,12 +754,12 @@ install_selected(){
     chmod 755 "${dest_path}"
     # A truncated upload or a renamed non-exe is "non-empty" but is not an
     # installer - check for the MZ (PE) magic before wasting a wine prefix.
-    if [[ "$(head -c2 "${dest_path}")" != "MZ" ]]; then
+    if [[ "$(head -c2 "${dest_path}" 2>/dev/null || true)" != "MZ" ]]; then
       err "${exe} is not a Windows executable (bad/incomplete upload) - skipped."
       rm -f "${dest_path}"
       continue
     fi
-    ok "Ready: ${dest_path} ($(du -h "${dest_path}" | cut -f1))."
+    ok "Ready: ${dest_path} ($(du -h "${dest_path}" 2>/dev/null | cut -f1 || echo '?'))."
 
     init_prefix "${wineprefix}"
 
@@ -730,7 +845,7 @@ manage_one_terminal(){
   header
   print_terminal_list || { warn "No terminals registered."; press_enter; return; }
   echo
-  read -rp "Which terminal? number (Enter to go back): " TIDX
+  read -rp "Which terminal? number (Enter to go back): " TIDX || TIDX=""
   [[ -z "${TIDX:-}" ]] && return
   if ! [[ "$TIDX" =~ ^[0-9]+$ ]] || (( TIDX < 1 || TIDX > ${#SLUGS[@]} )); then
     warn "Invalid."
@@ -745,7 +860,7 @@ manage_one_terminal(){
   echo
   echo -e " ${BOLD}$(desktop_pretty_name "$slug")${NC}  ->  status: ${st}"
   echo " 1) Start   2) Stop   3) Restart   4) Status (all screens)   5) Bring window to front   6) Back"
-  read -rp "Choice: " ACT
+  read -rp "Choice: " ACT || ACT=""
   case "$ACT" in
     1) start_terminal "$slug" "$wineprefix" "$termpath" && ok "${slug} started." ;;
     2) as_mt5 "WINEPREFIX=${wineprefix} wineserver -k" 2>/dev/null || true
@@ -766,7 +881,7 @@ manage_one_terminal(){
 toggle_vnc_viewing(){
   echo " 1) Turn VNC ON (to watch charts)"
   echo " 2) Turn VNC OFF (terminals keep running)"
-  read -rp "Choice: " V
+  read -rp "Choice: " V || V=""
   case "$V" in
     1) as_mt5 "x11vnc -display :${DISPLAY_NUM} -forever -shared -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg" ; ok "VNC turned on." ;;
     2) as_mt5 "pkill x11vnc" 2>/dev/null || true; ok "VNC turned off." ;;
@@ -844,17 +959,20 @@ show_final_guide(){
 step1_prepare_server(){
   show_banner
   require_root
-  install_system_packages
-  setup_mt5_user
-  setup_vnc_password
-  desktop_install_packages        # taskbar + icons + wallpaper deps, installed up-front
-  ensure_local_mt5_dir
+  HEYSOLO_STAGE_WARNINGS=()
+  # Every stage is wrapped: one broken stage can no longer stop the run before
+  # the summary / upload folder / VNC details are printed.
+  guard "system packages"  install_system_packages
+  guard "mt5 user"         setup_mt5_user
+  guard "vnc password"     setup_vnc_password
+  guard "desktop packages" desktop_install_packages
+  guard "upload folder"    ensure_local_mt5_dir
   # Step 1 desktop = wallpaper + taskbar ONLY, painted with feh.
   # pcmanfm (the thing that pops "Desktop manager is not active" and waits for
   # a click) is deliberately NOT started here: there are no terminals yet, so
   # there is nothing to put an icon on, and you are not expected to open VNC.
   export DESKTOP_ICONS=0
-  start_display                   # Xvfb + VNC + openbox + wallpaper + taskbar
+  guard "virtual display + VNC" start_display
   if [[ "${SKIP_DESKTOP:-0}" == "1" ]]; then
     warn "SKIP_DESKTOP=1 - skipping wallpaper/taskbar."
   fi
@@ -869,7 +987,12 @@ step1_prepare_server(){
   echo "   display     : :${DISPLAY_NUM} (${SCREEN_RES})   VNC port ${VNC_PORT}"
   echo "   upload dir  : ${MT5_LOCAL_DIR}"
   header
-  ok "Step 1 finished: server, wine, VNC and the desktop background are ready."
+  if (( ${#HEYSOLO_STAGE_WARNINGS[@]} > 0 )); then
+    warn "These stages reported a problem: ${HEYSOLO_STAGE_WARNINGS[*]}"
+    warn "Details are in ${HEYSOLO_LOG}. Re-running Step 1 is safe and repeats only what is missing."
+  else
+    ok "Step 1 finished: server, wine, VNC and the desktop background are ready."
+  fi
   info "Desktop icons are created in Step 2, once terminals actually exist."
   print_vnc_access
   print_upload_instructions
@@ -892,10 +1015,14 @@ step2_install_terminals(){
   mkdir -p "${STATE_DIR}"; touch "${TERMINALS_FILE}"
   fetch_available_installers || { press_enter; return; }
   select_installers || { press_enter; return; }
-  install_selected
-  start_all_terminals
+  HEYSOLO_STAGE_WARNINGS=()
+  guard "install terminals" install_selected
+  guard "start terminals"   start_all_terminals
   export DESKTOP_ICONS=1          # now there ARE terminals -> real desktop icons
-  desktop_setup_all               # wallpaper + icons + taskbar
+  guard "desktop layer"     desktop_setup_all
+  if (( ${#HEYSOLO_STAGE_WARNINGS[@]} > 0 )); then
+    warn "These stages reported a problem: ${HEYSOLO_STAGE_WARNINGS[*]} (see ${HEYSOLO_LOG})."
+  fi
   show_final_guide
   press_enter
 }
@@ -913,7 +1040,7 @@ uninstall_terminal(){
   header
   print_terminal_list || { warn "No terminals registered."; press_enter; return; }
   echo
-  read -rp "Which one to remove? number (Enter to go back): " TIDX
+  read -rp "Which one to remove? number (Enter to go back): " TIDX || TIDX=""
   [[ -z "${TIDX:-}" ]] && return
   if ! [[ "$TIDX" =~ ^[0-9]+$ ]] || (( TIDX < 1 || TIDX > ${#SLUGS[@]} )); then
     warn "Invalid."; press_enter; return
@@ -948,7 +1075,13 @@ main_menu(){
     echo -e " ${BOLD}0)${NC} Exit"
     echo
     header
-    read -rp "Choice: " CH
+    if ! read -rp "Choice: " CH; then
+      echo
+      warn "No input available (stdin is not a terminal) - leaving the menu."
+      warn "For a hands-off run use:  NONINTERACTIVE=1 bash $0 step1"
+      HEYSOLO_CLEAN_EXIT=1
+      exit 0
+    fi
     case "$CH" in
       1) step1_prepare_server ;;
       2) step2_install_terminals ;;
@@ -962,10 +1095,29 @@ main_menu(){
            warn "${DESKTOP_MODULE} is missing."; fi
          as_mt5 "screen -ls" || true
          press_enter ;;
-      0) echo "Goodbye!"; exit 0 ;;
+      0) echo "Goodbye!"; HEYSOLO_CLEAN_EXIT=1; exit 0 ;;
       *) warn "Invalid."; sleep 1 ;;
     esac
   done
 }
 
-main_menu
+# ============================================================
+# ENTRY POINT
+#   bash install_mt5.sh              -> interactive menu (as before)
+#   bash install_mt5.sh step1        -> Step 1 only, no menu
+#   bash install_mt5.sh step2        -> Step 2 only
+#   bash install_mt5.sh doctor       -> health check
+#   NONINTERACTIVE=1 ... step1       -> zero prompts (auto VNC password)
+# ============================================================
+case "${1:-menu}" in
+  step1)  require_root; NONINTERACTIVE=1 step1_prepare_server; HEYSOLO_CLEAN_EXIT=1 ;;
+  step2)  require_root; step2_install_terminals;               HEYSOLO_CLEAN_EXIT=1 ;;
+  doctor) require_root
+          if declare -F desktop_doctor >/dev/null 2>&1; then desktop_doctor; fi
+          as_mt5 "screen -ls" || true
+          HEYSOLO_CLEAN_EXIT=1 ;;
+  menu|"") main_menu ;;
+  *)      err "Unknown argument: $1"
+          echo "Usage: bash $0 [menu|step1|step2|doctor]"
+          HEYSOLO_CLEAN_EXIT=1; exit 2 ;;
+esac

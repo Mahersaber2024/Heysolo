@@ -24,6 +24,11 @@
 # =============================================================
 
 # ------------------------------------------------------------
+# NOTE: this file is sourced by install_mt5.sh, so it runs under the
+# installer's shell options. Never leave a bare pipeline whose last command
+# can legitimately "fail" (grep with no match, head closing a pipe early) -
+# that is exactly what silently aborted Step 1 before. Guard with `|| true`.
+# ------------------------------------------------------------
 # CONFIG (inherited from install_mt5.sh when sourced)
 # ------------------------------------------------------------
 MT5_USER="${MT5_USER:-mt5user}"
@@ -224,10 +229,10 @@ desktop_extract_icon(){
   tmp=$(mktemp -d)
   if [[ -n "$exe" && -f "$exe" ]] && command -v wrestool >/dev/null 2>&1; then
     wrestool -x -t 14 "$exe" -o "$tmp" >/dev/null 2>&1 || true
-    ico=$(find "$tmp" -maxdepth 1 -type f | head -n1)
+    ico=$(find "$tmp" -maxdepth 1 -type f 2>/dev/null | head -n1 || true)
     if [[ -n "$ico" ]] && command -v icotool >/dev/null 2>&1; then
       icotool -x -o "$tmp" "$ico" >/dev/null 2>&1 || true
-      png=$(find "$tmp" -name '*.png' -printf '%s %p\n' 2>/dev/null | sort -rn | head -n1 | cut -d' ' -f2-)
+      png=$(find "$tmp" -name '*.png' -printf '%s %p\n' 2>/dev/null | sort -rn | head -n1 | cut -d' ' -f2- || true)
       if [[ -n "$png" ]]; then
         cp "$png" "$out" 2>/dev/null || true
       fi
@@ -267,8 +272,10 @@ desktop_write_launcher(){
   local pretty; pretty="$(desktop_pretty_name "$slug")"
 
   if [[ -z "$termpath" ]]; then
-    termpath=$(find "${wineprefix}/drive_c" -maxdepth 5 -name 'terminal64.exe' 2>/dev/null | head -n1)
-    [[ -z "$termpath" ]] && termpath=$(find "${wineprefix}/drive_c" -maxdepth 5 -name 'terminal.exe' 2>/dev/null | head -n1)
+    termpath=$(find "${wineprefix}/drive_c" -maxdepth 5 -name 'terminal64.exe' 2>/dev/null | head -n1 || true)
+    if [[ -z "$termpath" ]]; then
+      termpath=$(find "${wineprefix}/drive_c" -maxdepth 5 -name 'terminal.exe' 2>/dev/null | head -n1 || true)
+    fi
   fi
 
   cat > "${launcher}" <<EOF
@@ -282,7 +289,7 @@ SLUG="${slug}"
 TERM_EXE="${termpath}"
 
 if [[ -z "\${TERM_EXE}" || ! -f "\${TERM_EXE}" ]]; then
-  TERM_EXE=\$(find "\${WINEPREFIX}/drive_c" -maxdepth 5 -name 'terminal64.exe' 2>/dev/null | head -n1)
+  TERM_EXE=\$(find "\${WINEPREFIX}/drive_c" -maxdepth 5 -name 'terminal64.exe' 2>/dev/null | head -n1 || true)
 fi
 if [[ -z "\${TERM_EXE}" ]]; then
   command -v zenity >/dev/null 2>&1 && zenity --error --text="terminal64.exe not found for \${SLUG}. Finish the setup wizard first."
@@ -293,7 +300,7 @@ running(){ pgrep -f "\${TERM_EXE}" >/dev/null 2>&1; }
 
 raise(){
   local pid
-  pid=\$(pgrep -f "\${TERM_EXE}" | head -n1)
+  pid=\$(pgrep -f "\${TERM_EXE}" 2>/dev/null | head -n1 || true)
   if [[ -n "\${pid}" ]] && command -v xdotool >/dev/null 2>&1; then
     for w in \$(xdotool search --pid "\${pid}" 2>/dev/null); do
       xdotool windowmap "\${w}" 2>/dev/null || true
@@ -357,9 +364,13 @@ EOF
 desktop_purge_foreign_launchers(){
   # Anything on the desktop that we did not write is wine's own junk
   # (Notepad, WordPad, winecfg, "Wine Uninstaller" - the notepad+pencil icons).
-  find "${DESKTOP_DIR}" "${MT5_HOME}/.local/share/applications" \
-       "${MT5_HOME}/.gnome2/vfolders" -maxdepth 3 -name '*.desktop' 2>/dev/null \
-    | grep -v '/mt5-' | xargs -r rm -f
+  local d
+  # Same fix as the installer: no pipe, no grep, an empty result is normal.
+  for d in "${DESKTOP_DIR}" "${MT5_HOME}/.local/share/applications" \
+           "${MT5_HOME}/.gnome2/vfolders"; do
+    [[ -d "$d" ]] || continue
+    find "$d" -maxdepth 3 -name '*.desktop' ! -name 'mt5-*' -delete 2>/dev/null || true
+  done
   rm -rf "${MT5_HOME}/.local/share/applications/wine" 2>/dev/null || true
   rm -f  "${MT5_HOME}/.config/menus/applications-merged/"*wine* 2>/dev/null || true
 }
@@ -374,7 +385,7 @@ desktop_sync_icons(){
   while IFS='|' read -r slug exe wineprefix termpath; do
     [[ -z "${slug:-}" ]] && continue
     if [[ -z "${termpath:-}" || ! -f "${termpath}" ]]; then
-      termpath=$(find "${wineprefix}/drive_c" -maxdepth 5 -name 'terminal64.exe' 2>/dev/null | head -n1)
+      termpath=$(find "${wineprefix}/drive_c" -maxdepth 5 -name 'terminal64.exe' 2>/dev/null | head -n1 || true)
     fi
     if [[ -z "${termpath}" ]]; then
       warn "${slug}: no terminal64.exe - skipping its icon (finish the setup wizard first)."
@@ -661,7 +672,7 @@ desktop_restore_window(){
 # ============================================================
 desktop_doctor(){
   header; title "DESKTOP DOCTOR"; header
-  echo "  Xvfb        : $(pgrep -af 'Xvfb :'${DISPLAY_NUM} | head -n1 || echo 'NOT RUNNING')"
+  echo "  Xvfb        : $(pgrep -af 'Xvfb :'${DISPLAY_NUM} 2>/dev/null | head -n1 || echo 'NOT RUNNING')"
   echo "  X socket    : $([[ -e /tmp/.X11-unix/X${DISPLAY_NUM} ]] && echo present || echo MISSING)"
   echo "  xdpyinfo    : $(timeout 5 xdpyinfo -display :${DISPLAY_NUM} >/dev/null 2>&1 && echo OK || echo FAIL)"
   echo "  openbox     : $(pgrep -u ${MT5_USER} -x openbox >/dev/null 2>&1 && echo running || echo 'NOT RUNNING')"
