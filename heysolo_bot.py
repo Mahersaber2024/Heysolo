@@ -1,15 +1,3 @@
-"""heysolo_bot.py - Telegram bridge for ACHCMBias EA (bot: @heysolo_bot)
-
-UI rules for this file:
-  * Menus and keyboards use monochrome glyphs; report cards sent to the group
-    use colour emoji so they match the EA's alerts.
-  * Symbols are NEVER stored or typed here. They are read from the EA's
-    exported SymbolsInput (AccountStatus/account_<login>.txt -> symbols=),
-    so any change to the EA input applies on the next export.
-  * The reporting group is configured by group ID only; the bot creates the
-    forum topics itself.
-"""
-
 import asyncio
 import logging
 import re
@@ -34,14 +22,11 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("heysolo_bot")
 
-# The libraries below log one INFO line per getUpdates poll (every few seconds),
-# which buries our own output. Warnings and errors from them still come through.
 for _noisy in ("httpx", "httpcore", "telegram", "telegram.ext", "telegram.bot", "apscheduler"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 import heysolo_settings as settings
 
-# ============================== CONFIGURATION ==============================
 BOT_TOKEN = settings.get_bot_token()
 CHAT_ID = settings.get_chat_id()
 _threads = settings.get_threads()
@@ -58,7 +43,7 @@ def default_common_files_dir() -> Path:
     appdata = os.environ.get("APPDATA")
     if appdata:
         return Path(appdata) / "MetaQuotes" / "Terminal" / "Common" / "Files"
-    return Path("./MT5_Common_Files")  # fallback for testing off-Windows
+    return Path("./MT5_Common_Files")
 
 
 COMMON_DIR = default_common_files_dir()
@@ -67,7 +52,6 @@ OUTBOX_DIR = BRIDGE_DIR / "Outbox"
 PHOTOS_DIR = BRIDGE_DIR / "Photos"
 CONTROL_DIR = BRIDGE_DIR / "Control"
 ACCOUNT_DIR = COMMON_DIR / "AccountStatus"
-# ===========================================================================
 
 if not BOT_TOKEN:
     raise SystemExit("bot_token is empty - run install.sh or set it in heysolo_settings.json")
@@ -75,7 +59,6 @@ if not BOT_TOKEN:
 for d in (OUTBOX_DIR, PHOTOS_DIR, CONTROL_DIR, ACCOUNT_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
-# --------------------------- monochrome glyph set ---------------------------
 G_ACCOUNT = "▤"
 G_BIAS = "◈"
 G_MANUAL = "✎"
@@ -91,8 +74,6 @@ G_OK = "✔"
 G_BAD = "✖"
 G_WAIT = "⋯"
 G_NEUTRAL = "·"
-# Bias direction markers. Colour matters here, so these are deliberately the
-# only coloured glyphs in the menus: green = bullish, red = bearish.
 G_BULL = "🟢"
 G_BEAR = "🔴"
 G_FLAT = "○"
@@ -100,9 +81,7 @@ G_ROW = "▸"
 RULE = "─" * 27
 
 
-# ---- Account file reader (one small key=value file per account, from the EA) ----
 def _read_account_file(path: Path) -> dict:
-    """Parses AccountStatus/account_<login>.txt: one `key=value` per line."""
     out: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
         key, sep, value = line.partition("=")
@@ -112,8 +91,6 @@ def _read_account_file(path: Path) -> dict:
 
 
 def list_accounts() -> list[dict]:
-    """Every account the EA has exported. The login is in the filename, so there
-    is no shared index file to lock or keep in sync."""
     accounts = []
     for path in sorted(ACCOUNT_DIR.glob("account_*.txt")):
         try:
@@ -144,8 +121,6 @@ def _i(raw: dict, key: str, default: int = 0) -> int:
 
 
 def read_dashboard(login: str) -> dict | None:
-    """Reads the EA's account file for one login. None means the EA hasn't
-    exported yet (input `ExportAccountCard`)."""
     path = ACCOUNT_DIR / f"account_{login}.txt"
     if not path.exists():
         return None
@@ -154,9 +129,7 @@ def read_dashboard(login: str) -> dict | None:
         "broker": raw.get("broker", ""),
         "currency": raw.get("currency", ""),
         "mode": raw.get("accountMode", ""),
-        # symbols == the EA's SymbolsInput, normalized by the EA itself
         "symbols": raw.get("symbols", ""),
-        # live EA runtime state, so the menu always reflects the EA, not our memory
         "ea_mode": raw.get("eaMode", ""),
         "ea_trading": raw.get("eaTrading", ""),
         "balance": _f(raw, "balance"),
@@ -192,7 +165,6 @@ def _mark(status: str) -> str:
     return _STATUS_GLYPH.get(status, G_NEUTRAL)
 
 
-# ---- colour presentation for the account card ----
 E_MET, E_PROGRESS, E_BREACHED, E_UNKNOWN = "✅", "⏳", "❌", "⚪"
 _STATUS_EMOJI = {
     "Completed": E_MET, "Allowed": E_MET, "Active": E_MET,
@@ -207,7 +179,6 @@ def _emoji_mark(status: str) -> str:
 
 
 def _bar(current: float, limit: float) -> str:
-    """Ten-cell progress bar. Same glyph repeated, so it lines up everywhere."""
     if limit <= 0:
         return BAR_EMPTY * BAR_WIDTH
     filled = int(round(max(0.0, min(current / limit, 1.0)) * BAR_WIDTH))
@@ -215,7 +186,6 @@ def _bar(current: float, limit: float) -> str:
 
 
 def _rule(emoji: str, label: str, current: float, limit: float, status: str, unit: str = "%") -> str:
-    """One rule line: emoji, label, bar, current/limit, status mark."""
     fmt = "{:.2f}" if unit == "%" else "{:.0f}"
     cur, lim = fmt.format(current), fmt.format(limit)
     return (
@@ -225,16 +195,10 @@ def _rule(emoji: str, label: str, current: float, limit: float, status: str, uni
 
 
 def _row(label: str, value: str, mark: str = "") -> str:
-    """One aligned line inside the <pre> block: label | value | status glyph."""
     return f"{label:<13}{value:>17}{('  ' + mark) if mark else ''}"
 
 
 def format_stats_message(login: str) -> str:
-    """One clean account card: colour emoji, progress bars, no wide ragged columns.
-
-    Deliberately no <pre> block. The old aligned table was ~30 chars wide, so
-    Telegram wrapped it on phones and the whole card looked scrambled.
-    """
     d = read_dashboard(login)
     if not d:
         return f"{E_PROGRESS} No data exported for this account yet (enable <code>ExportAccountCard</code> in the EA)."
@@ -276,8 +240,6 @@ def format_stats_message(login: str) -> str:
 
 
 def get_symbols_for_login(login: str | None) -> list[str]:
-    """Symbols come from the EA's SymbolsInput only - never hand-typed, never
-    stored in the bot's settings. Empty list means the EA hasn't exported yet."""
     if not login:
         return []
     d = read_dashboard(login)
@@ -299,23 +261,21 @@ NO_SYMBOLS_TEXT = (
 )
 
 
-# ---- Control file (Manual/Auto, Trading on/off, per-symbol bias) ----
 @dataclass
 class AccountState:
-    mode: str = "AUTO"          # "MANUAL" | "AUTO"
+    mode: str = "AUTO"
     trading: bool = True
-    bias: dict = field(default_factory=dict)  # symbol -> -1/0/1
+    bias: dict = field(default_factory=dict)
     _seeded: bool = False
 
 
 _state: dict[str, AccountState] = {}
-_active_login: dict[int, str] = {}  # telegram user_id -> currently selected account login
+_active_login: dict[int, str] = {}
 
 
 def get_state(login: str) -> AccountState:
     st = _state.setdefault(login, AccountState())
     if not st._seeded:
-        # seed from the EA's exported runtime state so a bot restart never lies
         d = read_dashboard(login)
         if d:
             if d.get("ea_mode"):
@@ -333,7 +293,7 @@ def write_control(login: str):
     lines += [f"BIAS:{sym}={val}" for sym, val in st.bias.items()]
     tmp = path.with_suffix(".tmp")
     tmp.write_text("\n".join(lines) + "\n", encoding="ascii")
-    tmp.replace(path)  # atomic rename
+    tmp.replace(path)
 
 
 def resolve_login(user_id: int) -> str | None:
@@ -346,11 +306,9 @@ def resolve_login(user_id: int) -> str | None:
 
 
 def is_allowed(user_id) -> bool:
-    # Admins and added users both get in; only the Admin panel is admin-only.
     return settings.is_authorized(user_id)
 
 
-# ---- Outbound: watch TelegramBridge/Outbox for files the EA drops ----
 _EVENT_TYPE_TO_THREAD = {
     "BIAS": THREAD_BIAS,
     "TRADE": THREAD_TRADE,
@@ -363,7 +321,6 @@ NY_TZ = ZoneInfo("America/New_York")
 
 
 def _parse_hhmm(value: str) -> int | None:
-    """'01:30' -> 90 minutes past midnight. None when it isn't a valid time."""
     try:
         hh, _, mm = str(value).strip().partition(":")
         h, m = int(hh), int(mm or 0)
@@ -375,14 +332,12 @@ def _parse_hhmm(value: str) -> int | None:
 
 
 def in_delivery_window() -> bool:
-    """The old 'Allow Time For Telegram' inputs, now driven from the Admin menu.
-    Windows that cross midnight (e.g. 22:00-06:00) are handled."""
     w = settings.get_notify_window()
     if not w["enabled"]:
         return True
     start, end = _parse_hhmm(w["start"]), _parse_hhmm(w["end"])
     if start is None or end is None:
-        return True  # a broken window must never silently swallow every alert
+        return True
     now = datetime.now(NY_TZ)
     now_min = now.hour * 60 + now.minute
     if start <= end:
@@ -411,9 +366,6 @@ def parse_event(path: Path) -> tuple[str, int, str, str, str]:
         elif ln.startswith("PHOTO="):
             photo = ln.split("=", 1)[1].strip()
         elif ln.startswith("ACCOUNT="):
-            # Optional: only present if the EA is updated to export it. Used
-            # to tag which account an event came from when several report to
-            # the same group. Absent header -> behaviour is unchanged.
             account = ln.split("=", 1)[1].strip()
     return event_type, thread_id, photo, account, body
 
@@ -429,17 +381,12 @@ async def watch_outbox(app: Application):
 
                     allowed, reason = should_relay(event_type)
                     if not allowed:
-                        # Drop it instead of retrying forever: the EA keeps
-                        # producing events regardless of these settings now.
                         log.info("Skipped %s event (%s)", event_type, reason)
                         if photo_path:
                             photo_path.unlink(missing_ok=True)
                         evt.unlink(missing_ok=True)
                         continue
 
-                    # Tag which account this came from, but only once a second
-                    # account has actually reported - keeps single-account
-                    # feeds exactly as before.
                     if account and len(list_accounts()) > 1:
                         text = f"[{account}]\n{text}"
 
@@ -466,14 +413,11 @@ async def watch_outbox(app: Application):
         await asyncio.sleep(OUTBOX_POLL_SECONDS)
 
 
-# ---- Inbound: main menu (fixed 2-column grid, labels match what they do) ----
 BTN_BIAS = f"{G_BIAS} Bias"
 BTN_ACCOUNT = f"{G_ACCOUNT} Account"
 BTN_ADMIN = f"{G_ADMIN} Admin"
 
 
-# Mode and Trading are single toggle buttons: the label carries the active state,
-# e.g. "Mode (Manual)" / "Trading (On)". Tapping one flips it.
 def mode_button(st: "AccountState") -> str:
     manual = (st.mode == "MANUAL")
     return f"{G_MANUAL if manual else G_AUTO} Mode ({'Manual' if manual else 'Auto'})"
@@ -483,7 +427,6 @@ def trading_button(st: "AccountState") -> str:
     return f"{G_ON if st.trading else G_OFF} Trading ({'On' if st.trading else 'Off'})"
 
 
-# Labels are dynamic, so match them by shape instead of exact text.
 _TOGGLE_RE = re.compile(r"^\s*\S*\s*(Mode|Trading)\s*\(.*\)\s*$")
 
 
@@ -504,14 +447,12 @@ def build_main_keyboard(user_id: int, st: "AccountState | None" = None) -> Reply
 
 
 def bias_keyboard(login: str, st: AccountState) -> InlineKeyboardMarkup | None:
-    """Symbol bias grid. 🟢 bullish / 🔴 bearish / ○ none - the old 🔺 rendered
-    red in Telegram, so bullish looked bearish."""
     syms = get_symbols_for_login(login)
     if not syms:
         return None
-    emoji = {1: G_BULL, -1: G_BEAR, 0: G_FLAT}  # 🟢 / 🔴 / ○
+    emoji = {1: G_BULL, -1: G_BEAR, 0: G_FLAT}
     rows, row = [], []
-    for s in syms:  # two per row so the grid stays tidy
+    for s in syms:
         row.append(InlineKeyboardButton(f"{emoji[st.bias.get(s, 0)]} {s}", callback_data=f"SYM_{s}"))
         if len(row) == 2:
             rows.append(row)
@@ -522,16 +463,12 @@ def bias_keyboard(login: str, st: AccountState) -> InlineKeyboardMarkup | None:
 
 
 def _account_tag(login: str) -> str:
-    """One extra line naming the account - shown only when more than one
-    account has reported, so single-account setups stay exactly as before."""
     if len(list_accounts()) > 1:
         return f"{G_ACCOUNT} <code>{login}</code>\n"
     return ""
 
 
 def bias_header(login: str, st: "AccountState") -> str:
-    """Header above the symbol grid. Spells out the active mode, because tapping
-    a symbol does nothing while the EA is in Auto."""
     manual = (st.mode == "MANUAL")
     glyph = G_MANUAL if manual else G_AUTO
     mode_line = (
@@ -547,7 +484,6 @@ def bias_header(login: str, st: "AccountState") -> str:
     )
 
 
-# ---- Multi-account switcher (only ever shown when 2+ accounts have reported) ----
 def accounts_list_view(user_id: int) -> dict:
     accounts = list_accounts()
     active = resolve_login(user_id)
@@ -606,7 +542,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ---- Admin panel: group ID in, topics created automatically ----
 _pending: dict[int, str] = {}
 CANCEL_WORDS = {"cancel", "/cancel", "لغو"}
 
@@ -627,8 +562,6 @@ def admin_panel_view() -> dict:
 
 
 def admins_list_view() -> dict:
-    """Read-only apart from removal: admins cannot promote new admins from the
-    bot. Granting access is done through Users."""
     ids = settings.get_admin_ids()
     rows = [[InlineKeyboardButton(f"{G_DEL} {i}", callback_data=f"ADM_DELADMIN_{i}")] for i in ids]
     rows.append([InlineKeyboardButton(f"{G_USER} Users", callback_data="ADM_USERS")])
@@ -723,7 +656,6 @@ def _apply_group(chat_id_str: str, thread_ids: dict):
 
 
 async def provision_group(bot, chat_id_str: str, force: bool = False) -> tuple[bool, str, InlineKeyboardMarkup | None]:
-    """Group ID is the only thing an admin supplies: the bot creates the topics."""
     try:
         chat_id = int(chat_id_str)
     except ValueError:
@@ -889,7 +821,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (msg.text or "").strip()
     uid = update.effective_user.id
 
-    # ---- resume a pending admin action ----
     if uid in _pending:
         action = _pending.pop(uid)
         if text.lower() in CANCEL_WORDS:
@@ -1022,8 +953,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         st = get_state(target_login)
         v = account_detail_view(uid, target_login)
         await q.edit_message_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
-        # Mode/Trading live on the reply keyboard (not the inline one above),
-        # so it needs its own message to refresh with the new account's state.
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=f"{G_OK} Switched to account <code>{target_login}</code>. "
@@ -1048,7 +977,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("SYM_"):
         if st.mode != "MANUAL":
-            await q.answer()  # Dismiss the button press silently
+            await q.answer()
             sym = data[4:]
             await q.edit_message_text(
                 f"{G_BIAS} <b>{sym}</b>\n"
@@ -1089,12 +1018,10 @@ STARTUP_TEXT = (
 
 
 def _plain(html_text: str) -> str:
-    """Strip the HTML tags so the same text can go to the console."""
     return re.sub(r"<[^>]+>", "", html_text)
 
 
 async def send_startup_notice(bot):
-    """One short 'I'm alive' line in the group, so a restart is never silent."""
     accounts = list_accounts()
     text = STARTUP_TEXT
     if accounts:
@@ -1107,7 +1034,6 @@ async def send_startup_notice(bot):
     else:
         text += "\n⏳ Waiting for the EA to export its first account file."
 
-    # Same banner in the terminal, so a local run is never silent either.
     print("\n" + _plain(text) + "\n", flush=True)
 
     if not CHAT_ID:
