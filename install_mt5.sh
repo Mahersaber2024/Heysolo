@@ -985,7 +985,16 @@ toggle_vnc_viewing(){
   echo " 2) Turn VNC OFF (terminals keep running)"
   read -rp "Choice: " V || V=""
   case "$V" in
-    1) as_mt5 "x11vnc -display :${DISPLAY_NUM} -forever -shared -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg" ; ok "VNC turned on." ;;
+    1)
+      as_mt5 "x11vnc -display :${DISPLAY_NUM} -forever -shared -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg"
+      ok "VNC turned on."
+      # x11vnc only re-exports the existing X display - it never repairs pcmanfm
+      # (icons), tint2 (taskbar) or autocutsel (clipboard) if any of them died
+      # while VNC was off. Repair the desktop layer every time VNC comes back on,
+      # otherwise a dead icon/taskbar/clipboard stays dead until the next full step.
+      [[ -s "${TERMINALS_FILE}" ]] && export DESKTOP_ICONS=1 || export DESKTOP_ICONS=0
+      guard "desktop layer (post VNC-on repair)" desktop_start
+      ;;
     2) as_mt5 "pkill x11vnc" 2>/dev/null || true; ok "VNC turned off." ;;
   esac
   press_enter
