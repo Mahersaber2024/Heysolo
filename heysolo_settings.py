@@ -20,8 +20,8 @@ _OBSOLETE_KEYS = ("symbols",)
 
 # Pre-configured reporting group and forum topics. A fresh install points at
 # these straight away; the Admin > Reporting Group menu still overrides them.
-DEFAULT_BOT_TOKEN = "7976354402:AAGLrpPV5G36yr6TV523I7ZK4ysR26QIAZU"
-DEFAULT_CHAT_ID = "-1003289518583"
+DEFAULT_BOT_TOKEN = ""
+DEFAULT_CHAT_ID = ""
 DEFAULT_THREADS = {"bias": 2, "trade": 4, "log": 7, "result": 1723}
 
 # Which EA events get posted, and the New York window they're posted in.
