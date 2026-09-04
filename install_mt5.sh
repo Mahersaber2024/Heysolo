@@ -322,27 +322,7 @@ print_terminal_list(){
 # DISCOVER + SELECT INSTALLERS FROM THE REPO'S MT5/ FOLDER
 # ============================================================
 declare -a AVAILABLE_EXES=()
-declare -a AVAILABLE_SIZES=()
 declare -a SELECTED_EXES=()
-
-MIN_EXE_BYTES=100000          # anything smaller than ~100 KB is not an MT5 setup
-LOCAL_EXE_DIR="${LOCAL_EXE_DIR:-/root/MT5}"   # drop real installers here as a fallback
-
-human_size(){
-  local b="${1:-0}"
-  if   (( b >= 1048576 )); then echo "$(( b / 1048576 )) MB"
-  elif (( b >= 1024 ));    then echo "$(( b / 1024 )) KB"
-  else echo "${b} B"; fi
-}
-
-# Is this a real PE installer of a sane size?
-is_real_exe(){
-  local f="$1"
-  [[ -s "$f" ]] || return 1
-  [[ "$(head -c2 "$f")" == "MZ" ]] || return 1
-  (( $(stat -c%s "$f") >= MIN_EXE_BYTES )) || return 1
-  return 0
-}
 
 fetch_available_installers(){
   info "Fetching the .exe installers from ${REPO_NAME}/${MT5_SUBDIR}/ ..."
@@ -356,8 +336,7 @@ fetch_available_installers(){
     err "Could not reach the GitHub API."
     return 1
   fi
-  local listing
-  listing=$(echo "$json" | python3 -c '
+  mapfile -t AVAILABLE_EXES < <(echo "$json" | python3 -c '
 import json,sys
 try:
     data = json.load(sys.stdin)
@@ -368,36 +347,10 @@ try:
         name = item.get("name","")
         if name.lower().endswith(".exe") and name not in seen:
             seen.add(name)
-            print("%s\t%s" % (name, item.get("size", 0)))
+            print(name)
 except Exception:
     pass
 ')
-  AVAILABLE_EXES=(); AVAILABLE_SIZES=()
-  local nm sz
-  while IFS=$'\t' read -r nm sz; do
-    [[ -z "${nm:-}" ]] && continue
-    AVAILABLE_EXES+=("$nm"); AVAILABLE_SIZES+=("${sz:-0}")
-  done <<< "$listing"
-
-  # local drop-in folder wins over the repo, and can add extra installers
-  if [[ -d "${LOCAL_EXE_DIR}" ]]; then
-    local lf base found
-    shopt -s nullglob
-    for lf in "${LOCAL_EXE_DIR}"/*.exe "${LOCAL_EXE_DIR}"/*.EXE; do
-      base=$(basename "$lf"); found=0
-      local k
-      for k in "${!AVAILABLE_EXES[@]}"; do
-        if [[ "${AVAILABLE_EXES[$k]}" == "$base" ]]; then
-          AVAILABLE_SIZES[$k]=$(stat -c%s "$lf"); found=1; break
-        fi
-      done
-      if (( ! found )); then
-        AVAILABLE_EXES+=("$base"); AVAILABLE_SIZES+=("$(stat -c%s "$lf")")
-      fi
-    done
-    shopt -u nullglob
-  fi
-
   if [[ ${#AVAILABLE_EXES[@]} -eq 0 ]]; then
     warn "No .exe files found in ${MT5_SUBDIR}/."
     return 1
@@ -409,34 +362,21 @@ select_installers(){
   header
   title "SELECT TERMINALS TO INSTALL   (from ${MT5_SUBDIR}/)"
   header
-  local i=1 st slug col wineprefix f sz empty_count=0
-  for idx in "${!AVAILABLE_EXES[@]}"; do
-    f="${AVAILABLE_EXES[$idx]}"
-    sz="${AVAILABLE_SIZES[$idx]:-0}"
+  local i=1 st slug col wineprefix
+  for f in "${AVAILABLE_EXES[@]}"; do
     slug=$(slugify "$f")
     wineprefix="/home/${MT5_USER}/mt5-${slug}"
     if [[ -n "$(resolve_terminal_exe "${wineprefix}")" ]]; then
       st="INSTALLED"; col="$GREEN"
-    elif (( sz < MIN_EXE_BYTES )); then
-      st="EMPTY IN REPO"; col="$RED"; empty_count=$((empty_count+1))
     elif [[ -d "${wineprefix}" ]]; then
       st="WIZARD UNFINISHED"; col="$YELLOW"
     else
-      st="NOT INSTALLED"; col="$YELLOW"
+      st="NOT INSTALLED"; col="$RED"
     fi
-    printf "  %2d) %-34s %8s  [%b%-17s%b]\n" "$i" "$f" "$(human_size "$sz")" "$col" "$st" "$NC"
+    printf "  %2d) %-34s [%b%-17s%b]\n" "$i" "$f" "$col" "$st" "$NC"
     i=$((i+1))
   done
   echo "   a) All"
-  if (( empty_count > 0 )); then
-    echo
-    warn "${empty_count} file(s) are placeholders (a couple of bytes), not real installers."
-    warn "Nothing can be installed from them. Two ways to fix it:"
-    echo "   1) Upload the real .exe files to ${REPO_NAME}/${MT5_SUBDIR}/ (git add the binary, not an empty file)."
-    echo "   2) Or copy them onto this server into ${LOCAL_EXE_DIR}/ and re-run this script:"
-    echo "        mkdir -p ${LOCAL_EXE_DIR}"
-    echo "        scp mt5setup.exe root@<server>:${LOCAL_EXE_DIR}/"
-  fi
   echo
   read -rp "Enter numbers separated by commas (e.g. 1,3) or 'a' for all: " CHOICE
   SELECTED_EXES=()
@@ -455,25 +395,8 @@ select_installers(){
   if [[ ${#SELECTED_EXES[@]} -gt 0 ]]; then
     mapfile -t SELECTED_EXES < <(printf '%s\n' "${SELECTED_EXES[@]}" | awk '!seen[$0]++')
   fi
-  # never let a placeholder through - it only burns a wine prefix
-  if [[ ${#SELECTED_EXES[@]} -gt 0 ]]; then
-    local -a keep=()
-    local pick k
-    for pick in "${SELECTED_EXES[@]}"; do
-      local psz=0
-      for k in "${!AVAILABLE_EXES[@]}"; do
-        [[ "${AVAILABLE_EXES[$k]}" == "$pick" ]] && psz="${AVAILABLE_SIZES[$k]:-0}"
-      done
-      if (( psz < MIN_EXE_BYTES )) && [[ ! -s "${LOCAL_EXE_DIR}/${pick}" ]]; then
-        warn "Skipping ${pick} - it is a $(human_size "$psz") placeholder, not an installer."
-      else
-        keep+=("$pick")
-      fi
-    done
-    SELECTED_EXES=("${keep[@]}")
-  fi
   if [[ ${#SELECTED_EXES[@]} -eq 0 ]]; then
-    warn "Nothing installable selected."
+    warn "Nothing selected."
     return 1
   fi
   ok "Selected: ${SELECTED_EXES[*]}"
@@ -503,48 +426,24 @@ install_selected(){
     title "DOWNLOADING: ${MT5_SUBDIR}/${exe}"
     header
     dest_path="/home/${MT5_USER}/${exe}"
-
-    if [[ -s "${LOCAL_EXE_DIR}/${exe}" ]]; then
-      info "Using the local copy from ${LOCAL_EXE_DIR}/${exe}..."
-      cp -f "${LOCAL_EXE_DIR}/${exe}" "${dest_path}"
-      chown "${MT5_USER}:${MT5_USER}" "${dest_path}"
-    else
-      info "Downloading ${url} ..."
-      su - "${MT5_USER}" -c "curl -fL --retry 2 -o \"${dest_path}\" \"${url}\"" >/dev/null 2>&1 || true
-      [[ -s "${dest_path}" ]] || su - "${MT5_USER}" -c "wget -q -O \"${dest_path}\" \"${url}\"" || true
-    fi
-
+    info "Downloading..."
+    su - "${MT5_USER}" -c "wget -q -O \"${dest_path}\" \"${url}\"" || true
     if [[ ! -s "${dest_path}" ]]; then
-      err "Download failed: ${url}"
-      warn "Check that the repo is public and the path ${MT5_SUBDIR}/${exe} exists."
+      err "Download failed or file is empty: ${dest_path}"
       continue
     fi
-
-    # Tell the three failure modes apart instead of one vague error.
-    local fsize; fsize=$(stat -c%s "${dest_path}")
-    if grep -qs 'git-lfs.github.com/spec' "${dest_path}"; then
-      err "${exe} is a Git-LFS pointer, not the binary."
-      warn "Either install git-lfs and push the real file, or drop the .exe in ${LOCAL_EXE_DIR}/."
-      rm -f "${dest_path}"; continue
-    fi
+    # A Git-LFS pointer or an HTML 404 page is "non-empty" but is not an
+    # installer - check for the MZ (PE) magic before wasting a wine prefix.
     if [[ "$(head -c2 "${dest_path}")" != "MZ" ]]; then
-      err "${exe} is not a Windows executable ($(human_size "$fsize"))."
-      warn "What actually came down: $(file -b "${dest_path}" 2>/dev/null | cut -c1-70)"
-      warn "In the repo this file is a placeholder - upload the real installer, or put it in ${LOCAL_EXE_DIR}/."
-      rm -f "${dest_path}"; continue
+      err "${exe} is not a Windows executable (bad download / Git-LFS pointer) - skipped."
+      rm -f "${dest_path}"
+      continue
     fi
-    if (( fsize < MIN_EXE_BYTES )); then
-      err "${exe} is only $(human_size "$fsize") - too small to be an MT5 setup. Skipped."
-      rm -f "${dest_path}"; continue
-    fi
-    ok "Installer ready: ${dest_path} ($(human_size "$fsize"))."
+    ok "Downloaded to ${dest_path} ($(du -h "${dest_path}" | cut -f1))."
 
     init_prefix "${wineprefix}"
 
     # MetaQuotes-based installers accept /auto - try a real silent install first.
-    echo
-    warn "HEADS UP: MT5 has no official silent switch. If /auto does not work,"
-    warn "you WILL have to open VNC and click Next -> Next -> Install for ${exe}."
     info "Trying the silent install (/auto) for ${exe}..."
     as_wine "${wineprefix}" "cd ~ && wine './${exe}' /auto" >/dev/null 2>&1 || true
     as_wine "${wineprefix}" "wineserver -w" >/dev/null 2>&1 || true
