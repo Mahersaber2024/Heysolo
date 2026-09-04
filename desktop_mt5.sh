@@ -96,7 +96,7 @@ desktop_install_packages(){
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
   apt-get update -y >/dev/null 2>&1 || true
   apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
-    pcmanfm feh tint2 wmctrl xdotool zenity \
+    pcmanfm feh tint2 wmctrl xdotool zenity dbus-x11 \
     icoutils imagemagick x11-utils xprop \
     >/dev/null 2>&1 || true
   command -v tint2   >/dev/null 2>&1 || warn "tint2 missing (taskbar will be unavailable)."
@@ -562,6 +562,33 @@ desktop_ensure_taskbar(){
 }
 
 # ============================================================
+# DESKTOP MANAGER (pcmanfm) - must run under a D-Bus session
+#   Without dbus, pcmanfm --desktop exits immediately on a headless server:
+#   the wallpaper (feh) still shows, but NO desktop icons are ever rendered.
+# ============================================================
+desktop_launch_manager(){
+  command -v dbus-launch >/dev/null 2>&1 || {
+    info "Installing dbus-x11 (needed by pcmanfm --desktop)..."
+    apt-get install -y dbus-x11 >/dev/null 2>&1 || true
+  }
+  desktop_write_pcmanfm_conf
+  local try
+  for try in 1 2; do
+    if (( try == 1 )) && command -v dbus-launch >/dev/null 2>&1; then
+      mt5_run_quiet 15 "setsid dbus-launch --exit-with-session pcmanfm --desktop --profile=${PCMAN_PROFILE} >/tmp/pcmanfm-desktop.log 2>&1 &" || true
+    else
+      mt5_run_quiet 15 "setsid pcmanfm --desktop --profile=${PCMAN_PROFILE} >>/tmp/pcmanfm-desktop.log 2>&1 &" || true
+    fi
+    if desktop_wait_for_manager 10; then
+      ok "Desktop manager running - desktop icons will render."
+      return 0
+    fi
+  done
+  warn "pcmanfm --desktop did not start - wallpaper only, no icons (log: /tmp/pcmanfm-desktop.log)."
+  return 0
+}
+
+# ============================================================
 # START / REFRESH THE WHOLE DESKTOP LAYER (call after Xvfb+openbox)
 # ============================================================
 desktop_start(){
@@ -574,10 +601,7 @@ desktop_start(){
   if [[ "${DESKTOP_ICONS}" == "1" ]] && command -v pcmanfm >/dev/null 2>&1; then
     if ! desktop_manager_active; then
       step "starting the desktop manager (pcmanfm, max 10s)"
-      desktop_write_pcmanfm_conf
-      mt5_run_quiet 10 "setsid pcmanfm --desktop --profile=${PCMAN_PROFILE} >/dev/null 2>&1 &" || true
-      desktop_wait_for_manager 10 \
-        || warn "pcmanfm --desktop did not start - using feh for the wallpaper (no desktop icons)."
+      desktop_launch_manager
     else
       step "desktop manager already running"
     fi

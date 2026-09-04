@@ -82,6 +82,10 @@ TERMINALS_FILE="${STATE_DIR}/terminals.list"   # slug|exe_name|wineprefix|termin
 VNC_PASS_FILE="/home/${MT5_USER}/.vnc/passwd"
 
 DESKTOP_MODULE="desktop_mt5.sh"
+HEYSOLO_LIB_DIR="/opt/heysolo"
+# Real path of the desktop module on this server, so the final guide can print
+# a command that actually works instead of a bare filename.
+DESKTOP_MODULE_PATH=""
 
 # ============================================================
 # COLORS
@@ -261,11 +265,19 @@ load_desktop_module(){
   here=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)
   candidate="${here:+${here}/${DESKTOP_MODULE}}"
   if [[ -n "${candidate}" && -f "${candidate}" ]]; then
+    DESKTOP_MODULE_PATH="${candidate}"
     # shellcheck source=/dev/null
     source "${candidate}"
   else
+    # Persist it: running the installer as `bash <(curl ...)` left NOTHING on
+    # disk, so `sudo bash desktop_mt5.sh icons` from the final guide failed
+    # with "No such file or directory". Keep a real copy under /opt/heysolo.
     cache="/tmp/${DESKTOP_MODULE}"
     if curl -fsSL "${REPO_RAW}/${DESKTOP_MODULE}" -o "${cache}" 2>/dev/null && [[ -s "${cache}" ]]; then
+      if mkdir -p "${HEYSOLO_LIB_DIR}" 2>/dev/null \
+         && cp -f "${cache}" "${HEYSOLO_LIB_DIR}/${DESKTOP_MODULE}" 2>/dev/null; then
+        DESKTOP_MODULE_PATH="${HEYSOLO_LIB_DIR}/${DESKTOP_MODULE}"
+      fi
       # shellcheck source=/dev/null
       source "${cache}"
     fi
@@ -906,6 +918,54 @@ add_terminal_later(){
 }
 
 # ============================================================
+# DESKTOP ICON HEALTH CHECK
+#   The icons ARE written to ~/Desktop, but nothing renders them unless
+#   `pcmanfm --desktop` is alive. When it is not, the user sees only the
+#   wallpaper and (rightly) assumes the install is broken. Never end the run
+#   claiming "icons ready" without checking, and if it failed, say exactly
+#   which command fixes it.
+# ============================================================
+report_desktop_icon_health(){
+  local desk_cmd="${1:-${DESKTOP_MODULE}}"
+  local n_icons=0
+  n_icons=$(find "/home/${MT5_USER}/Desktop" -maxdepth 1 -name 'mt5-*.desktop' 2>/dev/null | wc -l | tr -d ' ')
+  local mgr="no"
+  if declare -F desktop_manager_active >/dev/null 2>&1 && desktop_manager_active; then mgr="yes"; fi
+
+  if [[ "${mgr}" == "yes" && "${n_icons}" != "0" ]]; then
+    ok "Desktop icons are live: ${n_icons} icon(s) + the desktop manager is running."
+    return 0
+  fi
+
+  header
+  warn "DESKTOP ICONS ARE NOT BEING SHOWN RIGHT NOW"
+  header
+  echo "   icon files in ~/Desktop : ${n_icons}"
+  echo "   pcmanfm --desktop       : ${mgr}"
+  echo
+  if [[ "${n_icons}" == "0" ]]; then
+    echo " No icon file was written yet. Rebuild them with:"
+    echo "    sudo bash ${desk_cmd} icons"
+  else
+    echo " The icons exist, but the desktop manager that draws them is down,"
+    echo " so VNC shows the wallpaper and the taskbar only. Fix it with:"
+    echo "    sudo bash ${desk_cmd} start"
+    echo
+    echo " If it still refuses to start, it is almost always a missing D-Bus"
+    echo " session on a headless server. Check the reason with:"
+    echo "    apt-get install -y dbus-x11"
+    echo "    cat /tmp/pcmanfm-desktop.log"
+  fi
+  echo
+  echo " Meanwhile you can always open a terminal without any icon:"
+  echo "    su - ${MT5_USER} -c '/home/${MT5_USER}/.heysolo/bin/mt5-<slug>.sh'"
+  echo " and recover a minimized window over SSH with:"
+  echo "    sudo bash ${desk_cmd} restore"
+  header
+  return 0
+}
+
+# ============================================================
 # FINAL GUIDE
 # ============================================================
 show_final_guide(){
@@ -931,8 +991,11 @@ show_final_guide(){
   echo " Attach to one specific terminal (optional, to look directly):"
   echo "    su - ${MT5_USER}; screen -r <name>   |   Ctrl+A then D to detach without closing"
   echo
-  echo " Desktop-only changes (wallpaper / icons / taskbar) live in ${DESKTOP_MODULE}:"
-  echo "    sudo bash ${DESKTOP_MODULE} icons | wallpaper | taskbar | all"
+  local desk_cmd="${DESKTOP_MODULE_PATH:-${DESKTOP_MODULE}}"
+  echo " Desktop-only changes (wallpaper / icons / taskbar):"
+  echo "    sudo bash ${desk_cmd} icons | wallpaper | taskbar | all"
+  echo
+  report_desktop_icon_health "${desk_cmd}"
   echo
   echo " Turn VNC on/off (to watch charts):"
   echo "    su - ${MT5_USER} -c \"x11vnc -display :${DISPLAY_NUM} -forever -shared -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg\""
