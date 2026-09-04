@@ -1,9 +1,3 @@
-"""heysolo_settings.py - persistent settings for heysolo_bot (@heysolo_bot)
-
-Deliberately does NOT store symbols. Symbols live in one place only: the EA
-input SymbolsInput, which the EA exports on every dashboard write.
-"""
-
 import json
 import logging
 import os
@@ -15,35 +9,26 @@ SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "heysol
 
 _cache: Optional[dict] = None
 
-# keys retired in newer versions - removed from the file on first load
 _OBSOLETE_KEYS = ("symbols",)
 
-# Pre-configured reporting group and forum topics. A fresh install points at
-# these straight away; the Admin > Reporting Group menu still overrides them.
 DEFAULT_BOT_TOKEN = ""
 DEFAULT_CHAT_ID = ""
 DEFAULT_THREADS = {"bias": 2, "trade": 4, "log": 7, "result": 1723}
 
-# Which EA events get posted, and the New York window they're posted in.
-# These replace the EA's old Telegram / Allow-Time inputs.
 DEFAULT_NOTIFY = {"bias": True, "trade": True, "log": False, "result": True}
 DEFAULT_NOTIFY_WINDOW = {"enabled": True, "start": "01:30", "end": "15:30"}
 
 
 def _get_default_settings() -> dict:
-    """Default settings for a fresh, un-configured bot."""
     return {
         "bot_token": DEFAULT_BOT_TOKEN,
         "admin_ids": [],
-        # Regular members: full access to the bot except the Admin panel.
         "user_ids": [],
         "chat_id": DEFAULT_CHAT_ID,
         "threads": dict(DEFAULT_THREADS),
         "notify": dict(DEFAULT_NOTIFY),
         "notify_window": dict(DEFAULT_NOTIFY_WINDOW),
         "outbox_poll_seconds": 3,
-        # Only needed when the bot runs on a different machine than MT5 -
-        # see MULTI_SERVER_GUIDE.md. Empty = auto-detect %APPDATA% locally.
         "common_files_dir": "",
         "installed_at": "",
     }
@@ -69,7 +54,6 @@ def _load() -> dict:
         data = _get_default_settings()
         logger.info("Created default settings")
 
-    # backfill any keys added in a newer version of this file
     defaults = _get_default_settings()
     for key, value in defaults.items():
         if key not in data:
@@ -78,8 +62,6 @@ def _load() -> dict:
     for key, value in defaults["threads"].items():
         data["threads"].setdefault(key, value)
 
-    # An older settings file has these keys present but blank/zero, so plain
-    # backfill would skip them - treat "unset" as "use the default".
     data.setdefault("notify", {})
     for key, value in DEFAULT_NOTIFY.items():
         data["notify"].setdefault(key, value)
@@ -94,7 +76,6 @@ def _load() -> dict:
     if not any(data["threads"].get(k) for k in DEFAULT_THREADS):
         data["threads"].update(DEFAULT_THREADS)
 
-    # drop retired keys (symbols are owned by the EA, not by this file)
     removed = [k for k in _OBSOLETE_KEYS if k in data]
     for k in removed:
         data.pop(k, None)
@@ -105,7 +86,7 @@ def _load() -> dict:
         try:
             _save(data)
         except Exception:
-            pass  # non-fatal: it will be cleaned on the next successful save
+            pass
     return data
 
 
@@ -117,9 +98,9 @@ def _save(data: dict):
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         try:
-            os.chmod(SETTINGS_FILE, 0o600)  # contains bot_token - keep it private
+            os.chmod(SETTINGS_FILE, 0o600)
         except OSError:
-            pass  # chmod isn't meaningful on all platforms (e.g. Windows)
+            pass
         _cache = data
         logger.info(f"Settings saved to {SETTINGS_FILE}")
     except Exception as e:
@@ -133,10 +114,6 @@ def reload_settings():
     return _load()
 
 
-# ============================================================
-# bot token
-# ============================================================
-
 def get_bot_token() -> str:
     return _load().get("bot_token", "") or DEFAULT_BOT_TOKEN
 
@@ -146,10 +123,6 @@ def set_bot_token(token: str):
     data["bot_token"] = token.strip()
     _save(data)
 
-
-# ============================================================
-# admins
-# ============================================================
 
 def get_admin_ids() -> List[int]:
     return _load().get("admin_ids", [])
@@ -186,16 +159,12 @@ def remove_admin_id(admin_id: int) -> bool:
 def is_admin(user_id) -> bool:
     admin_ids = get_admin_ids()
     if not admin_ids:
-        return True  # bootstrap mode: nobody has claimed the bot yet
+        return True
     try:
         return int(user_id) in admin_ids
     except (TypeError, ValueError):
         return False
 
-
-# ============================================================
-# regular users (everything except the Admin panel)
-# ============================================================
 
 def get_user_ids() -> List[int]:
     return _load().get("user_ids", [])
@@ -232,7 +201,6 @@ def remove_user_id(user_id: int) -> bool:
 
 
 def is_user(user_id) -> bool:
-    """True for a plain member. Admins are covered by is_admin()."""
     try:
         return int(user_id) in get_user_ids()
     except (TypeError, ValueError):
@@ -240,13 +208,8 @@ def is_user(user_id) -> bool:
 
 
 def is_authorized(user_id) -> bool:
-    """Anyone allowed to talk to the bot at all: admins + added users."""
     return is_admin(user_id) or is_user(user_id)
 
-
-# ============================================================
-# chat / topic threads
-# ============================================================
 
 def get_chat_id() -> str:
     return _load().get("chat_id", "") or DEFAULT_CHAT_ID
@@ -276,10 +239,6 @@ def set_threads(bias: int = None, trade: int = None, log: int = None, result: in
     _save(data)
 
 
-# ============================================================
-# notifications (replaces the EA's Telegram inputs)
-# ============================================================
-
 NOTIFY_KINDS = ("bias", "trade", "log", "result")
 
 
@@ -302,7 +261,6 @@ def set_notify(kind: str, enabled: bool):
 
 
 def toggle_notify(kind: str) -> bool:
-    """Flips one kind and returns its new value."""
     new_value = not is_notify_enabled(kind)
     set_notify(kind, new_value)
     return new_value
@@ -335,10 +293,6 @@ def toggle_notify_window() -> bool:
     return new_value
 
 
-# ============================================================
-# bridge / polling
-# ============================================================
-
 def get_outbox_poll_seconds() -> int:
     return int(_load().get("outbox_poll_seconds", 3) or 3)
 
@@ -350,7 +304,6 @@ def set_outbox_poll_seconds(seconds: int):
 
 
 def get_common_files_dir() -> str:
-    """Empty string = auto-detect %APPDATA%\\...\\Common\\Files."""
     return _load().get("common_files_dir", "")
 
 
@@ -359,10 +312,6 @@ def set_common_files_dir(path: str):
     data["common_files_dir"] = path.strip()
     _save(data)
 
-
-# ============================================================
-# install bookkeeping
-# ============================================================
 
 def is_first_run() -> bool:
     return not bool(_load().get("installed_at"))
