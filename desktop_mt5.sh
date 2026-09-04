@@ -1,38 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================
 # desktop_mt5.sh - HeySolo MT5 DESKTOP MODULE
-#
-# Everything about "how the VNC desktop looks / behaves" lives here,
-# separated from install_mt5.sh so new desktop features can be added
-# without touching the installer:
-#   - wallpaper from the repo (BG/heysolo-des.png)
-#   - a Windows-like desktop with one clickable icon per MT5 terminal
-#     (click = open, click again = "Bring to front" / "Close terminal")
-#   - taskbar (tint2) so minimized windows can be recovered
-#   - CLI helper to restore a lost/minimized window
-#
-# Used two ways:
-#   1) sourced by install_mt5.sh   (normal case, functions only)
-#   2) standalone:
-#        sudo bash desktop_mt5.sh all        # packages + wallpaper + icons + start
-#        sudo bash desktop_mt5.sh wallpaper  # re-apply wallpaper
-#        sudo bash desktop_mt5.sh icons      # rebuild desktop icons
-#        sudo bash desktop_mt5.sh taskbar    # repair tint2
-#        sudo bash desktop_mt5.sh clean      # remove the "desktop 1" button
-#        sudo bash desktop_mt5.sh start      # (re)start desktop layer
-#        sudo bash desktop_mt5.sh restore    # find/restore a minimized window
-# =============================================================
 
-# ------------------------------------------------------------
-# NOTE: this file is sourced by install_mt5.sh, so it runs under the
-# installer's shell options. Never leave a bare pipeline whose last command
-# can legitimately "fail" (grep with no match, head closing a pipe early) -
-# that is exactly what silently aborted Step 1 before. Guard with `|| true`.
-# ------------------------------------------------------------
-# CONFIG (inherited from install_mt5.sh when sourced)
-# ------------------------------------------------------------
 MT5_USER="${MT5_USER:-mt5user}"
 DISPLAY_NUM="${DISPLAY_NUM:-1}"
+SCREEN_RES="${SCREEN_RES:-1280x1024x24}"
+SCREEN_RES_WH="${SCREEN_RES%x*}"     # "1280x1024x24" -> "1280x1024", for wine's /desktop=name,WxH
 REPO_OWNER="${REPO_OWNER:-Mahersaber2024}"
 REPO_NAME="${REPO_NAME:-Heysolo}"
 REPO_RAW="${REPO_RAW:-https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main}"
@@ -48,10 +21,6 @@ BIN_DIR="${ASSET_DIR}/bin"
 DESKTOP_DIR="${MT5_HOME}/Desktop"
 WALLPAPER_PATH="${ASSET_DIR}/wallpaper.png"
 PCMAN_PROFILE="heysolo"
-
-# DESKTOP_ICONS=0 -> wallpaper (feh) + taskbar only, pcmanfm is never started.
-# Step 1 uses 0 (no terminals exist yet, nobody is looking at VNC),
-# Step 2 sets 1 once there are real terminals to put icons on.
 DESKTOP_ICONS="${DESKTOP_ICONS:-1}"
 
 # ------------------------------------------------------------
@@ -67,9 +36,7 @@ declare -F err     >/dev/null 2>&1 || err(){ echo -e "${RED}[ERROR] $1${NC}"; }
 declare -F header  >/dev/null 2>&1 || header(){ echo -e "${BLUE}${BOLD}===================================================${NC}"; }
 declare -F title   >/dev/null 2>&1 || title(){ echo -e "${MAGENTA}${BOLD}$1${NC}"; }
 declare -F press_enter >/dev/null 2>&1 || press_enter(){ read -rp "Press Enter to continue..." _ || true; }
-# --- bounded runner: NOTHING in the desktop layer may block forever ------
-# `su -` opens a PAM/logind session; right after unattended-upgrades restarts
-# systemd-logind that call can hang. runuser + setsid + timeout can't.
+
 mt5_run(){                       # mt5_run <seconds> <command...>
   local secs="$1"; shift
   if command -v runuser >/dev/null 2>&1; then
@@ -299,6 +266,15 @@ fi
 running(){ pgrep -f "\${TERM_EXE}" >/dev/null 2>&1; }
 
 raise(){
+  # With "wine explorer /desktop=\${SLUG},..." the real top-level window
+  # openbox sees is the virtual-desktop frame named "\${SLUG}", not a window
+  # owned directly by terminal64.exe's pid - try that first.
+  if command -v xdotool >/dev/null 2>&1; then
+    for w in \$(xdotool search --name "^\${SLUG}\$" 2>/dev/null); do
+      xdotool windowmap "\${w}" 2>/dev/null || true
+      xdotool windowactivate "\${w}" 2>/dev/null && return 0
+    done
+  fi
   local pid
   pid=\$(pgrep -f "\${TERM_EXE}" 2>/dev/null | head -n1 || true)
   if [[ -n "\${pid}" ]] && command -v xdotool >/dev/null 2>&1; then
@@ -318,7 +294,10 @@ stop_it(){
 }
 
 start_it(){
-  screen -dmS "\${SLUG}" bash -c "export DISPLAY=:${DISPLAY_NUM} WINEDLLOVERRIDES='winemenubuilder.exe=d' WINEPREFIX='\${WINEPREFIX}'; wine \"\${TERM_EXE}\""
+  # own wine virtual desktop per terminal - see start_terminal() in
+  # install_mt5.sh for why (stops the "VNC clicks stop working after
+  # switching between terminals" input-grab conflict).
+  screen -dmS "\${SLUG}" bash -c "export DISPLAY=:${DISPLAY_NUM} WINEDLLOVERRIDES='winemenubuilder.exe=d' WINEPREFIX='\${WINEPREFIX}'; wine explorer /desktop=\${SLUG},${SCREEN_RES_WH:-1280x1024} \"\${TERM_EXE}\""
 }
 
 if running; then
@@ -542,6 +521,48 @@ desktop_hide_desktop_window(){
 }
 
 # ============================================================
+# SHORT TASKBAR TITLES
+#   MT5's window title is "<account> - <broker>: <Demo/Real> Account - ...",
+#   which tint2 shows truncated and unreadable when several terminals are
+#   open ("440622 - FusionMarkets-Demo: Demo Acco..."). The task ICON
+#   already shows the broker logo (extracted per terminal in
+#   desktop_extract_icon), so the visible TEXT only needs the account
+#   number. This renames the window's EWMH visible-name (what tint2 reads)
+#   to just the leading digits - the real WM_NAME MT5 relies on internally
+#   is untouched, so nothing inside the terminal is affected.
+# ============================================================
+desktop_write_title_watcher(){
+  local script="${BIN_DIR}/title-watch.sh"
+  mkdir -p "${BIN_DIR}"
+  cat > "${script}" <<'EOF'
+#!/usr/bin/env bash
+# Trims MT5 taskbar titles down to just the account number.
+# "440622 - FusionMarkets-Demo: Demo Account - Hedge - ..." -> "440622"
+while true; do
+  wmctrl -l 2>/dev/null | while IFS= read -r line; do
+    wid=$(awk '{print $1}' <<< "$line")
+    title=$(cut -d' ' -f5- <<< "$line")
+    if [[ "$title" =~ ^[[:space:]]*([0-9]{3,})[[:space:]]*- ]]; then
+      wmctrl -ir "$wid" -N "${BASH_REMATCH[1]}" >/dev/null 2>&1
+    fi
+  done
+  sleep 4
+done
+EOF
+  chmod +x "${script}"
+  chown "${MT5_USER}:${MT5_USER}" "${script}" 2>/dev/null || true
+  echo "${script}"
+}
+
+desktop_ensure_title_watcher(){
+  command -v wmctrl >/dev/null 2>&1 || return 0
+  local script; script=$(desktop_write_title_watcher)
+  # already running -> nothing to do
+  as_mt5 "screen -ls" 2>/dev/null | grep -q '\.titlewatch\b' && return 0
+  as_mt5 "screen -dmS titlewatch bash -c 'export DISPLAY=:${DISPLAY_NUM}; ${script}'"
+}
+
+# ============================================================
 # TASKBAR (tint2)
 # ============================================================
 desktop_ensure_taskbar(){
@@ -625,6 +646,34 @@ desktop_ensure_clipboard(){
   else
     warn "autocutsel did not stay up - copy/paste may be stuck on old text."
   fi
+  desktop_ensure_clipboard_watchdog
+}
+
+# autocutsel can still die silently under load (heavy wine clipboard traffic,
+# a terminal closing mid-copy). A watchdog restarts it within ~30s instead of
+# copy/paste staying broken until the next full desktop_start.
+desktop_write_clipboard_watchdog(){
+  local script="${BIN_DIR}/clipboard-watch.sh"
+  mkdir -p "${BIN_DIR}"
+  cat > "${script}" <<'EOF'
+#!/usr/bin/env bash
+while true; do
+  pgrep -x autocutsel >/dev/null 2>&1 || {
+    setsid autocutsel -selection CLIPBOARD -fork >/dev/null 2>&1
+    setsid autocutsel -selection PRIMARY   -fork >/dev/null 2>&1
+  }
+  sleep 30
+done
+EOF
+  chmod +x "${script}"
+  chown "${MT5_USER}:${MT5_USER}" "${script}" 2>/dev/null || true
+  echo "${script}"
+}
+
+desktop_ensure_clipboard_watchdog(){
+  local script; script=$(desktop_write_clipboard_watchdog)
+  as_mt5 "screen -ls" 2>/dev/null | grep -q '\.clipwatch\b' && return 0
+  as_mt5 "screen -dmS clipwatch bash -c 'export DISPLAY=:${DISPLAY_NUM}; ${script}'"
 }
 
 # ============================================================
@@ -649,6 +698,7 @@ desktop_start(){
   fi
   desktop_apply_wallpaper
   desktop_ensure_taskbar
+  desktop_ensure_title_watcher
   desktop_ensure_clipboard
   step "removing wine's junk launchers"
   purge_wine_shortcuts_local
@@ -744,6 +794,7 @@ desktop_doctor(){
   echo "  pcmanfm     : $(desktop_manager_active && echo running || echo 'NOT RUNNING')"
   echo "  tint2       : $(pgrep -u ${MT5_USER} -x tint2 >/dev/null 2>&1 && echo running || echo 'NOT RUNNING')"
   echo "  autocutsel  : $(pgrep -u ${MT5_USER} -x autocutsel >/dev/null 2>&1 && echo running || echo 'NOT RUNNING')"
+  echo "  title-watch : $(as_mt5 "screen -ls" 2>/dev/null | grep -q '\.titlewatch\b' && echo running || echo 'NOT RUNNING')"
   echo "  wallpaper   : $([[ -s ${WALLPAPER_PATH} ]] && du -h ${WALLPAPER_PATH} | cut -f1 || echo MISSING)"
   echo "  windows     :"
   DISPLAY=":${DISPLAY_NUM}" timeout 8 wmctrl -lx 2>/dev/null | sed 's/^/     /' || echo "     (wmctrl unavailable)"
@@ -762,6 +813,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     wallpaper) desktop_prepare_dirs; desktop_fetch_wallpaper; desktop_apply_wallpaper ;;
     icons)     desktop_sync_icons ;;
     taskbar)   desktop_write_tint2_conf; desktop_ensure_taskbar ;;
+    titles)    desktop_ensure_title_watcher ;;
     clipboard) desktop_ensure_clipboard ;;
     doctor)    desktop_doctor ;;
     clean)     desktop_write_openbox_rules; desktop_write_tint2_conf
@@ -770,6 +822,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                ok "Taskbar cleaned - the 'desktop 1' button is gone." ;;
     start)     desktop_start ;;
     restore)   desktop_restore_window ;;
-    *) echo "Usage: sudo bash $0 [all|packages|wallpaper|icons|taskbar|clipboard|clean|start|restore|doctor]"; exit 1 ;;
+    *) echo "Usage: sudo bash $0 [all|packages|wallpaper|icons|taskbar|titles|clipboard|clean|start|restore|doctor]"; exit 1 ;;
   esac
 fi
