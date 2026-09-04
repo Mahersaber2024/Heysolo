@@ -28,6 +28,10 @@ DISPLAY_NUM="1"                 # -> DISPLAY=:1
 VNC_PORT=5900
 SCREEN_RES="1280x1024x24"
 
+# All brokers install into ONE shared wineprefix, each under its own
+# Program Files subfolder - the normal Windows layout.
+WINEPREFIX_SHARED="/home/${MT5_USER}/mt5-terminals"
+
 # --- LOCAL installer folder: upload your *.exe files here over SFTP ---
 # Nothing is fetched from GitHub. Put e.g. combatcapitalmarkets5setup.exe here.
 MT5_LOCAL_DIR="/opt/heysolo/mt5"
@@ -591,10 +595,9 @@ resolve_terminal_exe(){
 }
 
 terminal_status(){
-  local slug="$1" wineprefix="${2:-}" termpath="${3:-}"
+  local slug="$1" termpath="${3:-}"
   if [[ -n "$termpath" ]] && pgrep -f "$termpath" >/dev/null 2>&1; then echo "ACTIVE"; return; fi
   if as_mt5 "screen -ls" 2>/dev/null | grep -qE "\.${slug}[[:space:]]"; then echo "ACTIVE"; return; fi
-  if [[ -n "$wineprefix" ]] && pgrep -f "${wineprefix}/drive_c" >/dev/null 2>&1; then echo "ACTIVE"; return; fi
   echo "NOT ACTIVE"
 }
 
@@ -638,17 +641,22 @@ ensure_mql5_local_dir(){
 
 # Each MT5 install creates its own MQL5 data folder under
 #   <wineprefix>/drive_c/users/<user>/AppData/Roaming/MetaQuotes/Terminal/<hash>/MQL5
-# The <hash> is only known after the terminal has actually run once, so this
-# is called after start_terminal / after a successful first launch, not
-# right after the installer wizard finishes.
+# The <hash> is only known after the terminal has actually run once. Since
+# every broker now shares one wineprefix, that AppData root holds one
+# Terminal/<hash> folder PER broker - each hash folder contains an
+# origin.txt (UTF-16) naming the install directory it belongs to, so that
+# is how we pick the right one instead of grabbing the first match.
 resolve_mql5_dir(){
-  local wineprefix="$1"
-  local dir
-  dir=$(find "${wineprefix}/drive_c/users" -maxdepth 8 -type d -iname 'MQL5' 2>/dev/null | head -n1)
-  if [[ -z "${dir}" ]]; then
-    dir=$(find "${wineprefix}/drive_c/Program Files"* -maxdepth 3 -type d -iname 'MQL5' 2>/dev/null | head -n1)
-  fi
-  echo "${dir}"
+  local wineprefix="$1" install_dir="$2"
+  local f content
+  for f in "${wineprefix}"/drive_c/users/*/AppData/Roaming/MetaQuotes/Terminal/*/origin.txt; do
+    [[ -f "${f}" ]] || continue
+    content=$(iconv -f UTF-16LE -t UTF-8 "${f}" 2>/dev/null | tr -d '\0')
+    [[ "${content}" == *"${install_dir##*/}"* ]] && { echo "$(dirname "${f}")/MQL5"; return 0; }
+  done
+  # Terminal never launched yet (or portable mode) - fall back to the
+  # install directory's own MQL5 folder.
+  [[ -d "${install_dir}/MQL5" ]] && echo "${install_dir}/MQL5"
 }
 
 # Copies the shared Experts/Include/Indicators/set/Templates folders into
@@ -657,10 +665,12 @@ resolve_mql5_dir(){
 # both official MT5 locations, so the files show up in the right menu inside
 # the terminal without the user moving anything by hand.
 sync_mql5_assets(){
-  local slug="$1" wineprefix="$2"
+  local slug="$1" wineprefix="$2" termpath="${3:-}"
   ensure_mql5_local_dir
   local mql5_dir
-  mql5_dir=$(resolve_mql5_dir "${wineprefix}")
+  if [[ -n "${termpath}" ]]; then
+    mql5_dir=$(resolve_mql5_dir "${wineprefix}" "$(dirname "${termpath}")")
+  fi
   if [[ -z "${mql5_dir}" ]]; then
     warn "${slug}: MQL5 data folder not found yet - start the terminal once, then re-run this from the menu."
     return 1
@@ -695,7 +705,7 @@ sync_mql5_assets_all(){
   local slug exe wineprefix termpath
   while IFS='|' read -r slug exe wineprefix termpath; do
     [[ -z "${slug:-}" ]] && continue
-    sync_mql5_assets "${slug}" "${wineprefix}" || true
+    sync_mql5_assets "${slug}" "${wineprefix}" "${termpath:-}" || true
   done < "${TERMINALS_FILE}"
 }
 
@@ -778,14 +788,11 @@ select_installers(){
   header
   title "SELECT TERMINALS TO INSTALL   (from ${MT5_LOCAL_DIR})"
   header
-  local i=1 st slug col wineprefix
+  local i=1 st slug col
   for f in "${AVAILABLE_EXES[@]}"; do
     slug=$(slugify "$f")
-    wineprefix="/home/${MT5_USER}/mt5-${slug}"
-    if [[ -n "$(resolve_terminal_exe "${wineprefix}")" ]]; then
+    if grep -q "^${slug}|" "${TERMINALS_FILE}" 2>/dev/null; then
       st="INSTALLED"; col="$GREEN"
-    elif [[ -d "${wineprefix}" ]]; then
-      st="WIZARD UNFINISHED"; col="$YELLOW"
     else
       st="NOT INSTALLED"; col="$RED"
     fi
@@ -831,10 +838,12 @@ install_selected(){
   start_display
   print_vnc_access
 
-  local exe slug wineprefix src dest_path termpath
+  local wineprefix="${WINEPREFIX_SHARED}"
+  init_prefix "${wineprefix}"
+
+  local exe slug src dest_path termpath marker
   for exe in "${SELECTED_EXES[@]}"; do
     slug=$(slugify "$exe")
-    wineprefix="/home/${MT5_USER}/mt5-${slug}"
     src="${MT5_LOCAL_DIR}/${exe}"
 
     echo
@@ -860,13 +869,17 @@ install_selected(){
     fi
     ok "Ready: ${dest_path} ($(du -h "${dest_path}" 2>/dev/null | cut -f1 || echo '?'))."
 
-    init_prefix "${wineprefix}"
+    # Prefix is shared - a blind find would return whichever broker got
+    # installed first. Mark the time, then only accept a terminal64.exe
+    # newer than the marker as belonging to THIS install.
+    marker="/tmp/.heysolo-mark-${slug}"
+    touch "${marker}"
 
     # MetaQuotes-based installers accept /auto - try a real silent install first.
     info "Trying the silent install (/auto) for ${exe}..."
     as_wine "${wineprefix}" "cd ~ && wine './${exe}' /auto" >/dev/null 2>&1 || true
     as_wine "${wineprefix}" "wineserver -w" >/dev/null 2>&1 || true
-    termpath=$(resolve_terminal_exe "${wineprefix}")
+    termpath=$(find "${wineprefix}/drive_c" -maxdepth 5 -newer "${marker}" -name 'terminal64.exe' 2>/dev/null | head -n1)
 
     if [[ -z "${termpath}" ]]; then
       warn "Silent install did not take for ${exe} - opening the setup wizard."
@@ -876,8 +889,9 @@ install_selected(){
         || as_wine "${wineprefix}" "wine start /unix '${dest_path}' /wait" \
         || true
       as_wine "${wineprefix}" "wineserver -w" >/dev/null 2>&1 || true
-      termpath=$(resolve_terminal_exe "${wineprefix}")
+      termpath=$(find "${wineprefix}/drive_c" -maxdepth 5 -newer "${marker}" -name 'terminal64.exe' 2>/dev/null | head -n1)
     fi
+    rm -f "${marker}"
 
     purge_wine_shortcuts
 
@@ -970,10 +984,10 @@ manage_one_terminal(){
   read -rp "Choice: " ACT || ACT=""
   case "$ACT" in
     1) start_terminal "$slug" "$wineprefix" "$termpath" && ok "${slug} started." ;;
-    2) as_mt5 "WINEPREFIX=${wineprefix} wineserver -k" 2>/dev/null || true
+    2) as_mt5 "pkill -f '${termpath}'" 2>/dev/null || true
        as_mt5 "screen -S ${slug} -X quit" 2>/dev/null || true
        ok "${slug} stopped." ;;
-    3) as_mt5 "WINEPREFIX=${wineprefix} wineserver -k" 2>/dev/null || true
+    3) as_mt5 "pkill -f '${termpath}'" 2>/dev/null || true
        as_mt5 "screen -S ${slug} -X quit" 2>/dev/null || true
        sleep 3
        start_terminal "$slug" "$wineprefix" "$termpath" && ok "${slug} restarted." ;;
@@ -1105,9 +1119,10 @@ show_final_guide(){
   echo "    su - ${MT5_USER} -c \"x11vnc -display :${DISPLAY_NUM} -forever -shared -noprimary -nosetprimary -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg\""
   echo "    su - ${MT5_USER} -c 'pkill x11vnc'"
   echo
-  echo " Stop/restart ONE terminal (never run a bare 'wineserver -k', it kills all of them):"
+  echo " Stop/restart ONE terminal (all brokers share one wineprefix now -"
+  echo " never run a bare 'wineserver -k', it kills every broker's terminal):"
   echo "    su - ${MT5_USER}"
-  echo "    WINEPREFIX=\$HOME/mt5-<slug> wineserver -k; screen -S <slug> -X quit"
+  echo "    pkill -f '<path to that broker's terminal64.exe>'; screen -S <slug> -X quit"
   echo
   echo " Add a new terminal later:"
   echo "    SFTP the new .exe into ${MT5_LOCAL_DIR}"
@@ -1222,9 +1237,16 @@ uninstall_terminal(){
   fi
   local slug="${SLUGS[$((TIDX-1))]}"
   local wineprefix="${PREFIXES[$((TIDX-1))]}"
-  as_mt5 "WINEPREFIX=${wineprefix} wineserver -k" 2>/dev/null || true
+  local termpath="${PATHS[$((TIDX-1))]}"
+  as_mt5 "pkill -f '${termpath}'" 2>/dev/null || true
   as_mt5 "screen -S ${slug} -X quit" 2>/dev/null || true
-  su - "${MT5_USER}" -c "rm -rf '${wineprefix}'"
+  if [[ -n "${termpath}" ]]; then
+    local install_dir mql5_dir
+    install_dir=$(dirname "${termpath}")
+    mql5_dir=$(resolve_mql5_dir "${wineprefix}" "${install_dir}")
+    [[ -n "${mql5_dir}" ]] && su - "${MT5_USER}" -c "rm -rf '$(dirname "${mql5_dir}")'"
+    su - "${MT5_USER}" -c "rm -rf '${install_dir}'"
+  fi
   grep -v "^${slug}|" "${TERMINALS_FILE}" > "${TERMINALS_FILE}.tmp" 2>/dev/null || true
   mv "${TERMINALS_FILE}.tmp" "${TERMINALS_FILE}" 2>/dev/null || true
   rm -f "/home/${MT5_USER}/Desktop/mt5-${slug}.desktop" "/home/${MT5_USER}/.heysolo/bin/mt5-${slug}.sh" 2>/dev/null || true
