@@ -371,9 +371,25 @@ desktop_ensure_taskbar(){
 # ============================================================
 # START / REFRESH THE WHOLE DESKTOP LAYER (call after Xvfb+openbox)
 # ============================================================
+# A leftover "Desktop manager is not active." / zenity box from an earlier run
+# stays on the persistent X display forever. Sweep it before doing anything.
+desktop_close_stale_dialogs(){
+  as_mt5 "pkill -f 'pcmanfm --set-wallpaper'" >/dev/null 2>&1 || true
+  as_mt5 "pkill -x zenity" >/dev/null 2>&1 || true
+  if as_mt5 "command -v wmctrl" >/dev/null 2>&1; then
+    local ids
+    ids=$(as_mt5 "wmctrl -l 2>/dev/null | grep -iE ' Error$| Error ' | awk '{print \$1}'" 2>/dev/null || true)
+    local w
+    for w in ${ids}; do
+      as_mt5 "wmctrl -ic '${w}'" >/dev/null 2>&1 || true
+    done
+  fi
+}
+
 desktop_start(){
   desktop_prepare_dirs
   desktop_wait_for_x 30 || { warn "Desktop layer skipped - display :${DISPLAY_NUM} is not up."; return 0; }
+  desktop_close_stale_dialogs
   if command -v pcmanfm >/dev/null 2>&1; then
     if ! desktop_manager_active; then
       desktop_write_pcmanfm_conf
