@@ -5,16 +5,25 @@
 #
 # Usage:
 #   bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main/install_mt5.sh)
+#   (or just: sudo bash install_mt5.sh)
 #
 # What it automates:
 #   - system packages (Xvfb, x11vnc, screen, wine, openbox, i386 arch)
 #   - mt5user creation + VNC password
 #   - a persistent virtual display (Xvfb) + VNC server in a screen session
-#   - fetching the *.exe installers from the repo's MT5/ folder
-#     and letting you pick which ones to install
+#   - reading the *.exe installers from a LOCAL folder on this server
+#     (you upload them yourself via SFTP - nothing is downloaded from
+#     GitHub any more) and letting you pick which ones to install
 #   - a separate WINEPREFIX + a separate `screen` session per terminal
 #   - a Windows-like desktop (wallpaper from BG/, one clickable icon per
 #     terminal, taskbar) via the separate module: desktop_mt5.sh
+#
+# What it can NOT automate:
+#   Two-step flow:
+#     Step 1 (menu 1) -> packages + i386 + WINE + user + VNC + desktop.
+#                        It then PRINTS the folder where you must SFTP
+#                        your MT5 / prop-firm *.exe installers.
+#     Step 2 (menu 2) -> scans that folder and installs what you picked.
 #
 # What it can NOT automate:
 #   - clicking through each MT5 installer's setup wizard. MT5 has no
@@ -31,8 +40,7 @@ REPO_NAME="Heysolo"
 REPO_API="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents"
 REPO_RAW="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main"
 
-# --- repo layout (installers moved into MT5/, wallpaper lives in BG/) ---
-MT5_SUBDIR="MT5"
+# --- repo layout (only the wallpaper still comes from the repo) ---
 BG_SUBDIR="BG"
 WALLPAPER_NAME="heysolo-des.png"
 
@@ -40,6 +48,10 @@ MT5_USER="mt5user"
 DISPLAY_NUM="1"                 # -> DISPLAY=:1
 VNC_PORT=5900
 SCREEN_RES="1280x1024x24"
+
+# --- LOCAL installer folder: upload your *.exe files here over SFTP ---
+# Nothing is fetched from GitHub. Put e.g. combatcapitalmarkets5setup.exe here.
+MT5_LOCAL_DIR="/opt/heysolo/mt5"
 
 STATE_DIR="/etc/heysolo-mt5"
 TERMINALS_FILE="${STATE_DIR}/terminals.list"   # slug|exe_name|wineprefix|terminal_exe
@@ -154,7 +166,7 @@ show_banner(){
   title " | |  | | | |  ___) |   | |  __/ |  | | | | | || | | | | (_| | | / __\\"
   title " |_|  |_| |_| |____/    |_|\\___|_|  |_| |_| |_|/ |_| |_|\\__,_|_|_|___/"
   title "                                              |__/"
-  title "        MT5 / Prop-firm Terminals over VNC - Installer"
+  title "     MT5 / Prop-firm Terminals over VNC - Local Installer"
   header
   echo
 }
@@ -163,19 +175,101 @@ show_banner(){
 # SYSTEM PACKAGES
 # ============================================================
 install_system_packages(){
-  info "Installing system packages (Xvfb, VNC, wine, ...)..."
-  dpkg --add-architecture i386
-  apt-get update -y
+  export DEBIAN_FRONTEND=noninteractive
+
+  # --- exactly the README order: base pkgs -> i386 -> wine ---
+  info "Base packages: xvfb x11vnc screen wget openbox ..."
+  apt-get update -y || true
   apt-get install -y \
     xvfb x11vnc screen wget curl openbox \
-    software-properties-common \
+    software-properties-common ca-certificates gnupg \
     x11-utils jq python3 \
-    2>/dev/null || true
+    || true
+  ok "Base packages ready."
 
-  if ! command -v wine &>/dev/null; then
-    apt-get install -y wine wine32 wine64 2>/dev/null || apt-get install -y wine 2>/dev/null || true
+  info "Enabling the 32-bit architecture (i386) - wine needs it..."
+  dpkg --add-architecture i386
+  apt-get update -y || true
+  ok "i386 enabled."
+
+  install_wine
+}
+
+# ------------------------------------------------------------
+# WINE - installed in STEP 1, and we refuse to pretend it worked
+# ------------------------------------------------------------
+ensure_wine32(){
+  # 32-bit runtime: many prop-firm installers/terminals still need it
+  apt-get install -y wine32 >/dev/null 2>&1 \
+    || apt-get install -y wine32:i386 >/dev/null 2>&1 \
+    || apt-get install -y libwine:i386 >/dev/null 2>&1 \
+    || true
+}
+
+install_wine_winehq(){
+  # Fallback when the distro repo has no usable wine package.
+  local osid codename
+  # shellcheck source=/dev/null
+  . /etc/os-release 2>/dev/null || true
+  osid="${ID:-debian}"; codename="${VERSION_CODENAME:-}"
+  [[ -z "${codename}" ]] && return 1
+  info "Adding the WineHQ repository for ${osid}/${codename}..."
+  mkdir -p /etc/apt/keyrings
+  curl -fsSL https://dl.winehq.org/wine-builds/winehq.key \
+    -o /etc/apt/keyrings/winehq-archive.key || return 1
+  echo "deb [signed-by=/etc/apt/keyrings/winehq-archive.key] https://dl.winehq.org/wine-builds/${osid}/ ${codename} main" \
+    > /etc/apt/sources.list.d/winehq.list
+  apt-get update -y || true
+  apt-get install -y --install-recommends winehq-stable || \
+  apt-get install -y --install-recommends winehq-staging || return 1
+}
+
+install_wine(){
+  if command -v wine >/dev/null 2>&1; then
+    ok "wine is already installed: $(wine --version 2>/dev/null || echo '?')"
+    ensure_wine32
+    return 0
   fi
-  ok "System packages ready."
+
+  info "Installing wine - this is the big one, it can take several minutes..."
+  apt-get install -y wine wine64 wine32 \
+    || apt-get install -y wine wine64 \
+    || apt-get install -y wine \
+    || apt-get install -y wine-stable \
+    || true
+
+  if ! command -v wine >/dev/null 2>&1; then
+    warn "No usable wine package in this release's repos - trying WineHQ..."
+    install_wine_winehq || true
+    # WineHQ installs /opt/wine-stable/bin/wine, make plain `wine` work
+    if ! command -v wine >/dev/null 2>&1 && [[ -x /opt/wine-stable/bin/wine ]]; then
+      ln -sf /opt/wine-stable/bin/wine   /usr/local/bin/wine
+      ln -sf /opt/wine-stable/bin/wine64 /usr/local/bin/wine64 2>/dev/null || true
+      ln -sf /opt/wine-stable/bin/wineboot   /usr/local/bin/wineboot   2>/dev/null || true
+      ln -sf /opt/wine-stable/bin/wineserver /usr/local/bin/wineserver 2>/dev/null || true
+    fi
+  fi
+
+  if ! command -v wine >/dev/null 2>&1; then
+    err "wine could NOT be installed - Step 2 will not be able to install any terminal."
+    warn "Install it by hand, then re-run Step 1:"
+    warn "    dpkg --add-architecture i386 && apt update && apt -y install wine"
+    press_enter
+    return 1
+  fi
+
+  ensure_wine32
+  ok "wine installed: $(wine --version 2>/dev/null || echo '?')"
+
+  # First-ever wineboot as root's throwaway prefix is pointless; we prime
+  # mt5user's prefixes later in init_prefix(). Just prove wine can start.
+  info "Checking that wine actually runs..."
+  if wine --version >/dev/null 2>&1; then
+    ok "wine responds."
+  else
+    warn "wine is installed but did not respond cleanly - check it in VNC later."
+  fi
+  return 0
 }
 
 # ============================================================
@@ -319,184 +413,110 @@ print_terminal_list(){
 }
 
 # ============================================================
-# DISCOVER + SELECT INSTALLERS FROM THE REPO'S MT5/ FOLDER
+# LOCAL INSTALLER FOLDER (you fill it over SFTP)
 # ============================================================
-declare -a AVAILABLE_EXES=()
-declare -a AVAILABLE_SIZES=()
-declare -a SELECTED_EXES=()
-
-MIN_EXE_BYTES=100000          # anything smaller than ~100 KB is not an MT5 setup
-
-# Where YOU upload the real MT5 setup files over SFTP/SCP.
-# The first one is the primary path shown in every message.
-LOCAL_EXE_DIR="${LOCAL_EXE_DIR:-/root/MT5}"
-declare -a DROP_DIRS=("${LOCAL_EXE_DIR}" "/home/${MT5_USER}/installers")
-
-ensure_drop_dirs(){
-  mkdir -p "${LOCAL_EXE_DIR}" 2>/dev/null || true
-  chmod 755 "${LOCAL_EXE_DIR}" 2>/dev/null || true
+ensure_local_mt5_dir(){
+  mkdir -p "${MT5_LOCAL_DIR}"
   if id "${MT5_USER}" &>/dev/null; then
-    mkdir -p "/home/${MT5_USER}/installers" 2>/dev/null || true
-    chown "${MT5_USER}:${MT5_USER}" "/home/${MT5_USER}/installers" 2>/dev/null || true
+    chown -R "${MT5_USER}:${MT5_USER}" "${MT5_LOCAL_DIR}" 2>/dev/null || true
   fi
+  chmod 2775 "${MT5_LOCAL_DIR}" 2>/dev/null || chmod 775 "${MT5_LOCAL_DIR}" 2>/dev/null || true
 }
 
-# Full path of a locally uploaded installer, empty if it is not there.
-local_exe_path(){
-  local name="$1" dir
-  for dir in "${DROP_DIRS[@]}"; do
-    [[ -s "${dir}/${name}" ]] && { echo "${dir}/${name}"; return 0; }
-  done
-  echo ""
+server_ip(){
+  curl -fsSL ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}'
 }
 
-print_drop_instructions(){
-  local ip
-  ip=$(curl -fsSL ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
+print_upload_instructions(){
+  local ip; ip=$(server_ip)
   echo
   header
-  title "NOW UPLOAD YOUR MT5 INSTALLERS"
+  title "STEP 1 DONE  ->  NOW UPLOAD YOUR MT5 INSTALLERS"
   header
   echo
-  echo -e " Put every MT5 / prop-firm setup file (.exe) in this folder on THIS server:"
+  echo -e " Put every MT5 / prop-firm ${BOLD}.exe${NC} installer in this folder:"
   echo
-  echo -e "     ${BOLD}${LOCAL_EXE_DIR}/${NC}"
+  echo -e "     ${GREEN}${BOLD}${MT5_LOCAL_DIR}${NC}"
   echo
-  echo " With an SFTP client (FileZilla / WinSCP / Cyberduck):"
-  echo "     Host:     sftp://${ip}"
-  echo "     Port:     22"
-  echo "     User:     root      (the root password of this server)"
-  echo "     Remote:   ${LOCAL_EXE_DIR}"
+  echo " With any SFTP client (FileZilla / WinSCP), connect to:"
+  echo "     host: ${ip}     port: 22"
+  echo "     user: root                (or ${MT5_USER})"
+  echo "     remote path: ${MT5_LOCAL_DIR}"
   echo
   echo " Or from a terminal on your own computer:"
-  echo "     scp mt5setup.exe root@${ip}:${LOCAL_EXE_DIR}/"
-  echo "     scp *.exe        root@${ip}:${LOCAL_EXE_DIR}/"
+  echo "     sftp root@${ip}"
+  echo "     put /path/on/your/pc/YourTerminalSetup.exe ${MT5_LOCAL_DIR}/"
   echo
-  echo " Keep the real names, e.g. fundednex.exe, fusionmarkets5setup.exe."
-  echo " Each file must be a real installer (a few hundred KB or more) - a 2-byte"
-  echo " placeholder is rejected on purpose."
+  echo "     scp /path/on/your/pc/*.exe root@${ip}:${MT5_LOCAL_DIR}/"
   echo
-  echo -e " ${BOLD}Then come back and run this script again -> option 2) Install terminals${NC}"
-  echo " (that step downloads nothing: it takes the .exe files straight from that folder)"
+  echo -e " ${YELLOW}Only real Windows .exe installers work${NC} (the script checks the MZ"
+  echo " header, so a half-uploaded or wrong file is rejected instead of"
+  echo " burning a wine prefix)."
+  echo
+  echo -e " Then come back to this menu and choose ${BOLD}option 2${NC}"
+  echo " (\"Step 2 - Install MT5 terminals\") to install them."
+  header
+  echo
+}
+
+list_local_installers(){
+  ensure_local_mt5_dir
   echo
   header
+  title "INSTALLERS FOUND IN ${MT5_LOCAL_DIR}"
+  header
+  local found=0 f
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    found=1
+    printf "   %-40s %s\n" "$(basename "$f")" "$(du -h "$f" | cut -f1)"
+  done < <(find "${MT5_LOCAL_DIR}" -maxdepth 1 -type f -iname '*.exe' 2>/dev/null | sort)
+  if [[ $found -eq 0 ]]; then
+    warn "Empty - no *.exe uploaded yet."
+    print_upload_instructions
+  fi
+  echo
 }
 
-human_size(){
-  local b="${1:-0}"
-  if   (( b >= 1048576 )); then echo "$(( b / 1048576 )) MB"
-  elif (( b >= 1024 ));    then echo "$(( b / 1024 )) KB"
-  else echo "${b} B"; fi
-}
-
-# Is this a real PE installer of a sane size?
-is_real_exe(){
-  local f="$1"
-  [[ -s "$f" ]] || return 1
-  [[ "$(head -c2 "$f")" == "MZ" ]] || return 1
-  (( $(stat -c%s "$f") >= MIN_EXE_BYTES )) || return 1
-  return 0
-}
+# ============================================================
+# DISCOVER + SELECT INSTALLERS FROM THE LOCAL FOLDER
+# ============================================================
+declare -a AVAILABLE_EXES=()
+declare -a SELECTED_EXES=()
 
 fetch_available_installers(){
-  ensure_drop_dirs
-  AVAILABLE_EXES=(); AVAILABLE_SIZES=()
-
-  # ---- 1) whatever you uploaded yourself (this is the normal path now) ----
-  local dir lf base
-  shopt -s nullglob
-  for dir in "${DROP_DIRS[@]}"; do
-    [[ -d "$dir" ]] || continue
-    for lf in "$dir"/*.exe "$dir"/*.EXE; do
-      base=$(basename "$lf")
-      local dup=0 k
-      for k in "${!AVAILABLE_EXES[@]}"; do
-        [[ "${AVAILABLE_EXES[$k]}" == "$base" ]] && dup=1
-      done
-      (( dup )) && continue
-      AVAILABLE_EXES+=("$base"); AVAILABLE_SIZES+=("$(stat -c%s "$lf")")
-    done
-  done
-  shopt -u nullglob
-
-  if [[ ${#AVAILABLE_EXES[@]} -gt 0 ]]; then
-    ok "Found ${#AVAILABLE_EXES[@]} installer(s) you uploaded to ${LOCAL_EXE_DIR}/."
-  fi
-
-  # ---- 2) plus anything in the repo, as a convenience ----
-  info "Also checking ${REPO_NAME}/${MT5_SUBDIR}/ ..."
-  local json listing nm sz
-  json=$(curl -fsSL "${REPO_API}/${MT5_SUBDIR}" 2>/dev/null || true)
-  if [[ -n "$json" ]]; then
-    listing=$(echo "$json" | python3 -c '
-import json,sys
-try:
-    data = json.load(sys.stdin)
-    if isinstance(data, dict):
-        data = []
-    seen = set()
-    for item in data:
-        name = item.get("name","")
-        if name.lower().endswith(".exe") and name not in seen:
-            seen.add(name)
-            print("%s\t%s" % (name, item.get("size", 0)))
-except Exception:
-    pass
-' 2>/dev/null || true)
-    while IFS=$'\t' read -r nm sz; do
-      [[ -z "${nm:-}" ]] && continue
-      local dup=0 k
-      for k in "${!AVAILABLE_EXES[@]}"; do
-        [[ "${AVAILABLE_EXES[$k]}" == "$nm" ]] && dup=1
-      done
-      (( dup )) && continue
-      AVAILABLE_EXES+=("$nm"); AVAILABLE_SIZES+=("${sz:-0}")
-    done <<< "$listing"
-  else
-    warn "Could not read the repo listing (no network / private repo) - local files only."
-  fi
-
+  ensure_local_mt5_dir
+  info "Scanning ${MT5_LOCAL_DIR} for *.exe installers..."
+  mapfile -t AVAILABLE_EXES < <(find "${MT5_LOCAL_DIR}" -maxdepth 1 -type f -iname '*.exe' \
+                                  -printf '%f\n' 2>/dev/null | sort)
   if [[ ${#AVAILABLE_EXES[@]} -eq 0 ]]; then
-    err "No .exe installer found anywhere."
-    print_drop_instructions
+    err "No .exe files in ${MT5_LOCAL_DIR}."
+    print_upload_instructions
     return 1
   fi
+  ok "Found ${#AVAILABLE_EXES[@]} installer(s) in ${MT5_LOCAL_DIR}."
 }
 
 select_installers(){
   echo
   header
-  title "SELECT TERMINALS TO INSTALL   (from ${MT5_SUBDIR}/)"
+  title "SELECT TERMINALS TO INSTALL   (from ${MT5_LOCAL_DIR})"
   header
-  local i=1 st slug col wineprefix f sz src empty_count=0 usable=0
-  for idx in "${!AVAILABLE_EXES[@]}"; do
-    f="${AVAILABLE_EXES[$idx]}"
-    sz="${AVAILABLE_SIZES[$idx]:-0}"
+  local i=1 st slug col wineprefix
+  for f in "${AVAILABLE_EXES[@]}"; do
     slug=$(slugify "$f")
     wineprefix="/home/${MT5_USER}/mt5-${slug}"
-    if [[ -n "$(local_exe_path "$f")" ]]; then src="uploaded"; else src="repo"; fi
     if [[ -n "$(resolve_terminal_exe "${wineprefix}")" ]]; then
-      st="INSTALLED"; col="$GREEN"; usable=$((usable+1))
-    elif (( sz < MIN_EXE_BYTES )); then
-      st="EMPTY / PLACEHOLDER"; col="$RED"; empty_count=$((empty_count+1))
+      st="INSTALLED"; col="$GREEN"
     elif [[ -d "${wineprefix}" ]]; then
-      st="WIZARD UNFINISHED"; col="$YELLOW"; usable=$((usable+1))
+      st="WIZARD UNFINISHED"; col="$YELLOW"
     else
-      st="READY TO INSTALL"; col="$YELLOW"; usable=$((usable+1))
+      st="NOT INSTALLED"; col="$RED"
     fi
-    printf "  %2d) %-34s %9s  %-8s [%b%-19s%b]\n" "$i" "$f" "$(human_size "$sz")" "$src" "$col" "$st" "$NC"
+    printf "  %2d) %-34s [%b%-17s%b]\n" "$i" "$f" "$col" "$st" "$NC"
     i=$((i+1))
   done
   echo "   a) All"
-  if (( empty_count > 0 )); then
-    echo
-    warn "${empty_count} file(s) are placeholders (a few bytes) - they cannot be installed."
-    warn "Upload the real .exe over SFTP to ${LOCAL_EXE_DIR}/ and run this option again."
-  fi
-  if (( usable == 0 )); then
-    print_drop_instructions
-    return 1
-  fi
   echo
   read -rp "Enter numbers separated by commas (e.g. 1,3) or 'a' for all: " CHOICE
   SELECTED_EXES=()
@@ -515,25 +535,8 @@ select_installers(){
   if [[ ${#SELECTED_EXES[@]} -gt 0 ]]; then
     mapfile -t SELECTED_EXES < <(printf '%s\n' "${SELECTED_EXES[@]}" | awk '!seen[$0]++')
   fi
-  # never let a placeholder through - it only burns a wine prefix
-  if [[ ${#SELECTED_EXES[@]} -gt 0 ]]; then
-    local -a keep=()
-    local pick k
-    for pick in "${SELECTED_EXES[@]}"; do
-      local psz=0
-      for k in "${!AVAILABLE_EXES[@]}"; do
-        [[ "${AVAILABLE_EXES[$k]}" == "$pick" ]] && psz="${AVAILABLE_SIZES[$k]:-0}"
-      done
-      if (( psz < MIN_EXE_BYTES )) && [[ -z "$(local_exe_path "$pick")" ]]; then
-        warn "Skipping ${pick} - it is a $(human_size "$psz") placeholder, not an installer."
-      else
-        keep+=("$pick")
-      fi
-    done
-    SELECTED_EXES=("${keep[@]}")
-  fi
   if [[ ${#SELECTED_EXES[@]} -eq 0 ]]; then
-    warn "Nothing installable selected."
+    warn "Nothing selected."
     return 1
   fi
   ok "Selected: ${SELECTED_EXES[*]}"
@@ -552,60 +555,38 @@ install_selected(){
   start_display
   print_vnc_access
 
-  local exe slug wineprefix url dest_path termpath
+  local exe slug wineprefix src dest_path termpath
   for exe in "${SELECTED_EXES[@]}"; do
     slug=$(slugify "$exe")
     wineprefix="/home/${MT5_USER}/mt5-${slug}"
-    url="${REPO_RAW}/${MT5_SUBDIR}/${exe}"
+    src="${MT5_LOCAL_DIR}/${exe}"
 
     echo
     header
-    title "PREPARING: ${exe}"
+    title "PREPARING: ${exe}   (local file, no download)"
     header
     dest_path="/home/${MT5_USER}/${exe}"
-
-    local src_local; src_local="$(local_exe_path "${exe}")"
-    if [[ -n "${src_local}" ]]; then
-      info "Using your uploaded file: ${src_local}"
-      cp -f "${src_local}" "${dest_path}"
-      chown "${MT5_USER}:${MT5_USER}" "${dest_path}"
-    else
-      info "Downloading ${url} ..."
-      su - "${MT5_USER}" -c "curl -fL --retry 2 -o \"${dest_path}\" \"${url}\"" >/dev/null 2>&1 || true
-      [[ -s "${dest_path}" ]] || su - "${MT5_USER}" -c "wget -q -O \"${dest_path}\" \"${url}\"" || true
-    fi
-
-    if [[ ! -s "${dest_path}" ]]; then
-      err "Download failed: ${url}"
-      warn "Check that the repo is public and the path ${MT5_SUBDIR}/${exe} exists."
+    if [[ ! -s "${src}" ]]; then
+      err "Missing or empty: ${src} - upload it over SFTP first."
       continue
     fi
-
-    # Tell the three failure modes apart instead of one vague error.
-    local fsize; fsize=$(stat -c%s "${dest_path}")
-    if grep -qs 'git-lfs.github.com/spec' "${dest_path}"; then
-      err "${exe} is a Git-LFS pointer, not the binary."
-      warn "Either install git-lfs and push the real file, or drop the .exe in ${LOCAL_EXE_DIR}/."
-      rm -f "${dest_path}"; continue
-    fi
+    # Copy into mt5user's home so wine runs it with the right ownership.
+    info "Copying ${src} -> ${dest_path} ..."
+    cp -f "${src}" "${dest_path}"
+    chown "${MT5_USER}:${MT5_USER}" "${dest_path}"
+    chmod 755 "${dest_path}"
+    # A truncated upload or a renamed non-exe is "non-empty" but is not an
+    # installer - check for the MZ (PE) magic before wasting a wine prefix.
     if [[ "$(head -c2 "${dest_path}")" != "MZ" ]]; then
-      err "${exe} is not a Windows executable ($(human_size "$fsize"))."
-      warn "What actually came down: $(file -b "${dest_path}" 2>/dev/null | cut -c1-70)"
-      warn "Upload the real installer over SFTP to ${LOCAL_EXE_DIR}/ and run option 2 again."
-      rm -f "${dest_path}"; continue
+      err "${exe} is not a Windows executable (bad/incomplete upload) - skipped."
+      rm -f "${dest_path}"
+      continue
     fi
-    if (( fsize < MIN_EXE_BYTES )); then
-      err "${exe} is only $(human_size "$fsize") - too small to be an MT5 setup. Skipped."
-      rm -f "${dest_path}"; continue
-    fi
-    ok "Installer ready: ${dest_path} ($(human_size "$fsize"))."
+    ok "Ready: ${dest_path} ($(du -h "${dest_path}" | cut -f1))."
 
     init_prefix "${wineprefix}"
 
     # MetaQuotes-based installers accept /auto - try a real silent install first.
-    echo
-    warn "HEADS UP: MT5 has no official silent switch. If /auto does not work,"
-    warn "you WILL have to open VNC and click Next -> Next -> Install for ${exe}."
     info "Trying the silent install (/auto) for ${exe}..."
     as_wine "${wineprefix}" "cd ~ && wine './${exe}' /auto" >/dev/null 2>&1 || true
     as_wine "${wineprefix}" "wineserver -w" >/dev/null 2>&1 || true
@@ -734,24 +715,16 @@ toggle_vnc_viewing(){
 # ============================================================
 # ADD ONE MORE TERMINAL LATER
 # ============================================================
-# STAGE 2 - install the terminals from the .exe files you uploaded.
 add_terminal_later(){
   mkdir -p "${STATE_DIR}"; touch "${TERMINALS_FILE}"
-  ensure_drop_dirs
   if ! id "${MT5_USER}" &>/dev/null; then
-    err "${MT5_USER} does not exist yet - run option 1 (stage 1) first."
+    err "Run 'Step 1' first - user ${MT5_USER} / the desktop do not exist yet."
     press_enter; return
   fi
-  echo
-  header
-  title "STAGE 2 - INSTALL MT5 TERMINALS"
-  header
-  info "Reading your installers from ${LOCAL_EXE_DIR}/ ..."
   fetch_available_installers || { press_enter; return; }
   select_installers || { press_enter; return; }
   install_selected
   start_all_terminals
-  desktop_sync_icons
   press_enter
 }
 
@@ -793,8 +766,8 @@ show_final_guide(){
   echo "    WINEPREFIX=\$HOME/mt5-<slug> wineserver -k; screen -S <slug> -X quit"
   echo
   echo " Add a new terminal later:"
-  echo "    1) SFTP the .exe into ${LOCAL_EXE_DIR}/"
-  echo "    2) Re-run this script -> option 2 (Install terminals)"
+  echo "    SFTP the new .exe into ${MT5_LOCAL_DIR}"
+  echo "    then re-run this script -> 'Step 2 - Install MT5 terminals'"
   echo
   print_vnc_access
   header
@@ -803,28 +776,56 @@ show_final_guide(){
 # ============================================================
 # FULL INSTALL
 # ============================================================
-# STAGE 1 - everything except the terminals:
-# packages, mt5user, VNC password, virtual display, wallpaper/icons/taskbar.
-# It deliberately installs NO terminal: you upload your own .exe files over
-# SFTP first, then run option 2.
-full_install(){
+# ============================================================
+# STEP 1 - SERVER + DESKTOP ONLY (no MT5 yet)
+# ============================================================
+step1_prepare_server(){
   show_banner
   require_root
   install_system_packages
   setup_mt5_user
   setup_vnc_password
-  ensure_drop_dirs
-  desktop_install_packages
-  start_display                   # Xvfb + openbox + x11vnc (waits for X properly)
-  desktop_setup_all               # wallpaper + taskbar (no terminals yet, so no icons)
+  desktop_install_packages        # taskbar + icons + wallpaper deps, installed up-front
+  ensure_local_mt5_dir
+  start_display                   # Xvfb + VNC + openbox
+  desktop_setup_all               # wallpaper + taskbar (no terminal icons yet)
+  echo
   echo
   header
-  title "STAGE 1 DONE - BASE SYSTEM + VNC DESKTOP ARE READY"
+  title "STEP 1 SUMMARY"
   header
-  ok "mt5user, VNC, the virtual display and the desktop are all up."
-  info "No MT5 terminal is installed yet - that is stage 2, on purpose."
+  echo "   wine        : $(command -v wine >/dev/null 2>&1 && wine --version 2>/dev/null || echo 'NOT INSTALLED')"
+  echo "   i386 arch   : $(dpkg --print-foreign-architectures 2>/dev/null | tr '\n' ' ')"
+  echo "   mt5 user    : ${MT5_USER}"
+  echo "   display     : :${DISPLAY_NUM} (${SCREEN_RES})   VNC port ${VNC_PORT}"
+  echo "   upload dir  : ${MT5_LOCAL_DIR}"
+  header
+  ok "Step 1 finished: server, wine, VNC and the Windows-like desktop are ready."
   print_vnc_access
-  print_drop_instructions
+  print_upload_instructions
+  press_enter
+}
+
+# ============================================================
+# STEP 2 - INSTALL THE MT5 TERMINALS FROM THE LOCAL FOLDER
+# ============================================================
+step2_install_terminals(){
+  require_root
+  if ! id "${MT5_USER}" &>/dev/null; then
+    err "Run 'Step 1' first - user ${MT5_USER} does not exist yet."
+    press_enter; return
+  fi
+  if ! command -v wine >/dev/null 2>&1; then
+    err "wine is not installed - run 'Step 1' first (it installs wine)."
+    press_enter; return
+  fi
+  mkdir -p "${STATE_DIR}"; touch "${TERMINALS_FILE}"
+  fetch_available_installers || { press_enter; return; }
+  select_installers || { press_enter; return; }
+  install_selected
+  start_all_terminals
+  desktop_setup_all               # refresh wallpaper + icons for the new terminals
+  show_final_guide
   press_enter
 }
 
@@ -865,23 +866,25 @@ main_menu(){
   while true; do
     clear 2>/dev/null || true
     show_banner
-    echo -e " ${BOLD}1)${NC} Stage 1: base install (packages + user + VNC + desktop, NO terminals)"
-    echo -e " ${BOLD}2)${NC} Stage 2: install terminals from your uploaded .exe files (${LOCAL_EXE_DIR}/)"
+    echo -e " ${BOLD}1)${NC} Step 1 - Prepare server (packages + wine + user + VNC + Windows-like desktop)"
+    echo -e " ${BOLD}2)${NC} Step 2 - Install MT5 terminals from ${MT5_LOCAL_DIR}"
     echo -e " ${BOLD}3)${NC} Manage one terminal (start/stop/restart/status)"
     echo -e " ${BOLD}4)${NC} Turn VNC on/off"
     echo -e " ${BOLD}5)${NC} Remove a terminal"
     echo -e " ${BOLD}6)${NC} Guide / VNC access info"
+    echo -e " ${BOLD}7)${NC} Show the upload folder + what is already uploaded"
     echo -e " ${BOLD}0)${NC} Exit"
     echo
     header
     read -rp "Choice: " CH
     case "$CH" in
-      1) full_install ;;
-      2) require_root; add_terminal_later ;;
+      1) step1_prepare_server ;;
+      2) step2_install_terminals ;;
       3) require_root; manage_one_terminal ;;
       4) require_root; toggle_vnc_viewing ;;
       5) uninstall_terminal ;;
       6) show_final_guide; press_enter ;;
+      7) require_root; list_local_installers; print_upload_instructions; press_enter ;;
       0) echo "Goodbye!"; exit 0 ;;
       *) warn "Invalid."; sleep 1 ;;
     esac
