@@ -23,7 +23,6 @@ Select `1) Full Installation`. The installer will:
 6. Create and start the `heysolo-bot` systemd service.
 
 The systemd service runs the bot from `/opt/heysolo-bot` by default.
-
 After installation, verify the service is running:
 
 ```bash
@@ -40,20 +39,85 @@ install:
 bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main/install_mt5.sh)
 ```
 
-Select `1) Full Installation`. The installer will:
+Select `1) Full install`. The installer will:
 
-1. Install system dependencies (Xvfb, x11vnc, screen, wine, openbox).
+1. Install system dependencies (Xvfb, x11vnc, screen, wine, openbox) plus the
+   desktop packages (pcmanfm, feh, tint2, wmctrl, xdotool, zenity).
 2. Create the `mt5user` account and ask you to set a VNC password.
 3. Start a persistent virtual display + VNC server (its own `screen`
    session).
-4. Fetch the list of `.exe` installers currently in this repo and let you
-   pick which ones to install.
+4. Fetch the `.exe` installers from the repo's [`MT5/`](MT5) folder and let you
+   pick which ones to install (each one is shown as `INSTALLED` /
+   `NOT INSTALLED`).
 5. Download each selected installer into its own `WINEPREFIX` and its own
    `screen` session (you finish each setup wizard once, over VNC - MT5 has
    no official silent-install switch).
+6. Build the Windows-like desktop: wallpaper from [`BG/`](BG), one clickable
+   icon per terminal, and the taskbar - all handled by the separate
+   `desktop_mt5.sh` module.
 
 Re-run the script any time to add another terminal, or to start/stop/restart
-one, toggle VNC on/off, or remove one - it's all in the menu.
+one, toggle VNC on/off, or remove one - it's all in the menu. The terminal
+list shows each terminal's live state, e.g.
+`1) Combatcapitalmarkets MT5   (combatcapitalmarkets5setup.exe)  [ACTIVE]`.
+
+### Desktop module (`desktop_mt5.sh`)
+
+Everything about how the VNC desktop looks lives in `desktop_mt5.sh`, kept
+separate from the installer so desktop features can be added later without
+touching `install_mt5.sh`. The installer sources it automatically; you can also
+run it on its own:
+
+```bash
+sudo bash desktop_mt5.sh all        # packages + wallpaper + icons + start
+sudo bash desktop_mt5.sh wallpaper  # re-apply BG/heysolo-des.png
+sudo bash desktop_mt5.sh icons      # rebuild the desktop icons
+sudo bash desktop_mt5.sh taskbar    # repair the tint2 taskbar
+sudo bash desktop_mt5.sh restore    # find/restore a minimized window over SSH
+```
+
+On the desktop, each terminal has its own icon: double-click opens it, clicking
+it again while it runs asks whether to **Bring to front** or **Close terminal**
+- same feel as Windows.
+
+## Uninstall
+
+One script removes everything the two installers created - bot, MT5 terminals,
+wine prefixes, VNC desktop and every HeySolo config file:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main/uninstall.sh)
+```
+
+It opens a menu and first shows exactly what it found on the server:
+
+| Option | Removes |
+|---|---|
+| `1` | **Everything** - bot + MT5 terminals + desktop |
+| `2` | The Telegram bot only (service, install dir, venv, state file) |
+| `3` | The MT5 terminals + desktop only (screens, wine prefixes, `/etc/heysolo-mt5`) |
+| `4` | The desktop layer only (wallpaper, icons, taskbar - terminals stay installed) |
+| `5` | The `mt5user` account and its home directory |
+| `6` | The apt packages (wine, x11vnc, Xvfb, pcmanfm, tint2, ...) |
+
+Non-interactive use:
+
+```bash
+sudo bash uninstall.sh --all --yes                              # nuke everything
+sudo bash uninstall.sh --bot                                    # bot only
+sudo bash uninstall.sh --mt5                                    # terminals + desktop
+sudo bash uninstall.sh --desktop                                # desktop only
+sudo bash uninstall.sh --all --purge-user --purge-packages -y    # full clean slate
+```
+
+Flags: `--all`, `--bot`, `--mt5`, `--desktop`, `--keep-settings`,
+`--purge-user`, `--purge-packages`, `--yes/-y`, `--help`.
+
+Before deleting anything, the uninstaller copies `heysolo_settings.json`, the
+terminal registry (`terminals.list`) and the VNC password file to
+`/root/heysolo-backup-<timestamp>/`, so a reinstall can reuse them. Package
+purging is opt-in on purpose - skip it if anything else on the server uses
+wine, VNC or a desktop.
 
 ## Installation Path
 
@@ -131,7 +195,7 @@ folder from the network.
    ```
 6. Make the mount survive reboots by adding it to `/etc/fstab`:
    ```text
-   //192.168.1.50/Common  /mnt/mt5-common  cifs  credentials=/etc/mt5-share.credentials,uid=root,gid=root,iocharset=utf8,vers=3.0,_netdev  0  0
+   //192.168.1.50/Common /mnt/mt5-common cifs credentials=/etc/mt5-share.credentials,uid=root,gid=root,iocharset=utf8,vers=3.0,_netdev 0 0
    ```
 
 ### 3. Point the bot at the mounted folder
@@ -172,14 +236,11 @@ systemctl restart heysolo-bot
 ```bash
 sudo apt-get update
 sudo apt-get install -y python3 python3-venv python3-pip
-
 git clone https://github.com/Mahersaber2024/Heysolo.git
 cd Heysolo
-
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-
 # create heysolo_settings.json with your bot_token (see install.sh for the
 # expected format), then:
 python3 heysolo_bot.py
@@ -198,6 +259,19 @@ View logs:
 
 ```bash
 journalctl -u heysolo-bot -f
+```
+
+## Repository Layout
+
+```text
+BG/heysolo-des.png     desktop wallpaper used on the VNC desktop
+MT5/*.exe              MT5 / prop-firm terminal installers
+install.sh             Telegram bot installer
+install_mt5.sh         MT5 terminals installer (VNC)
+desktop_mt5.sh         desktop module: wallpaper, icons, taskbar
+uninstall.sh           removes the bot, the terminals and the desktop
+heysolo_bot.py         the bot itself
+heysolo_settings.py    settings handling
 ```
 
 ## Bot Commands
