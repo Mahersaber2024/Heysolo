@@ -81,6 +81,22 @@ STATE_DIR="/etc/heysolo-mt5"
 TERMINALS_FILE="${STATE_DIR}/terminals.list"   # slug|exe_name|wineprefix|terminal_exe
 VNC_PASS_FILE="/home/${MT5_USER}/.vnc/passwd"
 
+# --- ONE shared Common\Files folder for every terminal, like real Windows ---
+# On Windows all MT5 installs on the same machine share one single
+# %APPDATA%\MetaQuotes\Terminal\Common\Files folder. On Linux, because each
+# terminal gets its own separate WINEPREFIX (its own fake C: drive), each one
+# would otherwise get its OWN isolated Common folder - so the bot only ever
+# sees whichever single terminal it happens to be pointed at, and any other
+# terminal's EA is invisible to it. link_shared_common() fixes this by
+# replacing each prefix's Common folder with a symlink to one real folder
+# outside any prefix, so every terminal's EA writes to (and the bot always
+# watches) the exact same place - permanently, for terminals added later too.
+MT5_HOME="/home/${MT5_USER}"
+# deliberately NOT under .heysolo/ - that folder is wiped by a "desktop only"
+# uninstall (icons/wallpaper), and this bridge data must survive that.
+SHARED_COMMON="${MT5_HOME}/.heysolo-common"           # the real, permanent folder
+SHARED_COMMON_FILES="${SHARED_COMMON}/Files"          # what the bot's common_files_dir should point at
+
 DESKTOP_MODULE="desktop_mt5.sh"
 HEYSOLO_LIB_DIR="/opt/heysolo"
 # Real path of the desktop module on this server, so the final guide can print
@@ -255,6 +271,54 @@ init_prefix(){
   AS_WINE_TIMEOUT=300 as_wine "${wineprefix}" \
     "wineboot --init >/dev/null 2>&1; wineserver -w" || true
   purge_wine_shortcuts
+}
+
+# ============================================================
+# SHARED Common\Files (one real folder, symlinked into every prefix)
+#   Safe to call any time, any number of times:
+#   - not yet existing         -> just symlink it (MT5 creates content later)
+#   - already a real directory -> merge its files into the shared folder
+#                                  first (never lose an EA's existing data),
+#                                  then replace it with the symlink
+#   - already the right symlink -> no-op
+# ============================================================
+link_shared_common(){
+  local wineprefix="$1"
+  local terminal_dir="${wineprefix}/drive_c/users/${MT5_USER}/AppData/Roaming/MetaQuotes/Terminal"
+  local common_link="${terminal_dir}/Common"
+
+  mkdir -p "${SHARED_COMMON_FILES}"
+  mkdir -p "${terminal_dir}"
+
+  if [[ -L "${common_link}" ]]; then
+    # already a symlink - fix it only if it points somewhere wrong
+    if [[ "$(readlink -f "${common_link}" 2>/dev/null)" != "$(readlink -f "${SHARED_COMMON}" 2>/dev/null)" ]]; then
+      rm -f "${common_link}"
+      ln -s "${SHARED_COMMON}" "${common_link}"
+    fi
+  elif [[ -d "${common_link}" ]]; then
+    # a real folder already exists (terminal has run before) - keep its data,
+    # merge anything the shared folder doesn't already have, then replace it.
+    cp -an "${common_link}/." "${SHARED_COMMON}/" 2>/dev/null || true
+    rm -rf "${common_link}"
+    ln -s "${SHARED_COMMON}" "${common_link}"
+  else
+    ln -s "${SHARED_COMMON}" "${common_link}"
+  fi
+  chown -R "${MT5_USER}:${MT5_USER}" "${SHARED_COMMON}" "${terminal_dir}" 2>/dev/null || true
+}
+
+# One-shot repair for every terminal already registered - safe to call
+# repeatedly (e.g. every time Step 2 runs) so older installs self-heal too.
+link_shared_common_all(){
+  [[ -s "${TERMINALS_FILE}" ]] || return 0
+  local slug exe wineprefix termpath n=0
+  while IFS='|' read -r slug exe wineprefix termpath; do
+    [[ -z "${slug:-}" || -z "${wineprefix:-}" ]] && continue
+    link_shared_common "${wineprefix}"
+    n=$((n+1))
+  done < "${TERMINALS_FILE}"
+  (( n > 0 )) && ok "Common\\Files shared across ${n} terminal(s): ${SHARED_COMMON_FILES}"
 }
 
 # ============================================================
@@ -864,6 +928,7 @@ install_selected(){
     ok "Ready: ${dest_path} ($(du -h "${dest_path}" 2>/dev/null | cut -f1 || echo '?'))."
 
     init_prefix "${wineprefix}"
+    link_shared_common "${wineprefix}"
 
     # MetaQuotes-based installers accept /auto - try a real silent install first.
     info "Trying the silent install (/auto) for ${exe}..."
@@ -1108,6 +1173,10 @@ show_final_guide(){
   echo "    SFTP the new .exe into ${MT5_LOCAL_DIR}"
   echo "    then re-run this script -> 'Step 2 - Install MT5 terminals'"
   echo
+  echo " heysolo_bot Common\\Files path (set this ONCE in the bot's settings -"
+  echo " it is shared by every terminal, current and future, just like Windows):"
+  echo "    ${SHARED_COMMON_FILES}"
+  echo
   print_vnc_access
   header
 }
@@ -1180,6 +1249,9 @@ step2_install_terminals(){
   HEYSOLO_STAGE_WARNINGS=()
   guard "install terminals" install_selected
   guard "start terminals"   start_all_terminals
+  # self-heal: also re-link any OLDER terminal that predates the shared-Common
+  # fix, so a single bot always sees every terminal's EA, not just the newest.
+  guard "shared Common\\Files" link_shared_common_all
   export DESKTOP_ICONS=1          # now there ARE terminals -> real desktop icons
   guard "desktop layer"     desktop_setup_all
   if (( ${#HEYSOLO_STAGE_WARNINGS[@]} > 0 )); then
