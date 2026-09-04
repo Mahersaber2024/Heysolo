@@ -239,10 +239,8 @@ desktop_write_launcher(){
   local pretty; pretty="$(desktop_pretty_name "$slug")"
 
   if [[ -z "$termpath" ]]; then
-    termpath=$(find "${wineprefix}/drive_c" -maxdepth 5 -name 'terminal64.exe' 2>/dev/null | head -n1 || true)
-    if [[ -z "$termpath" ]]; then
-      termpath=$(find "${wineprefix}/drive_c" -maxdepth 5 -name 'terminal.exe' 2>/dev/null | head -n1 || true)
-    fi
+    warn "${slug}: no terminal64.exe on record - the prefix is shared by every broker now, so it can't be guessed. Re-run Step 2 for this broker."
+    return 1
   fi
 
   cat > "${launcher}" <<EOF
@@ -255,8 +253,8 @@ export WINEDLLOVERRIDES="winemenubuilder.exe=d"
 SLUG="${slug}"
 TERM_EXE="${termpath}"
 
-if [[ -z "\${TERM_EXE}" || ! -f "\${TERM_EXE}" ]]; then
-  TERM_EXE=\$(find "\${WINEPREFIX}/drive_c" -maxdepth 5 -name 'terminal64.exe' 2>/dev/null | head -n1 || true)
+if [[ -n "\${TERM_EXE}" && ! -f "\${TERM_EXE}" ]]; then
+  TERM_EXE=""
 fi
 if [[ -z "\${TERM_EXE}" ]]; then
   command -v zenity >/dev/null 2>&1 && zenity --error --text="terminal64.exe not found for \${SLUG}. Finish the setup wizard first."
@@ -289,7 +287,7 @@ raise(){
 }
 
 stop_it(){
-  WINEPREFIX="\${WINEPREFIX}" wineserver -k 2>/dev/null || true
+  pkill -f "\${TERM_EXE}" 2>/dev/null || true
   screen -S "\${SLUG}" -X quit 2>/dev/null || true
 }
 
@@ -364,7 +362,7 @@ desktop_sync_icons(){
   while IFS='|' read -r slug exe wineprefix termpath; do
     [[ -z "${slug:-}" ]] && continue
     if [[ -z "${termpath:-}" || ! -f "${termpath}" ]]; then
-      termpath=$(find "${wineprefix}/drive_c" -maxdepth 5 -name 'terminal64.exe' 2>/dev/null | head -n1 || true)
+      termpath=""
     fi
     if [[ -z "${termpath}" ]]; then
       warn "${slug}: no terminal64.exe - skipping its icon (finish the setup wizard first)."
