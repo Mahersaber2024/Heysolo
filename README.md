@@ -30,6 +30,31 @@ After installation, verify the service is running:
 systemctl status heysolo-bot
 ```
 
+## MT5 Terminals Installer (separate from the bot)
+
+If this server also needs to run one or more MT5 / prop-firm terminals over
+VNC, use the separate installer - it does **not** touch the Telegram bot
+install:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main/install_mt5.sh)
+```
+
+Select `1) Full Installation`. The installer will:
+
+1. Install system dependencies (Xvfb, x11vnc, screen, wine, openbox).
+2. Create the `mt5user` account and ask you to set a VNC password.
+3. Start a persistent virtual display + VNC server (its own `screen`
+   session).
+4. Fetch the list of `.exe` installers currently in this repo and let you
+   pick which ones to install.
+5. Download each selected installer into its own `WINEPREFIX` and its own
+   `screen` session (you finish each setup wizard once, over VNC - MT5 has
+   no official silent-install switch).
+
+Re-run the script any time to add another terminal, or to start/stop/restart
+one, toggle VNC on/off, or remove one - it's all in the menu.
+
 ## Installation Path
 
 The default installation path is:
