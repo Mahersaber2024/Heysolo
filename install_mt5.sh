@@ -1,52 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================
 # install_mt5.sh - MT5 / Prop-firm terminals installer over VNC
-# Separate from the heysolo_bot (Telegram) installer.
-#
-# Usage:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main/install_mt5.sh)
-#   (or just: sudo bash install_mt5.sh)
-#
-# What it automates:
-#   - system packages (Xvfb, x11vnc, screen, wine, openbox, i386 arch)
-#   - mt5user creation + VNC password
-#   - a persistent virtual display (Xvfb) + VNC server in a screen session
-#   - reading the *.exe installers from a LOCAL folder on this server
-#     (you upload them yourself via SFTP - nothing is downloaded from
-#     GitHub any more) and letting you pick which ones to install
-#   - a separate WINEPREFIX + a separate `screen` session per terminal
-#   - a Windows-like desktop (wallpaper from BG/, one clickable icon per
-#     terminal, taskbar) via the separate module: desktop_mt5.sh
-#
-# What it can NOT automate:
-#   Two-step flow:
-#     Step 1 (menu 1) -> packages + i386 + WINE + user + VNC + desktop.
-#                        It then PRINTS the folder where you must SFTP
-#                        your MT5 / prop-firm *.exe installers.
-#     Step 2 (menu 2) -> scans that folder and installs what you picked.
-#
-# What it can NOT automate:
-#   - clicking through each MT5 installer's setup wizard. MT5 has no
-#     official silent-install switch, so you connect once via VNC and
-#     click Next/Next/Install for each terminal you selected.
-# =============================================================
-# ------------------------------------------------------------
-# SAFETY HARNESS  (why -e and pipefail are gone)
-# ------------------------------------------------------------
-# The old header was `set -euo pipefail`. On a clean server that combination
-# killed the installer silently, mid-Step-1:
-#
-#   find ... -name '*.desktop' | grep -v '/mt5-' | xargs -r rm -f
-#
-# On a fresh box there are no .desktop files, so grep exits 1, pipefail turns
-# the whole pipeline into a failure, and -e ended the script with no message.
-# The user was dropped back at the root prompt without ever seeing the Step 1
-# summary, the upload folder or the VNC instructions - even though everything
-# had actually installed fine. Same class of bug for `tr ... | head -c 12`
-# and `find ... | head -n1` (head exits early -> SIGPIPE -> 141 -> pipefail).
-#
-# An unattended installer must never die quietly. Errors are reported and the
-# run keeps going; genuinely fatal cases call `die` on purpose.
+
 set -uo pipefail
 set -E
 
@@ -76,26 +31,11 @@ SCREEN_RES="1280x1024x24"
 # --- LOCAL installer folder: upload your *.exe files here over SFTP ---
 # Nothing is fetched from GitHub. Put e.g. combatcapitalmarkets5setup.exe here.
 MT5_LOCAL_DIR="/opt/heysolo/mt5"
+MQL5_LOCAL_DIR="/opt/heysolo/mt5-mql5"
 
 STATE_DIR="/etc/heysolo-mt5"
 TERMINALS_FILE="${STATE_DIR}/terminals.list"   # slug|exe_name|wineprefix|terminal_exe
 VNC_PASS_FILE="/home/${MT5_USER}/.vnc/passwd"
-
-# --- ONE shared Common\Files folder for every terminal, like real Windows ---
-# On Windows all MT5 installs on the same machine share one single
-# %APPDATA%\MetaQuotes\Terminal\Common\Files folder. On Linux, because each
-# terminal gets its own separate WINEPREFIX (its own fake C: drive), each one
-# would otherwise get its OWN isolated Common folder - so the bot only ever
-# sees whichever single terminal it happens to be pointed at, and any other
-# terminal's EA is invisible to it. link_shared_common() fixes this by
-# replacing each prefix's Common folder with a symlink to one real folder
-# outside any prefix, so every terminal's EA writes to (and the bot always
-# watches) the exact same place - permanently, for terminals added later too.
-MT5_HOME="/home/${MT5_USER}"
-# deliberately NOT under .heysolo/ - that folder is wiped by a "desktop only"
-# uninstall (icons/wallpaper), and this bridge data must survive that.
-SHARED_COMMON="${MT5_HOME}/.heysolo-common"           # the real, permanent folder
-SHARED_COMMON_FILES="${SHARED_COMMON}/Files"          # what the bot's common_files_dir should point at
 
 DESKTOP_MODULE="desktop_mt5.sh"
 HEYSOLO_LIB_DIR="/opt/heysolo"
@@ -136,11 +76,6 @@ require_root(){
 
 # ============================================================
 # ERROR REPORTING  (nothing may ever fail silently again)
-# ============================================================
-# Everything printed is also appended to ${HEYSOLO_LOG} so a user who hits a
-# problem has one file to send instead of a screenshot of half a terminal.
-# NOTE the redirection order: `2>/dev/null` must come BEFORE `>> file`,
-# otherwise bash prints "Permission denied" for the failed redirect itself.
 log_line(){ printf '%s %s\n' "$(date '+%F %T' 2>/dev/null)" "$1" 2>/dev/null >> "${HEYSOLO_LOG}" || true; }
 
 start_logging(){
@@ -162,8 +97,6 @@ die(){
   exit "${2:-1}"
 }
 
-# Run a stage. If it fails, say so loudly and carry on, so the summary,
-# the upload folder and the VNC details are always printed at the end.
 declare -a HEYSOLO_STAGE_WARNINGS=()
 guard(){                          # guard <label> <command...>
   local label="$1"; shift
@@ -202,10 +135,6 @@ trap _on_exit EXIT
 
 start_logging
 
-# Run a command as mt5user with the virtual display exported.
-# runuser + setsid + timeout instead of `su -`: a bare `su -` opens a PAM /
-# systemd-logind session and can hang forever (very likely right after
-# unattended-upgrades restarts systemd-logind). Nothing here may block.
 _as_user(){                      # _as_user <seconds> <command string>
   local secs="$1" cmd="$2"
   if command -v runuser >/dev/null 2>&1; then
@@ -221,24 +150,12 @@ as_mt5(){
   _as_user "${AS_MT5_TIMEOUT:-120}" "export DISPLAY=:${DISPLAY_NUM}; $1"
 }
 
-# ============================================================
-# WINE HYGIENE
-#   winemenubuilder is what dumps Notepad / WordPad / winecfg /
-#   "Wine Uninstaller" launchers (the little notepad-with-a-pencil icons)
-#   onto the desktop and into the menus. We never want them.
-# ============================================================
-# winemenubuilder = the junk launchers. mscoree/mshtml = the "install
-# wine-mono / wine-gecko?" popups that otherwise sit there waiting for a
-# click nobody can give from SSH. All three are disabled, always.
 WINE_NO_MENU="WINEDLLOVERRIDES=winemenubuilder.exe,mscoree,mshtml=d WINEDEBUG=-all"
 
 # Fully non-interactive step 1: no wizard, no dialog, no keypress.
 NONINTERACTIVE="${NONINTERACTIVE:-0}"
 
 as_wine(){
-  # $1 = WINEPREFIX, $2 = command to run as mt5user
-  # Wizards can legitimately take a while, so this one gets a long leash
-  # (default 30 min) but is still never truly unbounded.
   _as_user "${AS_WINE_TIMEOUT:-1800}" \
     "export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX='$1'; $2"
 }
@@ -246,9 +163,6 @@ as_wine(){
 # Delete every launcher wine created by itself, keep our own mt5-*.desktop
 purge_wine_shortcuts(){
   local home="/home/${MT5_USER}" d
-  # No pipe, no grep: on a fresh server there is nothing to delete, and an
-  # empty result must not look like an error. This single line is what used
-  # to abort the whole Step 1.
   for d in "${home}/Desktop" "${home}/.local/share/applications" \
            "${home}/.gnome2/vfolders"; do
     [[ -d "$d" ]] || continue
@@ -259,10 +173,6 @@ purge_wine_shortcuts(){
   find "${home}/.local/share/desktop-directories" -name '*wine*' -delete 2>/dev/null || true
   find "${home}/.local/share/icons" -path '*hicolor*' -name '*wine*' -delete 2>/dev/null || true
 }
-
-# First boot of a fresh prefix. Skipping this is why the wizard died with
-# "ShellExecuteEx failed: File not found" / "Failed to open RpcSs service":
-# wine was still booting when the .exe was handed to it.
 init_prefix(){
   local wineprefix="$1"
   info "Preparing the wine prefix (first boot, this takes a few seconds)..."
@@ -271,54 +181,6 @@ init_prefix(){
   AS_WINE_TIMEOUT=300 as_wine "${wineprefix}" \
     "wineboot --init >/dev/null 2>&1; wineserver -w" || true
   purge_wine_shortcuts
-}
-
-# ============================================================
-# SHARED Common\Files (one real folder, symlinked into every prefix)
-#   Safe to call any time, any number of times:
-#   - not yet existing         -> just symlink it (MT5 creates content later)
-#   - already a real directory -> merge its files into the shared folder
-#                                  first (never lose an EA's existing data),
-#                                  then replace it with the symlink
-#   - already the right symlink -> no-op
-# ============================================================
-link_shared_common(){
-  local wineprefix="$1"
-  local terminal_dir="${wineprefix}/drive_c/users/${MT5_USER}/AppData/Roaming/MetaQuotes/Terminal"
-  local common_link="${terminal_dir}/Common"
-
-  mkdir -p "${SHARED_COMMON_FILES}"
-  mkdir -p "${terminal_dir}"
-
-  if [[ -L "${common_link}" ]]; then
-    # already a symlink - fix it only if it points somewhere wrong
-    if [[ "$(readlink -f "${common_link}" 2>/dev/null)" != "$(readlink -f "${SHARED_COMMON}" 2>/dev/null)" ]]; then
-      rm -f "${common_link}"
-      ln -s "${SHARED_COMMON}" "${common_link}"
-    fi
-  elif [[ -d "${common_link}" ]]; then
-    # a real folder already exists (terminal has run before) - keep its data,
-    # merge anything the shared folder doesn't already have, then replace it.
-    cp -an "${common_link}/." "${SHARED_COMMON}/" 2>/dev/null || true
-    rm -rf "${common_link}"
-    ln -s "${SHARED_COMMON}" "${common_link}"
-  else
-    ln -s "${SHARED_COMMON}" "${common_link}"
-  fi
-  chown -R "${MT5_USER}:${MT5_USER}" "${SHARED_COMMON}" "${terminal_dir}" 2>/dev/null || true
-}
-
-# One-shot repair for every terminal already registered - safe to call
-# repeatedly (e.g. every time Step 2 runs) so older installs self-heal too.
-link_shared_common_all(){
-  [[ -s "${TERMINALS_FILE}" ]] || return 0
-  local slug exe wineprefix termpath n=0
-  while IFS='|' read -r slug exe wineprefix termpath; do
-    [[ -z "${slug:-}" || -z "${wineprefix:-}" ]] && continue
-    link_shared_common "${wineprefix}"
-    n=$((n+1))
-  done < "${TERMINALS_FILE}"
-  (( n > 0 )) && ok "Common\\Files shared across ${n} terminal(s): ${SHARED_COMMON_FILES}"
 }
 
 # ============================================================
@@ -665,7 +527,7 @@ start_display(){
     for i in \$(seq 1 30); do xdpyinfo >/dev/null 2>&1 && break; sleep 1; done;
     openbox >/dev/null 2>&1 &
     sleep 1;
-    x11vnc -display :${DISPLAY_NUM} -forever -shared -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg;
+    x11vnc -display :${DISPLAY_NUM} -forever -shared -noprimary -nosetprimary -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg;
     sleep infinity'"
   # wait for X itself instead of hoping 3 seconds was enough
   info "Waiting for the display to come up (up to 40s)..."
@@ -764,6 +626,72 @@ ensure_local_mt5_dir(){
     chown -R "${MT5_USER}:${MT5_USER}" "${MT5_LOCAL_DIR}" 2>/dev/null || true
   fi
   chmod 2775 "${MT5_LOCAL_DIR}" 2>/dev/null || chmod 775 "${MT5_LOCAL_DIR}" 2>/dev/null || true
+}
+
+ensure_mql5_local_dir(){
+  mkdir -p "${MQL5_LOCAL_DIR}"/{Experts,Include,Indicators,set,Templates}
+  if id "${MT5_USER}" &>/dev/null; then
+    chown -R "${MT5_USER}:${MT5_USER}" "${MQL5_LOCAL_DIR}" 2>/dev/null || true
+  fi
+  chmod -R 2775 "${MQL5_LOCAL_DIR}" 2>/dev/null || true
+}
+
+# Each MT5 install creates its own MQL5 data folder under
+#   <wineprefix>/drive_c/users/<user>/AppData/Roaming/MetaQuotes/Terminal/<hash>/MQL5
+# The <hash> is only known after the terminal has actually run once, so this
+# is called after start_terminal / after a successful first launch, not
+# right after the installer wizard finishes.
+resolve_mql5_dir(){
+  local wineprefix="$1"
+  find "${wineprefix}/drive_c/users" -maxdepth 6 -type d -iname 'MQL5' 2>/dev/null | head -n1
+}
+
+# Copies the shared Experts/Include/Indicators/set/Templates folders into
+# this terminal's own MQL5 folder. "set" -> MQL5/Presets (MT5's own name for
+# .set files) and "Templates" -> MQL5/Profiles/Templates (chart templates) -
+# both official MT5 locations, so the files show up in the right menu inside
+# the terminal without the user moving anything by hand.
+sync_mql5_assets(){
+  local slug="$1" wineprefix="$2"
+  ensure_mql5_local_dir
+  local mql5_dir
+  mql5_dir=$(resolve_mql5_dir "${wineprefix}")
+  if [[ -z "${mql5_dir}" ]]; then
+    warn "${slug}: MQL5 data folder not found yet - start the terminal once, then re-run this from the menu."
+    return 1
+  fi
+  local pairs=(
+    "Experts:${mql5_dir}/Experts"
+    "Include:${mql5_dir}/Include"
+    "Indicators:${mql5_dir}/Indicators"
+    "set:${mql5_dir}/Presets"
+    "Templates:${mql5_dir}/Profiles/Templates"
+  )
+  local pair src_name dest copied=0
+  for pair in "${pairs[@]}"; do
+    src_name="${pair%%:*}"; dest="${pair#*:}"
+    local src="${MQL5_LOCAL_DIR}/${src_name}"
+    [[ -d "${src}" ]] || continue
+    find "${src}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q . || continue
+    mkdir -p "${dest}"
+    cp -rf "${src}/." "${dest}/" 2>/dev/null && copied=$((copied+1))
+  done
+  su - "${MT5_USER}" -c "true" >/dev/null 2>&1 || true
+  chown -R "${MT5_USER}:${MT5_USER}" "${mql5_dir}" 2>/dev/null || true
+  if (( copied > 0 )); then
+    ok "${slug}: MQL5 assets copied into ${mql5_dir} (${copied} folder(s))."
+  else
+    info "${slug}: no files in ${MQL5_LOCAL_DIR} yet - nothing to copy."
+  fi
+}
+
+sync_mql5_assets_all(){
+  [[ -s "${TERMINALS_FILE}" ]] || return 0
+  local slug exe wineprefix termpath
+  while IFS='|' read -r slug exe wineprefix termpath; do
+    [[ -z "${slug:-}" ]] && continue
+    sync_mql5_assets "${slug}" "${wineprefix}" || true
+  done < "${TERMINALS_FILE}"
 }
 
 server_ip(){
@@ -928,7 +856,6 @@ install_selected(){
     ok "Ready: ${dest_path} ($(du -h "${dest_path}" 2>/dev/null | cut -f1 || echo '?'))."
 
     init_prefix "${wineprefix}"
-    link_shared_common "${wineprefix}"
 
     # MetaQuotes-based installers accept /auto - try a real silent install first.
     info "Trying the silent install (/auto) for ${exe}..."
@@ -972,9 +899,17 @@ start_terminal(){
     warn "${slug}: terminal64.exe not found (was the wizard completed?)."
     return 1
   fi
+  # Each terminal gets its own wine virtual desktop (own isolated top-level
+  # window) instead of running "managed" directly on the shared display.
+  # Two+ terminals each running their own wineserver but sharing one X
+  # display can end up fighting over the pointer/keyboard grab - one wine
+  # window grabs it (e.g. on a chart click) and never cleanly releases it
+  # when you switch to the OTHER terminal, so VNC keeps repainting (prices
+  # still move) but clicks stop reaching anything. /desktop= confines each
+  # terminal's grabs to its own virtual screen so they can no longer collide.
   as_mt5 "screen -dmS ${slug} bash -c '
     export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
-    wine \"${termpath}\"'"
+    wine explorer /desktop=${slug},${SCREEN_RES%x*} \"${termpath}\"'"
 }
 
 start_all_terminals(){
@@ -1051,7 +986,7 @@ toggle_vnc_viewing(){
   read -rp "Choice: " V || V=""
   case "$V" in
     1)
-      as_mt5 "x11vnc -display :${DISPLAY_NUM} -forever -shared -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg"
+      as_mt5 "x11vnc -display :${DISPLAY_NUM} -forever -shared -noprimary -nosetprimary -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg"
       ok "VNC turned on."
       # x11vnc only re-exports the existing X display - it never repairs pcmanfm
       # (icons), tint2 (taskbar) or autocutsel (clipboard) if any of them died
@@ -1162,7 +1097,7 @@ show_final_guide(){
   report_desktop_icon_health "${desk_cmd}"
   echo
   echo " Turn VNC on/off (to watch charts):"
-  echo "    su - ${MT5_USER} -c \"x11vnc -display :${DISPLAY_NUM} -forever -shared -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg\""
+  echo "    su - ${MT5_USER} -c \"x11vnc -display :${DISPLAY_NUM} -forever -shared -noprimary -nosetprimary -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg\""
   echo "    su - ${MT5_USER} -c 'pkill x11vnc'"
   echo
   echo " Stop/restart ONE terminal (never run a bare 'wineserver -k', it kills all of them):"
@@ -1173,9 +1108,9 @@ show_final_guide(){
   echo "    SFTP the new .exe into ${MT5_LOCAL_DIR}"
   echo "    then re-run this script -> 'Step 2 - Install MT5 terminals'"
   echo
-  echo " heysolo_bot Common\\Files path (set this ONCE in the bot's settings -"
-  echo " it is shared by every terminal, current and future, just like Windows):"
-  echo "    ${SHARED_COMMON_FILES}"
+  echo " Push Experts/Include/Indicators/set/Templates into EVERY terminal:"
+  echo "    SFTP your files into the matching subfolder of ${MQL5_LOCAL_DIR}"
+  echo "    then run this script -> menu option 9 (\"Sync MQL5 assets\")"
   echo
   print_vnc_access
   header
@@ -1249,9 +1184,10 @@ step2_install_terminals(){
   HEYSOLO_STAGE_WARNINGS=()
   guard "install terminals" install_selected
   guard "start terminals"   start_all_terminals
-  # self-heal: also re-link any OLDER terminal that predates the shared-Common
-  # fix, so a single bot always sees every terminal's EA, not just the newest.
-  guard "shared Common\\Files" link_shared_common_all
+  # give freshly-started terminals a moment to create their MQL5 folder
+  # before we try to drop files into it
+  sleep 6
+  guard "MQL5 assets"       sync_mql5_assets_all
   export DESKTOP_ICONS=1          # now there ARE terminals -> real desktop icons
   guard "desktop layer"     desktop_setup_all
   if (( ${#HEYSOLO_STAGE_WARNINGS[@]} > 0 )); then
@@ -1306,6 +1242,7 @@ main_menu(){
     echo -e " ${BOLD}6)${NC} Guide / VNC access info"
     echo -e " ${BOLD}7)${NC} Show the upload folder + what is already uploaded"
     echo -e " ${BOLD}8)${NC} Doctor - is the display/desktop actually alive?"
+    echo -e " ${BOLD}9)${NC} Sync MQL5 assets (Experts/Include/Indicators/set/Templates) into all terminals"
     echo -e " ${BOLD}0)${NC} Exit"
     echo
     header
@@ -1329,20 +1266,26 @@ main_menu(){
            warn "${DESKTOP_MODULE} is missing."; fi
          as_mt5 "screen -ls" || true
          press_enter ;;
+      9) require_root
+         ensure_mql5_local_dir
+         echo
+         header
+         title "SHARED MQL5 ASSETS FOLDER: ${MQL5_LOCAL_DIR}"
+         header
+         echo " Upload files (SFTP) into these subfolders, then re-run this option:"
+         echo "   ${MQL5_LOCAL_DIR}/Experts     -> MQL5/Experts"
+         echo "   ${MQL5_LOCAL_DIR}/Include     -> MQL5/Include"
+         echo "   ${MQL5_LOCAL_DIR}/Indicators  -> MQL5/Indicators"
+         echo "   ${MQL5_LOCAL_DIR}/set         -> MQL5/Presets"
+         echo "   ${MQL5_LOCAL_DIR}/Templates   -> MQL5/Profiles/Templates"
+         header
+         sync_mql5_assets_all
+         press_enter ;;
       0) echo "Goodbye!"; HEYSOLO_CLEAN_EXIT=1; exit 0 ;;
       *) warn "Invalid."; sleep 1 ;;
     esac
   done
 }
-
-# ============================================================
-# ENTRY POINT
-#   bash install_mt5.sh              -> interactive menu (as before)
-#   bash install_mt5.sh step1        -> Step 1 only, no menu
-#   bash install_mt5.sh step2        -> Step 2 only
-#   bash install_mt5.sh doctor       -> health check
-#   NONINTERACTIVE=1 ... step1       -> zero prompts (auto VNC password)
-# ============================================================
 case "${1:-menu}" in
   step1)  require_root; NONINTERACTIVE=1 step1_prepare_server; HEYSOLO_CLEAN_EXIT=1 ;;
   step2)  require_root; step2_install_terminals;               HEYSOLO_CLEAN_EXIT=1 ;;
