@@ -350,13 +350,47 @@ ensure_wine32(){
     || true
 }
 
-install_wine_winehq(){
-  # Fallback when the distro repo has no usable wine package.
+# ============================================================
+# WINE VERSION GATE
+#   MT5 itself refuses to work properly below Wine 10:
+#     "unstable and unsupported Wine 9.0 ..., please upgrade to Wine 10.0"
+#   On Wine 9 the terminal starts and draws charts, but the login to a broker
+#   account fails (its network/TLS layer is what breaks), which looks like a
+#   broker problem and is not. So: WineHQ 10.x is installed on purpose, and an
+#   existing wine older than 10 is upgraded instead of being accepted.
+# ============================================================
+WINE_MIN_MAJOR=10
+
+wine_major(){
+  local v
+  v=$(wine --version 2>/dev/null | head -n1 | sed 's/^wine-//' || true)
+  v="${v%%.*}"
+  [[ "${v}" =~ ^[0-9]+$ ]] && echo "${v}" || echo 0
+}
+
+wine_is_recent_enough(){
+  (( $(wine_major) >= WINE_MIN_MAJOR ))
+}
+
+# Add WineHQ's own repository - the only source that carries current Wine.
+# The distro package is stuck on Wine 9 on today's Ubuntu/Debian, and MT5
+# cannot log in to a broker account on Wine 9, so this is not optional.
+add_winehq_repo(){
+  [[ "${WINEHQ_REPO_READY:-0}" == "1" ]] && return 0
   local osid codename
   # shellcheck source=/dev/null
   . /etc/os-release 2>/dev/null || true
   osid="${ID:-debian}"; codename="${VERSION_CODENAME:-}"
-  [[ -z "${codename}" ]] && return 1
+  # Ubuntu derivatives (Mint, Pop!_OS, ...) must use the Ubuntu codename.
+  if [[ "${osid}" != "ubuntu" && "${osid}" != "debian" ]]; then
+    if [[ "${ID_LIKE:-}" == *ubuntu* ]]; then
+      osid="ubuntu"; codename="${UBUNTU_CODENAME:-${codename}}"
+    elif [[ "${ID_LIKE:-}" == *debian* ]]; then
+      osid="debian"
+    fi
+  fi
+  [[ -z "${codename}" ]] && { warn "Could not detect the distro codename - skipping the WineHQ repo."; return 1; }
+
   info "Adding the WineHQ repository for ${osid}/${codename}..."
   mkdir -p /etc/apt/keyrings
   curl -fsSL https://dl.winehq.org/wine-builds/winehq.key \
@@ -364,35 +398,81 @@ install_wine_winehq(){
   echo "deb [signed-by=/etc/apt/keyrings/winehq-archive.key] https://dl.winehq.org/wine-builds/${osid}/ ${codename} main" \
     > /etc/apt/sources.list.d/winehq.list
   apt-get update -y || true
-  apt-get install -y --install-recommends winehq-stable || \
-  apt-get install -y --install-recommends winehq-staging || return 1
+  WINEHQ_REPO_READY=1
+  return 0
+}
+
+# Newest first: devel > staging > stable. We stop at the first branch that
+# actually gives us Wine >= WINE_MIN_MAJOR, so the server always ends up on a
+# current Wine instead of whatever ancient build the distro ships.
+install_wine_winehq(){
+  add_winehq_repo || return 1
+  local branch avail
+  for branch in winehq-devel winehq-staging winehq-stable; do
+    avail=$(apt-cache policy "${branch}" 2>/dev/null | awk '/Candidate:/{print $2}')
+    [[ -z "${avail}" || "${avail}" == "(none)" ]] && continue
+    info "WineHQ ${branch} offers ${avail} - installing it..."
+    if apt-get install -y --install-recommends "${branch}"; then
+      link_winehq_binaries
+      if wine_is_recent_enough; then
+        ok "wine $(wine --version 2>/dev/null) installed from ${branch}."
+        return 0
+      fi
+      warn "${branch} gave $(wine --version 2>/dev/null || echo '?') - still below ${WINE_MIN_MAJOR}, trying the next branch."
+    else
+      warn "${branch} failed to install - trying the next branch."
+    fi
+  done
+  link_winehq_binaries
+  wine_is_recent_enough && return 0
+  return 1
+}
+
+# WineHQ installs into /opt/wine-stable, which is not on PATH.
+link_winehq_binaries(){
+  local d
+  for d in /opt/wine-stable/bin /opt/wine-staging/bin /opt/wine-devel/bin; do
+    [[ -x "${d}/wine" ]] || continue
+    local b
+    for b in wine wine64 wineboot wineserver winecfg wineserver; do
+      [[ -x "${d}/${b}" ]] && ln -sf "${d}/${b}" "/usr/local/bin/${b}" 2>/dev/null || true
+    done
+    hash -r 2>/dev/null || true
+    return 0
+  done
+  return 0
 }
 
 install_wine(){
-  if command -v wine >/dev/null 2>&1; then
-    ok "wine is already installed: $(wine --version 2>/dev/null || echo '?')"
+  export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
+  link_winehq_binaries
+
+  if command -v wine >/dev/null 2>&1 && wine_is_recent_enough; then
+    ok "wine is already installed and recent enough: $(wine --version 2>/dev/null || echo '?')"
     ensure_wine32
     return 0
   fi
 
-  info "Installing wine - this is the big one, it can take several minutes..."
-  export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
-  apt-get install "${APT_Q[@]}" wine wine64 wine32 \
-    || apt-get install "${APT_Q[@]}" wine wine64 \
-    || apt-get install "${APT_Q[@]}" wine \
-    || apt-get install "${APT_Q[@]}" wine-stable \
-    || true
+  if command -v wine >/dev/null 2>&1; then
+    warn "wine $(wine --version 2>/dev/null || echo '?') is too old for MT5 (needs ${WINE_MIN_MAJOR}.0+)."
+    warn "On this version the terminal opens but ACCOUNT LOGIN fails - upgrading via WineHQ."
+  else
+    info "Installing wine - this is the big one, it can take several minutes..."
+  fi
 
-  if ! command -v wine >/dev/null 2>&1; then
-    warn "No usable wine package in this release's repos - trying WineHQ..."
-    install_wine_winehq || true
-    # WineHQ installs /opt/wine-stable/bin/wine, make plain `wine` work
-    if ! command -v wine >/dev/null 2>&1 && [[ -x /opt/wine-stable/bin/wine ]]; then
-      ln -sf /opt/wine-stable/bin/wine   /usr/local/bin/wine
-      ln -sf /opt/wine-stable/bin/wine64 /usr/local/bin/wine64 2>/dev/null || true
-      ln -sf /opt/wine-stable/bin/wineboot   /usr/local/bin/wineboot   2>/dev/null || true
-      ln -sf /opt/wine-stable/bin/wineserver /usr/local/bin/wineserver 2>/dev/null || true
-    fi
+  # WineHQ FIRST: the distro package is Wine 9 on current Ubuntu/Debian and
+  # MT5 cannot log in with it.
+  install_wine_winehq || true
+  link_winehq_binaries
+
+  if ! command -v wine >/dev/null 2>&1 || ! wine_is_recent_enough; then
+    warn "WineHQ did not provide wine ${WINE_MIN_MAJOR}+ - falling back to the distro package."
+    apt-get install "${APT_Q[@]}" wine wine64 wine32 \
+      || apt-get install "${APT_Q[@]}" wine wine64 \
+      || apt-get install "${APT_Q[@]}" wine \
+      || apt-get install "${APT_Q[@]}" wine-stable \
+      || true
+    link_winehq_binaries
   fi
 
   if ! command -v wine >/dev/null 2>&1; then
@@ -405,6 +485,16 @@ install_wine(){
 
   ensure_wine32
   ok "wine installed: $(wine --version 2>/dev/null || echo '?')"
+
+  if ! wine_is_recent_enough; then
+    header
+    warn "WINE $(wine --version 2>/dev/null) IS OLDER THAN ${WINE_MIN_MAJOR}.0"
+    warn "MT5 will start and draw charts, but LOGGING IN TO A BROKER ACCOUNT WILL FAIL."
+    warn "Upgrade by hand, then re-run Step 1:"
+    echo  "    apt-get install -y --install-recommends winehq-devel"
+    echo  "    (or winehq-staging / winehq-stable if devel is unavailable)"
+    header
+  fi
 
   info "Checking that wine actually runs..."
   if wine --version >/dev/null 2>&1; then
