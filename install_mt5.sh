@@ -79,6 +79,41 @@ as_mt5(){
 }
 
 # ============================================================
+# WINE HYGIENE
+#   winemenubuilder is what dumps Notepad / WordPad / winecfg /
+#   "Wine Uninstaller" launchers (the little notepad-with-a-pencil icons)
+#   onto the desktop and into the menus. We never want them.
+# ============================================================
+WINE_NO_MENU="WINEDLLOVERRIDES=winemenubuilder.exe=d"
+
+as_wine(){
+  # $1 = WINEPREFIX, $2 = command to run as mt5user
+  su - "${MT5_USER}" -c "export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX='$1'; $2"
+}
+
+# Delete every launcher wine created by itself, keep our own mt5-*.desktop
+purge_wine_shortcuts(){
+  local home="/home/${MT5_USER}"
+  find "${home}/Desktop" "${home}/.local/share/applications" \
+       "${home}/.gnome2/vfolders" -maxdepth 3 -name '*.desktop' 2>/dev/null \
+    | grep -v '/mt5-' | xargs -r rm -f
+  rm -rf "${home}/.local/share/applications/wine" 2>/dev/null || true
+  rm -f  "${home}/.config/menus/applications-merged/"*wine* 2>/dev/null || true
+  find "${home}/.local/share/desktop-directories" -name '*wine*' -delete 2>/dev/null || true
+  find "${home}/.local/share/icons" -path '*hicolor*' -name '*wine*' -delete 2>/dev/null || true
+}
+
+# First boot of a fresh prefix. Skipping this is why the wizard died with
+# "ShellExecuteEx failed: File not found" / "Failed to open RpcSs service":
+# wine was still booting when the .exe was handed to it.
+init_prefix(){
+  local wineprefix="$1"
+  info "Preparing the wine prefix (first boot, this takes a few seconds)..."
+  as_wine "${wineprefix}" "wineboot --init >/dev/null 2>&1; wineserver -w" || true
+  purge_wine_shortcuts
+}
+
+# ============================================================
 # DESKTOP MODULE (wallpaper / icons / taskbar) - kept separate
 # ============================================================
 load_desktop_module(){
@@ -325,12 +360,14 @@ select_installers(){
   for f in "${AVAILABLE_EXES[@]}"; do
     slug=$(slugify "$f")
     wineprefix="/home/${MT5_USER}/mt5-${slug}"
-    if grep -q "^${slug}|" "${TERMINALS_FILE}" 2>/dev/null; then
+    if [[ -n "$(resolve_terminal_exe "${wineprefix}")" ]]; then
       st="INSTALLED"; col="$GREEN"
+    elif [[ -d "${wineprefix}" ]]; then
+      st="WIZARD UNFINISHED"; col="$YELLOW"
     else
-      st="NOT INSTALLED"; col="$YELLOW"
+      st="NOT INSTALLED"; col="$RED"
     fi
-    printf "  %2d) %-34s [%b%-13s%b]\n" "$i" "$f" "$col" "$st" "$NC"
+    printf "  %2d) %-34s [%b%-17s%b]\n" "$i" "$f" "$col" "$st" "$NC"
     i=$((i+1))
   done
   echo "   a) All"
@@ -389,19 +426,45 @@ install_selected(){
       err "Download failed or file is empty: ${dest_path}"
       continue
     fi
-    ok "Downloaded to ${dest_path}."
-
-    info "Launching the install wizard for ${exe} on its own prefix (${wineprefix})..."
-    warn "Connect via VNC now and click through the setup wizard (Next -> Next -> Install)."
-    su - "${MT5_USER}" -c "export DISPLAY=:${DISPLAY_NUM}; WINEPREFIX='${wineprefix}' wine \"${dest_path}\"" || true
-    su - "${MT5_USER}" -c "WINEPREFIX='${wineprefix}' wineserver -k" 2>/dev/null || true
-
-    termpath=$(resolve_terminal_exe "${wineprefix}")
-    register_terminal "${slug}" "${exe}" "${wineprefix}" "${termpath}"
-    if [[ -z "${termpath}" ]]; then
-      warn "terminal64.exe not found in ${wineprefix} yet - finish the wizard, then re-run 'Rebuild desktop icons'."
+    # A Git-LFS pointer or an HTML 404 page is "non-empty" but is not an
+    # installer - check for the MZ (PE) magic before wasting a wine prefix.
+    if [[ "$(head -c2 "${dest_path}")" != "MZ" ]]; then
+      err "${exe} is not a Windows executable (bad download / Git-LFS pointer) - skipped."
+      rm -f "${dest_path}"
+      continue
     fi
-    ok "${exe} installed (screen name: ${slug})."
+    ok "Downloaded to ${dest_path} ($(du -h "${dest_path}" | cut -f1))."
+
+    init_prefix "${wineprefix}"
+
+    # MetaQuotes-based installers accept /auto - try a real silent install first.
+    info "Trying the silent install (/auto) for ${exe}..."
+    as_wine "${wineprefix}" "cd ~ && wine './${exe}' /auto" >/dev/null 2>&1 || true
+    as_wine "${wineprefix}" "wineserver -w" >/dev/null 2>&1 || true
+    termpath=$(resolve_terminal_exe "${wineprefix}")
+
+    if [[ -z "${termpath}" ]]; then
+      warn "Silent install did not take for ${exe} - opening the setup wizard."
+      warn "Connect via VNC NOW, then click Next -> Next -> Install."
+      read -rp "Press Enter once your VNC viewer is connected: " _ || true
+      as_wine "${wineprefix}" "cd ~ && wine './${exe}'" \
+        || as_wine "${wineprefix}" "wine start /unix '${dest_path}' /wait" \
+        || true
+      as_wine "${wineprefix}" "wineserver -w" >/dev/null 2>&1 || true
+      termpath=$(resolve_terminal_exe "${wineprefix}")
+    fi
+
+    purge_wine_shortcuts
+
+    if [[ -z "${termpath}" ]]; then
+      err "${exe}: terminal64.exe not found -> the install did NOT complete."
+      warn "Nothing was registered, so the menu will keep showing it as unfinished."
+      warn "Retry: 'Add a new terminal' -> pick ${exe} again (nothing is re-downloaded twice for nothing)."
+      continue
+    fi
+
+    register_terminal "${slug}" "${exe}" "${wineprefix}" "${termpath}"
+    ok "${exe} really is installed -> ${termpath} (screen name: ${slug})."
   done
   desktop_sync_icons
 }
@@ -417,7 +480,7 @@ start_terminal(){
     return 1
   fi
   as_mt5 "screen -dmS ${slug} bash -c '
-    export DISPLAY=:${DISPLAY_NUM} WINEPREFIX=${wineprefix};
+    export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
     wine \"${termpath}\"'"
 }
 
