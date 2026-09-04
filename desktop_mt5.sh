@@ -394,6 +394,14 @@ desktop_sync_icons(){
     desktop_write_launcher "$slug" "${exe:-}" "${wineprefix:-}" "${termpath}" >/dev/null || true
     n=$((n+1))
   done < "${TERMINALS_FILE}"
+  # pcmanfm's own folder-watcher does not reliably notice new/removed .desktop
+  # files on every distro (headless boxes often lack a working GVFS/inotify
+  # backend) - that is the "icons need a manual refresh / look cached" symptom.
+  # --reconfigure forces it to re-read the desktop folder right now, with no
+  # click needed from the user.
+  if desktop_manager_active && command -v pcmanfm >/dev/null 2>&1; then
+    mt5_run_quiet 10 "pcmanfm --reconfigure"
+  fi
   ok "${n} desktop icon(s) ready in ${DESKTOP_DIR}${skipped:+ (${skipped} skipped)}."
 }
 
