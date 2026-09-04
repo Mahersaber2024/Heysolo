@@ -76,7 +76,10 @@ warn(){ echo -e "${YELLOW}[!] $1${NC}"; }
 err(){ echo -e "${RED}[ERROR] $1${NC}"; }
 header(){ echo -e "${BLUE}${BOLD}===================================================${NC}"; }
 title(){ echo -e "${MAGENTA}${BOLD}$1${NC}"; }
-press_enter(){ read -rp "Press Enter to continue..." _ || true; }
+press_enter(){
+  [[ "${NONINTERACTIVE:-0}" == "1" ]] && return 0
+  read -rp "Press Enter to continue..." _ || true
+}
 
 require_root(){
   if [[ $EUID -ne 0 ]]; then
@@ -110,7 +113,13 @@ as_mt5(){
 #   "Wine Uninstaller" launchers (the little notepad-with-a-pencil icons)
 #   onto the desktop and into the menus. We never want them.
 # ============================================================
-WINE_NO_MENU="WINEDLLOVERRIDES=winemenubuilder.exe=d"
+# winemenubuilder = the junk launchers. mscoree/mshtml = the "install
+# wine-mono / wine-gecko?" popups that otherwise sit there waiting for a
+# click nobody can give from SSH. All three are disabled, always.
+WINE_NO_MENU="WINEDLLOVERRIDES=winemenubuilder.exe,mscoree,mshtml=d WINEDEBUG=-all"
+
+# Fully non-interactive step 1: no wizard, no dialog, no keypress.
+NONINTERACTIVE="${NONINTERACTIVE:-0}"
 
 as_wine(){
   # $1 = WINEPREFIX, $2 = command to run as mt5user
@@ -138,7 +147,10 @@ purge_wine_shortcuts(){
 init_prefix(){
   local wineprefix="$1"
   info "Preparing the wine prefix (first boot, this takes a few seconds)..."
-  as_wine "${wineprefix}" "wineboot --init >/dev/null 2>&1; wineserver -w" || true
+  # mscoree/mshtml disabled -> wine never asks to download mono/gecko,
+  # so this stage can't stop on a dialog.
+  AS_WINE_TIMEOUT=300 as_wine "${wineprefix}" \
+    "wineboot --init >/dev/null 2>&1; wineserver -w" || true
   purge_wine_shortcuts
 }
 
@@ -192,13 +204,16 @@ show_banner(){
 # ============================================================
 # SYSTEM PACKAGES
 # ============================================================
+APT_Q=(-y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+
 install_system_packages(){
-  export DEBIAN_FRONTEND=noninteractive
+  # Nothing below may ever stop and ask a question.
+  export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
 
   # --- exactly the README order: base pkgs -> i386 -> wine ---
   info "Base packages: xvfb x11vnc screen wget openbox ..."
   apt-get update -y || true
-  apt-get install -y \
+  apt-get install "${APT_Q[@]}" \
     xvfb x11vnc screen wget curl openbox \
     software-properties-common ca-certificates gnupg \
     x11-utils jq python3 \
@@ -250,10 +265,11 @@ install_wine(){
   fi
 
   info "Installing wine - this is the big one, it can take several minutes..."
-  apt-get install -y wine wine64 wine32 \
-    || apt-get install -y wine wine64 \
-    || apt-get install -y wine \
-    || apt-get install -y wine-stable \
+  export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
+  apt-get install "${APT_Q[@]}" wine wine64 wine32 \
+    || apt-get install "${APT_Q[@]}" wine wine64 \
+    || apt-get install "${APT_Q[@]}" wine \
+    || apt-get install "${APT_Q[@]}" wine-stable \
     || true
 
   if ! command -v wine >/dev/null 2>&1; then
@@ -279,8 +295,6 @@ install_wine(){
   ensure_wine32
   ok "wine installed: $(wine --version 2>/dev/null || echo '?')"
 
-  # First-ever wineboot as root's throwaway prefix is pointless; we prime
-  # mt5user's prefixes later in init_prefix(). Just prove wine can start.
   info "Checking that wine actually runs..."
   if wine --version >/dev/null 2>&1; then
     ok "wine responds."
@@ -312,8 +326,22 @@ setup_mt5_user(){
 setup_vnc_password(){
   if [[ -f "${VNC_PASS_FILE}" ]]; then
     info "A VNC password is already set."
+    if [[ "${NONINTERACTIVE}" == "1" ]]; then return; fi
     read -rp "Change the VNC password? (y/N): " CHNG
     [[ "${CHNG,,}" != "y" ]] && return
+  fi
+
+  # Hands-off mode: VNC_PASSWORD=... bash install_mt5.sh   (or auto-generated)
+  if [[ -n "${VNC_PASSWORD:-}" || "${NONINTERACTIVE}" == "1" ]]; then
+    local pw="${VNC_PASSWORD:-}"
+    [[ -z "${pw}" ]] && pw=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 12)
+    mkdir -p "/home/${MT5_USER}/.vnc"
+    chown "${MT5_USER}:${MT5_USER}" "/home/${MT5_USER}/.vnc"
+    x11vnc -storepasswd "${pw}" "${VNC_PASS_FILE}" >/dev/null 2>&1 || true
+    chown "${MT5_USER}:${MT5_USER}" "${VNC_PASS_FILE}" 2>/dev/null || true
+    ok "VNC password set automatically."
+    echo -e "   ${BOLD}VNC password: ${GREEN}${pw}${NC}   (write this down)"
+    return
   fi
   mkdir -p "/home/${MT5_USER}/.vnc"
   chown "${MT5_USER}:${MT5_USER}" "/home/${MT5_USER}/.vnc"
@@ -821,11 +849,14 @@ step1_prepare_server(){
   setup_vnc_password
   desktop_install_packages        # taskbar + icons + wallpaper deps, installed up-front
   ensure_local_mt5_dir
-  start_display                   # Xvfb + VNC + openbox + desktop layer (traced)
+  # Step 1 desktop = wallpaper + taskbar ONLY, painted with feh.
+  # pcmanfm (the thing that pops "Desktop manager is not active" and waits for
+  # a click) is deliberately NOT started here: there are no terminals yet, so
+  # there is nothing to put an icon on, and you are not expected to open VNC.
+  export DESKTOP_ICONS=0
+  start_display                   # Xvfb + VNC + openbox + wallpaper + taskbar
   if [[ "${SKIP_DESKTOP:-0}" == "1" ]]; then
-    warn "SKIP_DESKTOP=1 - skipping wallpaper/icons/taskbar."
-  else
-    desktop_setup_all             # wallpaper + taskbar (no terminal icons yet)
+    warn "SKIP_DESKTOP=1 - skipping wallpaper/taskbar."
   fi
   echo
   echo
@@ -838,7 +869,8 @@ step1_prepare_server(){
   echo "   display     : :${DISPLAY_NUM} (${SCREEN_RES})   VNC port ${VNC_PORT}"
   echo "   upload dir  : ${MT5_LOCAL_DIR}"
   header
-  ok "Step 1 finished: server, wine, VNC and the Windows-like desktop are ready."
+  ok "Step 1 finished: server, wine, VNC and the desktop background are ready."
+  info "Desktop icons are created in Step 2, once terminals actually exist."
   print_vnc_access
   print_upload_instructions
   press_enter
@@ -862,7 +894,8 @@ step2_install_terminals(){
   select_installers || { press_enter; return; }
   install_selected
   start_all_terminals
-  desktop_setup_all               # refresh wallpaper + icons for the new terminals
+  export DESKTOP_ICONS=1          # now there ARE terminals -> real desktop icons
+  desktop_setup_all               # wallpaper + icons + taskbar
   show_final_guide
   press_enter
 }

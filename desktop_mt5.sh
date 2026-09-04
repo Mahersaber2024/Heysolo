@@ -44,6 +44,11 @@ DESKTOP_DIR="${MT5_HOME}/Desktop"
 WALLPAPER_PATH="${ASSET_DIR}/wallpaper.png"
 PCMAN_PROFILE="heysolo"
 
+# DESKTOP_ICONS=0 -> wallpaper (feh) + taskbar only, pcmanfm is never started.
+# Step 1 uses 0 (no terminals exist yet, nobody is looking at VNC),
+# Step 2 sets 1 once there are real terminals to put icons on.
+DESKTOP_ICONS="${DESKTOP_ICONS:-1}"
+
 # ------------------------------------------------------------
 # FALLBACK HELPERS (only defined when not sourced by the installer)
 # ------------------------------------------------------------
@@ -83,8 +88,9 @@ step(){ DESK_STEP=$((DESK_STEP+1)); echo -e "${CYAN}  [desktop ${DESK_STEP}/8] $
 # ============================================================
 desktop_install_packages(){
   info "Installing desktop packages (wallpaper, icons, taskbar)..."
+  export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
   apt-get update -y >/dev/null 2>&1 || true
-  apt-get install -y \
+  apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
     pcmanfm feh tint2 wmctrl xdotool zenity \
     icoutils imagemagick x11-utils xprop \
     >/dev/null 2>&1 || true
@@ -198,11 +204,12 @@ desktop_apply_wallpaper(){
   # pcmanfm ONLY when its desktop process is really alive, otherwise it throws
   # the "Desktop manager is not active." modal on the VNC screen and waits for
   # a click that nobody can give from SSH.
-  if command -v pcmanfm >/dev/null 2>&1 && desktop_manager_active; then
+  if [[ "${DESKTOP_ICONS}" == "1" ]] && command -v pcmanfm >/dev/null 2>&1 \
+     && desktop_manager_active; then
     step "handing the wallpaper to pcmanfm (max 15s)"
     as_mt5_nogui_block 15 "pcmanfm --profile=${PCMAN_PROFILE} --set-wallpaper='${WALLPAPER_PATH}' --wallpaper-mode=stretch"
   else
-    step "pcmanfm desktop not running - feh wallpaper is enough, skipping it"
+    step "feh wallpaper is enough here - pcmanfm skipped (no dialogs possible)"
   fi
   ok "Wallpaper applied to the VNC desktop."
 }
@@ -553,7 +560,7 @@ desktop_start(){
   desktop_write_openbox_rules
   step "waiting for the virtual display :${DISPLAY_NUM}"
   desktop_wait_for_x 30 || { warn "Desktop layer skipped - display :${DISPLAY_NUM} is not up."; return 0; }
-  if command -v pcmanfm >/dev/null 2>&1; then
+  if [[ "${DESKTOP_ICONS}" == "1" ]] && command -v pcmanfm >/dev/null 2>&1; then
     if ! desktop_manager_active; then
       step "starting the desktop manager (pcmanfm, max 10s)"
       desktop_write_pcmanfm_conf
@@ -563,6 +570,8 @@ desktop_start(){
     else
       step "desktop manager already running"
     fi
+  else
+    step "icons not needed yet (DESKTOP_ICONS=0) - pcmanfm not started"
   fi
   desktop_apply_wallpaper
   desktop_ensure_taskbar
@@ -591,9 +600,17 @@ desktop_setup_all(){
   desktop_install_packages
   desktop_prepare_dirs
   desktop_fetch_wallpaper
-  desktop_sync_icons
+  if [[ "${DESKTOP_ICONS}" == "1" ]]; then
+    desktop_sync_icons
+  else
+    info "No terminals yet - skipping desktop icons (they are built in Step 2)."
+  fi
   desktop_start
-  ok "Desktop is ready: wallpaper + icons + taskbar."
+  if [[ "${DESKTOP_ICONS}" == "1" ]]; then
+    ok "Desktop is ready: wallpaper + icons + taskbar."
+  else
+    ok "Desktop background + taskbar are ready (icons come in Step 2)."
+  fi
 }
 
 # ============================================================
