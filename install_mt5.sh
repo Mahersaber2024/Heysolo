@@ -271,13 +271,18 @@ install_selected(){
     header
     title "DOWNLOADING: ${exe}"
     header
+    local dest_path="/home/${MT5_USER}/${exe}"
     info "Downloading..."
-    su - "${MT5_USER}" -c "wget -q -O '\$HOME/${exe}' '${url}'"
-    ok "Downloaded."
+    su - "${MT5_USER}" -c "wget -q -O \"${dest_path}\" \"${url}\""
+    if [[ ! -s "${dest_path}" ]]; then
+      err "Download failed or file is empty: ${dest_path}"
+      continue
+    fi
+    ok "Downloaded to ${dest_path}."
 
     info "Launching the install wizard for ${exe} on its own prefix (${wineprefix})..."
     warn "Connect via VNC now and click through the setup wizard (Next -> Next -> Install)."
-    su - "${MT5_USER}" -c "export DISPLAY=:${DISPLAY_NUM}; WINEPREFIX='${wineprefix}' wine \"\$HOME/${exe}\"" || true
+    su - "${MT5_USER}" -c "export DISPLAY=:${DISPLAY_NUM}; WINEPREFIX='${wineprefix}' wine \"${dest_path}\"" || true
     su - "${MT5_USER}" -c "WINEPREFIX='${wineprefix}' wineserver -k" 2>/dev/null || true
 
     echo "${slug}|${exe}|${wineprefix}" >> "${TERMINALS_FILE}"
