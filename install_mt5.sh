@@ -85,9 +85,23 @@ require_root(){
   fi
 }
 
+# Run a command as mt5user with the virtual display exported.
+# runuser + setsid + timeout instead of `su -`: a bare `su -` opens a PAM /
+# systemd-logind session and can hang forever (very likely right after
+# unattended-upgrades restarts systemd-logind). Nothing here may block.
+_as_user(){                      # _as_user <seconds> <command string>
+  local secs="$1" cmd="$2"
+  if command -v runuser >/dev/null 2>&1; then
+    setsid timeout -k 5 "${secs}" runuser -u "${MT5_USER}" -- \
+      bash -lc "${cmd}" </dev/null 2>/dev/null
+  else
+    setsid timeout -k 5 "${secs}" su "${MT5_USER}" -s /bin/bash -c \
+      "${cmd}" </dev/null 2>/dev/null
+  fi
+}
+
 as_mt5(){
-  # run a command as mt5user with the virtual display exported
-  su - "${MT5_USER}" -c "export DISPLAY=:${DISPLAY_NUM}; $1"
+  _as_user "${AS_MT5_TIMEOUT:-120}" "export DISPLAY=:${DISPLAY_NUM}; $1"
 }
 
 # ============================================================
@@ -100,7 +114,10 @@ WINE_NO_MENU="WINEDLLOVERRIDES=winemenubuilder.exe=d"
 
 as_wine(){
   # $1 = WINEPREFIX, $2 = command to run as mt5user
-  su - "${MT5_USER}" -c "export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX='$1'; $2"
+  # Wizards can legitimately take a while, so this one gets a long leash
+  # (default 30 min) but is still never truly unbounded.
+  _as_user "${AS_WINE_TIMEOUT:-1800}" \
+    "export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX='$1'; $2"
 }
 
 # Delete every launcher wine created by itself, keep our own mt5-*.desktop
@@ -150,6 +167,7 @@ load_desktop_module(){
     desktop_ensure_taskbar(){ :; }
     desktop_restore_window(){ warn "${DESKTOP_MODULE} is missing."; press_enter; }
     desktop_pretty_name(){ echo "$1"; }
+    desktop_doctor(){ warn "${DESKTOP_MODULE} is missing."; }
   fi
 }
 load_desktop_module
@@ -297,7 +315,8 @@ setup_vnc_password(){
     read -rp "Change the VNC password? (y/N): " CHNG
     [[ "${CHNG,,}" != "y" ]] && return
   fi
-  su - "${MT5_USER}" -c "mkdir -p ~/.vnc"
+  mkdir -p "/home/${MT5_USER}/.vnc"
+  chown "${MT5_USER}:${MT5_USER}" "/home/${MT5_USER}/.vnc"
   echo
   warn "Enter a password for VNC access (at least 6 characters):"
   while true; do
@@ -313,7 +332,9 @@ setup_vnc_password(){
     fi
     break
   done
-  su - "${MT5_USER}" -c "x11vnc -storepasswd '${VNC_PASS_1}' ~/.vnc/passwd"
+  _as_user 30 "x11vnc -storepasswd '${VNC_PASS_1}' ~/.vnc/passwd" >/dev/null 2>&1 \
+    || { x11vnc -storepasswd "${VNC_PASS_1}" "${VNC_PASS_FILE}" >/dev/null 2>&1 || true; }
+  chown "${MT5_USER}:${MT5_USER}" "${VNC_PASS_FILE}" 2>/dev/null || true
   unset VNC_PASS_1 VNC_PASS_2
   ok "VNC password saved."
 }
@@ -329,6 +350,12 @@ start_display(){
     return
   fi
   info "Starting the virtual display (Xvfb) and VNC..."
+  as_mt5 "screen -wipe" >/dev/null 2>&1 || true
+  # a stale lock from a previous run stops Xvfb dead
+  if [[ -e "/tmp/.X${DISPLAY_NUM}-lock" ]] && ! pgrep -f "Xvfb :${DISPLAY_NUM}" >/dev/null 2>&1; then
+    warn "Removing a stale X lock (/tmp/.X${DISPLAY_NUM}-lock) from a previous run."
+    rm -f "/tmp/.X${DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${DISPLAY_NUM}" 2>/dev/null || true
+  fi
   as_mt5 "screen -dmS vnc bash -c '
     export DISPLAY=:${DISPLAY_NUM};
     Xvfb :${DISPLAY_NUM} -screen 0 ${SCREEN_RES} >/dev/null 2>&1 &
@@ -338,18 +365,25 @@ start_display(){
     x11vnc -display :${DISPLAY_NUM} -forever -shared -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg;
     sleep infinity'"
   # wait for X itself instead of hoping 3 seconds was enough
+  info "Waiting for the display to come up (up to 40s)..."
   if declare -F desktop_wait_for_x >/dev/null 2>&1; then
     desktop_wait_for_x 40 || true
   else
     sleep 5
   fi
+  if timeout 5 xdpyinfo -display ":${DISPLAY_NUM}" >/dev/null 2>&1; then
+    ok "Display :${DISPLAY_NUM} is up."
+  else
+    err "Display :${DISPLAY_NUM} never came up - check: su - ${MT5_USER} -c 'screen -ls'"
+  fi
+  info "Building the desktop layer (wallpaper / taskbar) - each step is printed below."
   desktop_start
   ok "Display and VNC active on port ${VNC_PORT} (screen: vnc)."
 }
 
 print_vnc_access(){
   local ip
-  ip=$(curl -fsSL ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
+  ip=$(curl -fsSL --max-time 5 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
   echo
   header
   title "VNC ACCESS (to watch the install wizard / charts)"
@@ -424,7 +458,7 @@ ensure_local_mt5_dir(){
 }
 
 server_ip(){
-  curl -fsSL ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}'
+  curl -fsSL --max-time 5 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}'
 }
 
 print_upload_instructions(){
@@ -787,8 +821,12 @@ step1_prepare_server(){
   setup_vnc_password
   desktop_install_packages        # taskbar + icons + wallpaper deps, installed up-front
   ensure_local_mt5_dir
-  start_display                   # Xvfb + VNC + openbox
-  desktop_setup_all               # wallpaper + taskbar (no terminal icons yet)
+  start_display                   # Xvfb + VNC + openbox + desktop layer (traced)
+  if [[ "${SKIP_DESKTOP:-0}" == "1" ]]; then
+    warn "SKIP_DESKTOP=1 - skipping wallpaper/icons/taskbar."
+  else
+    desktop_setup_all             # wallpaper + taskbar (no terminal icons yet)
+  fi
   echo
   echo
   header
@@ -873,6 +911,7 @@ main_menu(){
     echo -e " ${BOLD}5)${NC} Remove a terminal"
     echo -e " ${BOLD}6)${NC} Guide / VNC access info"
     echo -e " ${BOLD}7)${NC} Show the upload folder + what is already uploaded"
+    echo -e " ${BOLD}8)${NC} Doctor - is the display/desktop actually alive?"
     echo -e " ${BOLD}0)${NC} Exit"
     echo
     header
@@ -885,6 +924,11 @@ main_menu(){
       5) uninstall_terminal ;;
       6) show_final_guide; press_enter ;;
       7) require_root; list_local_installers; print_upload_instructions; press_enter ;;
+      8) require_root
+         if declare -F desktop_doctor >/dev/null 2>&1; then desktop_doctor; else
+           warn "${DESKTOP_MODULE} is missing."; fi
+         as_mt5 "screen -ls" || true
+         press_enter ;;
       0) echo "Goodbye!"; exit 0 ;;
       *) warn "Invalid."; sleep 1 ;;
     esac

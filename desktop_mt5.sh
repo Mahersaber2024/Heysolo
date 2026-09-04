@@ -18,6 +18,7 @@
 #        sudo bash desktop_mt5.sh wallpaper  # re-apply wallpaper
 #        sudo bash desktop_mt5.sh icons      # rebuild desktop icons
 #        sudo bash desktop_mt5.sh taskbar    # repair tint2
+#        sudo bash desktop_mt5.sh clean      # remove the "desktop 1" button
 #        sudo bash desktop_mt5.sh start      # (re)start desktop layer
 #        sudo bash desktop_mt5.sh restore    # find/restore a minimized window
 # =============================================================
@@ -56,7 +57,26 @@ declare -F err     >/dev/null 2>&1 || err(){ echo -e "${RED}[ERROR] $1${NC}"; }
 declare -F header  >/dev/null 2>&1 || header(){ echo -e "${BLUE}${BOLD}===================================================${NC}"; }
 declare -F title   >/dev/null 2>&1 || title(){ echo -e "${MAGENTA}${BOLD}$1${NC}"; }
 declare -F press_enter >/dev/null 2>&1 || press_enter(){ read -rp "Press Enter to continue..." _ || true; }
-declare -F as_mt5  >/dev/null 2>&1 || as_mt5(){ su - "${MT5_USER}" -c "export DISPLAY=:${DISPLAY_NUM}; $1"; }
+# --- bounded runner: NOTHING in the desktop layer may block forever ------
+# `su -` opens a PAM/logind session; right after unattended-upgrades restarts
+# systemd-logind that call can hang. runuser + setsid + timeout can't.
+mt5_run(){                       # mt5_run <seconds> <command...>
+  local secs="$1"; shift
+  if command -v runuser >/dev/null 2>&1; then
+    setsid timeout -k 5 "${secs}" runuser -u "${MT5_USER}" -- \
+      bash -lc "export DISPLAY=:${DISPLAY_NUM}; $*" </dev/null 2>/dev/null
+  else
+    setsid timeout -k 5 "${secs}" su "${MT5_USER}" -s /bin/bash -c \
+      "export DISPLAY=:${DISPLAY_NUM}; $*" </dev/null 2>/dev/null
+  fi
+}
+mt5_run_quiet(){ mt5_run "$1" "${@:2}" >/dev/null 2>&1; }
+
+declare -F as_mt5 >/dev/null 2>&1 || as_mt5(){ mt5_run "${AS_MT5_TIMEOUT:-90}" "$1"; }
+
+# Visible progress so a slow stage never looks like a freeze.
+DESK_STEP=0
+step(){ DESK_STEP=$((DESK_STEP+1)); echo -e "${CYAN}  [desktop ${DESK_STEP}/8] $1${NC}"; }
 
 # ============================================================
 # PACKAGES NEEDED BY THE DESKTOP LAYER
@@ -66,7 +86,7 @@ desktop_install_packages(){
   apt-get update -y >/dev/null 2>&1 || true
   apt-get install -y \
     pcmanfm feh tint2 wmctrl xdotool zenity \
-    icoutils imagemagick x11-utils \
+    icoutils imagemagick x11-utils xprop \
     >/dev/null 2>&1 || true
   command -v tint2   >/dev/null 2>&1 || warn "tint2 missing (taskbar will be unavailable)."
   command -v pcmanfm >/dev/null 2>&1 || warn "pcmanfm missing (falling back to feh wallpaper, no desktop icons)."
@@ -74,7 +94,11 @@ desktop_install_packages(){
 }
 
 desktop_prepare_dirs(){
-  su - "${MT5_USER}" -c "mkdir -p '${ASSET_DIR}' '${ICON_DIR}' '${BIN_DIR}' '${DESKTOP_DIR}' '${MT5_HOME}/.config/pcmanfm/${PCMAN_PROFILE}'"
+  # plain root mkdir + chown: no su, so this can never block
+  mkdir -p "${ASSET_DIR}" "${ICON_DIR}" "${BIN_DIR}" "${DESKTOP_DIR}" \
+           "${MT5_HOME}/.config/pcmanfm/${PCMAN_PROFILE}" \
+           "${MT5_HOME}/.config/tint2" "${MT5_HOME}/.config/openbox" 2>/dev/null || true
+  chown -R "${MT5_USER}:${MT5_USER}" "${ASSET_DIR}" "${DESKTOP_DIR}" "${MT5_HOME}/.config" 2>/dev/null || true
 }
 
 # ============================================================
@@ -87,10 +111,10 @@ desktop_prepare_dirs(){
 desktop_wait_for_x(){
   local tries="${1:-30}"
   while (( tries-- > 0 )); do
-    if as_mt5 "xdpyinfo -display :${DISPLAY_NUM} >/dev/null 2>&1" >/dev/null 2>&1; then
-      return 0
-    fi
-    if as_mt5 "xset -display :${DISPLAY_NUM} q >/dev/null 2>&1" >/dev/null 2>&1; then
+    # root can talk to Xvfb directly - no su, no PAM, no hang
+    if timeout 5 xdpyinfo -display ":${DISPLAY_NUM}" >/dev/null 2>&1; then return 0; fi
+    if timeout 5 xset -display ":${DISPLAY_NUM}" q >/dev/null 2>&1; then return 0; fi
+    if [[ -e "/tmp/.X11-unix/X${DISPLAY_NUM}" ]] && pgrep -f "Xvfb :${DISPLAY_NUM}" >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
@@ -99,8 +123,11 @@ desktop_wait_for_x(){
   return 1
 }
 
+# NOTE: the old version ran pgrep through `su`, so the pattern matched the su
+# command line itself and always returned "active" -> pcmanfm then popped the
+# "Desktop manager is not active" modal and the script sat on it.
 desktop_manager_active(){
-  as_mt5 "pgrep -f 'pcmanfm --desktop' >/dev/null 2>&1" >/dev/null 2>&1
+  pgrep -u "${MT5_USER}" -f 'pcmanfm[[:space:]]+--desktop' >/dev/null 2>&1
 }
 
 desktop_wait_for_manager(){
@@ -116,7 +143,7 @@ desktop_wait_for_manager(){
 # dialog can never freeze the installer.
 as_mt5_nogui_block(){
   local secs="${1}"; shift
-  su - "${MT5_USER}" -c "export DISPLAY=:${DISPLAY_NUM}; timeout ${secs} $1" </dev/null >/dev/null 2>&1 || true
+  mt5_run_quiet "${secs}" "$1" || true
 }
 
 # ============================================================
@@ -125,9 +152,10 @@ as_mt5_nogui_block(){
 desktop_fetch_wallpaper(){
   local url="${REPO_RAW}/${BG_SUBDIR}/${WALLPAPER_NAME}"
   info "Downloading the desktop wallpaper (${BG_SUBDIR}/${WALLPAPER_NAME})..."
-  su - "${MT5_USER}" -c "wget -q -O '${WALLPAPER_PATH}.part' '${url}'" || true
+  timeout 60 wget -q --tries=2 --timeout=15 -O "${WALLPAPER_PATH}.part" "${url}" || true
   if [[ -s "${WALLPAPER_PATH}.part" ]]; then
-    su - "${MT5_USER}" -c "mv '${WALLPAPER_PATH}.part' '${WALLPAPER_PATH}'"
+    mv -f "${WALLPAPER_PATH}.part" "${WALLPAPER_PATH}"
+    chown "${MT5_USER}:${MT5_USER}" "${WALLPAPER_PATH}" 2>/dev/null || true
     ok "Wallpaper saved to ${WALLPAPER_PATH}."
   else
     rm -f "${WALLPAPER_PATH}.part" 2>/dev/null || true
@@ -163,13 +191,18 @@ desktop_apply_wallpaper(){
 
   # feh writes the root window directly - no dialogs, no desktop manager needed.
   if command -v feh >/dev/null 2>&1; then
-    as_mt5_nogui_block 10 "feh --bg-fill '${WALLPAPER_PATH}'"
+    step "painting the wallpaper with feh (max 15s)"
+    as_mt5_nogui_block 15 "feh --no-fehbg --bg-fill '${WALLPAPER_PATH}'"
   fi
 
-  # pcmanfm only when its desktop process is confirmed alive, otherwise it
-  # throws the "Desktop manager is not active." modal and waits for a click.
+  # pcmanfm ONLY when its desktop process is really alive, otherwise it throws
+  # the "Desktop manager is not active." modal on the VNC screen and waits for
+  # a click that nobody can give from SSH.
   if command -v pcmanfm >/dev/null 2>&1 && desktop_manager_active; then
-    as_mt5_nogui_block 10 "pcmanfm --profile=${PCMAN_PROFILE} --set-wallpaper='${WALLPAPER_PATH}' --wallpaper-mode=stretch"
+    step "handing the wallpaper to pcmanfm (max 15s)"
+    as_mt5_nogui_block 15 "pcmanfm --profile=${PCMAN_PROFILE} --set-wallpaper='${WALLPAPER_PATH}' --wallpaper-mode=stretch"
+  else
+    step "pcmanfm desktop not running - feh wallpaper is enough, skipping it"
   fi
   ok "Wallpaper applied to the VNC desktop."
 }
@@ -347,22 +380,164 @@ desktop_sync_icons(){
 }
 
 # ============================================================
+# CLEAN TASKBAR
+#   The "desktop 1" button with the little notepad/pencil icon in the
+#   bottom-left corner is NOT a real window you want: it is
+#     a) tint2's default "desktop name" label  (taskbar_name = 1), and
+#     b) the pcmanfm desktop window leaking into the window list because
+#        some pcmanfm builds do not set _NET_WM_WINDOW_TYPE_DESKTOP.
+#   We kill both: our own tint2rc (no desktop label, no launcher) plus
+#   skip_taskbar/skip_pager forced on the desktop window itself.
+# ============================================================
+TINT2_CONF="${MT5_HOME}/.config/tint2/tint2rc"
+
+desktop_write_tint2_conf(){
+  su - "${MT5_USER}" -c "mkdir -p '${MT5_HOME}/.config/tint2'"
+  cat > "${TINT2_CONF}" <<'EOF'
+#---- HeySolo taskbar: Windows-like, bottom, no desktop label ----
+rounded = 0
+border_width = 0
+background_color = #101828 100
+border_color = #101828 100
+
+# task button (normal)
+rounded = 2
+border_width = 0
+background_color = #1d2939 100
+border_color = #1d2939 100
+
+# task button (active window)
+rounded = 2
+border_width = 0
+background_color = #2e5aac 100
+border_color = #2e5aac 100
+
+panel_monitor = all
+panel_position = bottom center horizontal
+panel_size = 100% 40
+panel_margin = 0 0
+panel_padding = 4 2 4
+panel_dock = 0
+wm_menu = 1
+panel_layer = top
+panel_background_id = 1
+panel_items = TSC
+
+# --- taskbar: ONE row of real windows, no "desktop 1" label ---
+taskbar_mode = single_desktop
+taskbar_padding = 2 0 4
+taskbar_background_id = 0
+taskbar_active_background_id = 0
+taskbar_name = 0
+taskbar_hide_inactive_tasks = 0
+taskbar_always_show_all_desktop_tasks = 0
+
+task_text = 1
+task_icon = 1
+task_centered = 0
+task_maximum_size = 240 34
+task_padding = 6 2
+task_background_id = 2
+task_active_background_id = 3
+task_urgent_background_id = 3
+task_iconified_background_id = 2
+task_font = Sans 9
+task_font_color = #ffffff 100
+urgent_nb_of_blink = 8
+
+# --- systray + clock ---
+systray_padding = 4 2 4
+systray_background_id = 0
+systray_icon_size = 22
+
+time1_format = %H:%M
+time1_font = Sans 9
+time2_format = %Y-%m-%d
+time2_font = Sans 7
+clock_font_color = #ffffff 100
+clock_padding = 8 0
+clock_background_id = 0
+
+mouse_middle = none
+mouse_right = close
+mouse_scroll_up = toggle
+mouse_scroll_down = iconify
+EOF
+  chown -R "${MT5_USER}:${MT5_USER}" "${MT5_HOME}/.config/tint2"
+}
+
+# Openbox: never list the pcmanfm desktop, keep it behind everything.
+desktop_write_openbox_rules(){
+  local dir="${MT5_HOME}/.config/openbox" rc
+  rc="${dir}/rc.xml"
+  su - "${MT5_USER}" -c "mkdir -p '${dir}'"
+  [[ -s "${rc}" ]] && return 0
+  cat > "${rc}" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <applications>
+    <!-- the pcmanfm desktop: no taskbar entry, no pager, always at the back -->
+    <application class="Pcmanfm">
+      <skip_taskbar>yes</skip_taskbar>
+      <skip_pager>yes</skip_pager>
+      <decor>no</decor>
+      <layer>below</layer>
+    </application>
+    <application class="pcmanfm">
+      <skip_taskbar>yes</skip_taskbar>
+      <skip_pager>yes</skip_pager>
+      <decor>no</decor>
+      <layer>below</layer>
+    </application>
+    <!-- wine's own junk windows (notepad/winecfg/uninstaller) -->
+    <application name="notepad.exe*"><skip_taskbar>yes</skip_taskbar></application>
+    <application name="winecfg.exe*"><skip_taskbar>yes</skip_taskbar></application>
+    <!-- MT5 terminals: normal, listed, decorated -->
+    <application class="terminal64.exe*"><layer>normal</layer></application>
+  </applications>
+</openbox_config>
+EOF
+  chown -R "${MT5_USER}:${MT5_USER}" "${dir}"
+}
+
+# Force skip_taskbar/skip_pager on the desktop window right now.
+desktop_hide_desktop_window(){
+  command -v wmctrl >/dev/null 2>&1 || apt-get install -y wmctrl >/dev/null 2>&1 || true
+  command -v wmctrl >/dev/null 2>&1 || return 0
+  local ids id
+  ids=$(DISPLAY=":${DISPLAY_NUM}" timeout 8 wmctrl -lx 2>/dev/null \
+        | grep -iE 'pcmanfm|desktop' | awk '{print $1}' || true)
+  for id in ${ids}; do
+    DISPLAY=":${DISPLAY_NUM}" timeout 5 wmctrl -ir "${id}" \
+      -b add,skip_taskbar,skip_pager,below >/dev/null 2>&1 || true
+  done
+  [[ -n "${ids}" ]] && ok "Desktop window hidden from the taskbar."
+  return 0
+}
+
+# ============================================================
 # TASKBAR (tint2)
 # ============================================================
 desktop_ensure_taskbar(){
-  if as_mt5 "pgrep -x tint2" >/dev/null 2>&1; then
-    return 0
-  fi
+  step "starting the clean taskbar (tint2)"
   if ! command -v tint2 >/dev/null 2>&1; then
     info "tint2 is not installed yet - installing it..."
     apt-get update -y >/dev/null 2>&1 || true
-    apt-get install -y tint2 wmctrl >/dev/null 2>&1 || true
+    apt-get install -y tint2 wmctrl xdotool x11-utils >/dev/null 2>&1 || true
     command -v tint2 >/dev/null 2>&1 || { warn "Could not install tint2, skipping taskbar."; return 0; }
   fi
-  as_mt5 "nohup tint2 >/dev/null 2>&1 & disown" </dev/null >/dev/null 2>&1 || true
+
+  desktop_write_tint2_conf
+
+  # Always restart tint2 so a changed config is actually picked up
+  # (this is what removes the old "desktop 1" label).
+  pkill -u "${MT5_USER}" -x tint2 >/dev/null 2>&1 || true
+  sleep 1
+  mt5_run_quiet 10 "setsid tint2 -c '${TINT2_CONF}' >/dev/null 2>&1 &" || true
   sleep 2
-  if as_mt5 "pgrep -x tint2" >/dev/null 2>&1; then
-    ok "Taskbar running - minimized windows appear at the bottom of the VNC screen."
+  desktop_hide_desktop_window
+  if pgrep -u "${MT5_USER}" -x tint2 >/dev/null 2>&1; then
+    ok "Clean taskbar running (real windows + clock only)."
   else
     warn "tint2 installed but did not start (is the display up?)."
   fi
@@ -371,35 +546,42 @@ desktop_ensure_taskbar(){
 # ============================================================
 # START / REFRESH THE WHOLE DESKTOP LAYER (call after Xvfb+openbox)
 # ============================================================
-# A leftover "Desktop manager is not active." / zenity box from an earlier run
-# stays on the persistent X display forever. Sweep it before doing anything.
-desktop_close_stale_dialogs(){
-  as_mt5 "pkill -f 'pcmanfm --set-wallpaper'" >/dev/null 2>&1 || true
-  as_mt5 "pkill -x zenity" >/dev/null 2>&1 || true
-  if as_mt5 "command -v wmctrl" >/dev/null 2>&1; then
-    local ids
-    ids=$(as_mt5 "wmctrl -l 2>/dev/null | grep -iE ' Error$| Error ' | awk '{print \$1}'" 2>/dev/null || true)
-    local w
-    for w in ${ids}; do
-      as_mt5 "wmctrl -ic '${w}'" >/dev/null 2>&1 || true
-    done
-  fi
-}
-
 desktop_start(){
+  DESK_STEP=0
+  step "creating folders / configs"
   desktop_prepare_dirs
+  desktop_write_openbox_rules
+  step "waiting for the virtual display :${DISPLAY_NUM}"
   desktop_wait_for_x 30 || { warn "Desktop layer skipped - display :${DISPLAY_NUM} is not up."; return 0; }
-  desktop_close_stale_dialogs
   if command -v pcmanfm >/dev/null 2>&1; then
     if ! desktop_manager_active; then
+      step "starting the desktop manager (pcmanfm, max 10s)"
       desktop_write_pcmanfm_conf
-      as_mt5 "nohup pcmanfm --desktop --profile=${PCMAN_PROFILE} >/dev/null 2>&1 & disown" </dev/null >/dev/null 2>&1 || true
-      desktop_wait_for_manager 15 \
+      mt5_run_quiet 10 "setsid pcmanfm --desktop --profile=${PCMAN_PROFILE} >/dev/null 2>&1 &" || true
+      desktop_wait_for_manager 10 \
         || warn "pcmanfm --desktop did not start - using feh for the wallpaper (no desktop icons)."
+    else
+      step "desktop manager already running"
     fi
   fi
   desktop_apply_wallpaper
   desktop_ensure_taskbar
+  step "removing wine's junk launchers"
+  purge_wine_shortcuts_local
+  step "desktop layer done"
+  desktop_hide_desktop_window
+}
+
+# Same shortcut purge as the installer, available standalone too.
+purge_wine_shortcuts_local(){
+  if declare -F purge_wine_shortcuts >/dev/null 2>&1; then
+    purge_wine_shortcuts
+    return
+  fi
+  find "${DESKTOP_DIR}" "${MT5_HOME}/.local/share/applications" \
+       "${MT5_HOME}/.gnome2/vfolders" -maxdepth 3 -name '*.desktop' 2>/dev/null \
+    | grep -v '/mt5-' | xargs -r rm -f
+  rm -rf "${MT5_HOME}/.local/share/applications/wine" 2>/dev/null || true
 }
 
 # ============================================================
@@ -458,6 +640,24 @@ desktop_restore_window(){
 }
 
 # ============================================================
+# DOCTOR - "is it hung, or is it working?"
+# ============================================================
+desktop_doctor(){
+  header; title "DESKTOP DOCTOR"; header
+  echo "  Xvfb        : $(pgrep -af 'Xvfb :'${DISPLAY_NUM} | head -n1 || echo 'NOT RUNNING')"
+  echo "  X socket    : $([[ -e /tmp/.X11-unix/X${DISPLAY_NUM} ]] && echo present || echo MISSING)"
+  echo "  xdpyinfo    : $(timeout 5 xdpyinfo -display :${DISPLAY_NUM} >/dev/null 2>&1 && echo OK || echo FAIL)"
+  echo "  openbox     : $(pgrep -u ${MT5_USER} -x openbox >/dev/null 2>&1 && echo running || echo 'NOT RUNNING')"
+  echo "  x11vnc      : $(pgrep -u ${MT5_USER} -x x11vnc >/dev/null 2>&1 && echo running || echo 'NOT RUNNING')"
+  echo "  pcmanfm     : $(desktop_manager_active && echo running || echo 'NOT RUNNING')"
+  echo "  tint2       : $(pgrep -u ${MT5_USER} -x tint2 >/dev/null 2>&1 && echo running || echo 'NOT RUNNING')"
+  echo "  wallpaper   : $([[ -s ${WALLPAPER_PATH} ]] && du -h ${WALLPAPER_PATH} | cut -f1 || echo MISSING)"
+  echo "  windows     :"
+  DISPLAY=":${DISPLAY_NUM}" timeout 8 wmctrl -lx 2>/dev/null | sed 's/^/     /' || echo "     (wmctrl unavailable)"
+  header
+}
+
+# ============================================================
 # STANDALONE ENTRY POINT
 # ============================================================
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
@@ -468,9 +668,14 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     packages)  desktop_install_packages ;;
     wallpaper) desktop_prepare_dirs; desktop_fetch_wallpaper; desktop_apply_wallpaper ;;
     icons)     desktop_sync_icons ;;
-    taskbar)   desktop_ensure_taskbar ;;
+    taskbar)   desktop_write_tint2_conf; desktop_ensure_taskbar ;;
+    doctor)    desktop_doctor ;;
+    clean)     desktop_write_openbox_rules; desktop_write_tint2_conf
+               desktop_ensure_taskbar; purge_wine_shortcuts_local
+               desktop_hide_desktop_window
+               ok "Taskbar cleaned - the 'desktop 1' button is gone." ;;
     start)     desktop_start ;;
     restore)   desktop_restore_window ;;
-    *) echo "Usage: sudo bash $0 [all|packages|wallpaper|icons|taskbar|start|restore]"; exit 1 ;;
+    *) echo "Usage: sudo bash $0 [all|packages|wallpaper|icons|taskbar|clean|start|restore|doctor]"; exit 1 ;;
   esac
 fi
