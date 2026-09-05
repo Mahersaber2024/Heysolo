@@ -153,6 +153,9 @@ panel(){
   _cols=$(tput cols 2>/dev/null || echo 80)
   _pad=$(( (_cols - ${#_title}) / 2 ))
   (( _pad < 0 )) && _pad=0
+  echo
+  echo
+  echo
   printf '%*s' "${_pad}" ""
   say "${BOLD}${_title}${NC}"
   echo
@@ -171,14 +174,17 @@ panel(){
         st="${RED}stopped${NC}"
       fi
       if [[ "$(on_desk "${T_SLUG[$i]}")" == "1" ]]; then desk="on desktop"; else desk="${DIM}background${NC}"; fi
-      printf "  ${BOLD}%d${NC}  %-26s %-20b %b\n" "$((i+1))" "$(pretty "${T_SLUG[$i]}")" "${st}" "${desk}"
+      printf "  ${BOLD}%d.${NC} %-26s %-20b %b\n" "$((i+1))" "$(pretty "${T_SLUG[$i]}")" "${st}" "${desk}"
     done
   fi
   echo
   say "  ${CYAN}terminals${NC}  [${BOLD}1..9${NC}] start/stop   [${BOLD}r1${NC}] restart   [${BOLD}d1${NC}] desktop on/off   [${BOLD}k1${NC}] remove"
   say "             [${BOLD}a${NC}] start all    [${BOLD}z${NC}] stop all   [${BOLD}v${NC}] vnc on/off       [${BOLD}w${NC}] window to front"
+  echo
   say "  ${CYAN}setup${NC}      [${BOLD}p${NC}] prepare server   [${BOLD}i${NC}] install/add terminal   [${BOLD}m${NC}] sync MQL5 files"
-  say "  ${CYAN}bot${NC}        [${BOLD}t${NC}] bot setup        [${BOLD}b${NC}] restart bot            [${BOLD}l${NC}] bot logs"
+  echo
+  say "  ${CYAN}bot${NC}        [${BOLD}T${NC}] bot setup        [${BOLD}b${NC}] restart bot            [${BOLD}l${NC}] bot logs"
+  echo
   say "  ${CYAN}system${NC}     [${BOLD}?${NC}] doctor           [${BOLD}u${NC}] update scripts         [${BOLD}X${NC}] uninstall   [${BOLD}q${NC}] quit"
   echo
 }
@@ -272,7 +278,7 @@ do_action(){
           sync_mql5_assets_all
         else warn "library not loaded"; fi
         pause ;;
-    t)  bash "${SCRIPTS_DIR}/install.sh"; pause ;;
+    T)  bash "${SCRIPTS_DIR}/install.sh"; pause ;;
     b)  if systemctl restart "${BOT_SERVICE}" 2>/dev/null; then ok "bot restarted."; else err "could not restart ${BOT_SERVICE}"; fi; sleep 1 ;;
     l)  say "${DIM}Ctrl+C to come back${NC}"; journalctl -u "${BOT_SERVICE}" -n 50 -f || true ;;
     "?") run_mt5 doctor; pause ;;
