@@ -6,7 +6,36 @@ Telegram group, and lets you flip Manual/Auto mode, start/stop trading, and set
 per-symbol bias straight from Telegram - all through inline "glass" buttons,
 no commands to memorize.
 
-## Quick Install
+## Quick Install (one menu for everything)
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main/heysolo.sh)
+```
+
+This installs the `heysolo` command, so every time after the first you can
+just run:
+
+```bash
+sudo heysolo
+```
+
+and pick what you need from one menu:
+
+```
+ 1) Telegram Bot          - install / manage / update
+ 2) MT5 Terminals (VNC)   - install / manage terminals & desktop
+ 3) Uninstall             - bot / terminals / everything
+ 4) Guide & VNC access
+ 5) Doctor (diagnostics)
+ 6) Update HeySolo scripts
+```
+
+Under the hood this just calls the same three scripts described below - it
+downloads them once into `/opt/heysolo/scripts` and hands off to whichever
+one you pick, so nothing about how the bot or the terminals actually get
+installed has changed. If you prefer, you can still run each part directly.
+
+### 1) Telegram bot only
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main/install.sh)
@@ -29,7 +58,7 @@ After installation, verify the service is running:
 systemctl status heysolo-bot
 ```
 
-## MT5 Terminals Installer (separate from the bot)
+### 2) MT5 Terminals Installer (separate from the bot)
 
 If this server also needs to run one or more MT5 / prop-firm terminals over
 VNC, use the separate installer - it does **not** touch the Telegram bot
@@ -80,7 +109,7 @@ On the desktop, each terminal has its own icon: double-click opens it, clicking
 it again while it runs asks whether to **Bring to front** or **Close terminal**
 - same feel as Windows.
 
-## Uninstall
+### 3) Uninstall
 
 One script removes everything the two installers created - bot, MT5 terminals,
 wine prefixes, VNC desktop and every HeySolo config file:
@@ -266,6 +295,7 @@ journalctl -u heysolo-bot -f
 ```text
 BG/heysolo-des.png     desktop wallpaper used on the VNC desktop
 MT5/*.exe              MT5 / prop-firm terminal installers
+heysolo.sh             unified launcher/menu - installs the `heysolo` command
 install.sh             Telegram bot installer
 install_mt5.sh         MT5 terminals installer (VNC)
 desktop_mt5.sh         desktop module: wallpaper, icons, taskbar

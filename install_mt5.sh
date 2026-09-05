@@ -129,7 +129,7 @@ _on_exit(){
   err "The script stopped unexpectedly (exit ${rc}${HEYSOLO_LAST_ERR:+, ${HEYSOLO_LAST_ERR}})."
   header
   warn "Nothing you installed was lost. Check what is already up with:"
-  echo  "    bash $0        -> option 8 (Doctor)"
+  echo  "    bash $0 doctor        (or: sudo heysolo, then MT5 Terminals -> Doctor)"
   warn "Then send this log if you need help:"
   echo  "    ${HEYSOLO_LOG}"
   header
@@ -1195,7 +1195,7 @@ show_final_guide(){
   echo
   echo " Push Experts/Include/Indicators/set/Templates into EVERY terminal:"
   echo "    SFTP your files into the matching subfolder of ${MQL5_LOCAL_DIR}"
-  echo "    then run this script -> menu option 9 (\"Sync MQL5 assets\")"
+  echo "    then run this script -> menu option 7 (\"Sync MQL5 assets\")"
   echo
   print_vnc_access
   header
@@ -1327,16 +1327,18 @@ main_menu(){
   while true; do
     clear 2>/dev/null || true
     show_banner
-    echo -e " ${BOLD}1)${NC} Step 1 - Prepare server (packages + wine + user + VNC + Windows-like desktop)"
-    echo -e " ${BOLD}2)${NC} Step 2 - Install MT5 terminals from ${MT5_LOCAL_DIR}"
-    echo -e " ${BOLD}3)${NC} Manage one terminal (start/stop/restart/status)"
-    echo -e " ${BOLD}4)${NC} Turn VNC on/off"
-    echo -e " ${BOLD}5)${NC} Remove a terminal"
-    echo -e " ${BOLD}6)${NC} Guide / VNC access info"
-    echo -e " ${BOLD}7)${NC} Show the upload folder + what is already uploaded"
-    echo -e " ${BOLD}8)${NC} Doctor - is the display/desktop actually alive?"
-    echo -e " ${BOLD}9)${NC} Sync MQL5 assets (Experts/Include/Indicators/set/Templates) into all terminals"
-    echo -e " ${BOLD}0)${NC} Exit"
+    echo -e "  ${BOLD}SETUP${NC}"
+    echo -e "   ${BOLD}1)${NC} Prepare server        - packages, wine, user, VNC, desktop background"
+    echo -e "   ${BOLD}2)${NC} Install MT5 terminals - from ${MT5_LOCAL_DIR}"
+    echo
+    echo -e "  ${BOLD}MANAGE${NC}"
+    echo -e "   ${BOLD}3)${NC} Manage a terminal      - start / stop / restart / show on desktop"
+    echo -e "   ${BOLD}4)${NC} VNC viewing            - turn on/off"
+    echo -e "   ${BOLD}5)${NC} Remove a terminal"
+    echo -e "   ${BOLD}6)${NC} Uploaded installers    - list what's in ${MT5_LOCAL_DIR}"
+    echo -e "   ${BOLD}7)${NC} Sync MQL5 assets       - push Experts/Include/Indicators/set/Templates"
+    echo
+    echo -e "  ${BOLD}0)${NC} Exit"
     echo
     header
     if ! read -rp "Choice: " CH; then
@@ -1352,14 +1354,8 @@ main_menu(){
       3) require_root; manage_one_terminal ;;
       4) require_root; toggle_vnc_viewing ;;
       5) uninstall_terminal ;;
-      6) show_final_guide; press_enter ;;
-      7) require_root; list_local_installers; print_upload_instructions; press_enter ;;
-      8) require_root
-         if declare -F desktop_doctor >/dev/null 2>&1; then desktop_doctor; else
-           warn "${DESKTOP_MODULE} is missing."; fi
-         as_mt5 "screen -ls" || true
-         press_enter ;;
-      9) require_root
+      6) require_root; list_local_installers; print_upload_instructions; press_enter ;;
+      7) require_root
          ensure_mql5_local_dir
          echo
          header
@@ -1382,12 +1378,13 @@ main_menu(){
 case "${1:-menu}" in
   step1)  require_root; NONINTERACTIVE=1 step1_prepare_server; HEYSOLO_CLEAN_EXIT=1 ;;
   step2)  require_root; step2_install_terminals;               HEYSOLO_CLEAN_EXIT=1 ;;
+  guide)  require_root; show_final_guide;                      HEYSOLO_CLEAN_EXIT=1 ;;
   doctor) require_root
           if declare -F desktop_doctor >/dev/null 2>&1; then desktop_doctor; fi
           as_mt5 "screen -ls" || true
           HEYSOLO_CLEAN_EXIT=1 ;;
   menu|"") main_menu ;;
   *)      err "Unknown argument: $1"
-          echo "Usage: bash $0 [menu|step1|step2|doctor]"
+          echo "Usage: bash $0 [menu|step1|step2|guide|doctor]"
           HEYSOLO_CLEAN_EXIT=1; exit 2 ;;
 esac
