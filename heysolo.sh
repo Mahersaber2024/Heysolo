@@ -21,8 +21,10 @@ SCRIPT_LIST=(heysolo.sh install.sh install_mt5.sh desktop_mt5.sh uninstall.sh)
 if [[ -t 1 ]]; then
   RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
   CYAN=$'\033[0;36m'; DIM=$'\033[2m'; NC=$'\033[0m'; BOLD=$'\033[1m'
+  BLUE=$'\033[0;34m'; MAGENTA=$'\033[0;35m'; WHITE_BG=$'\033[47m\033[30m'
 else
   RED=''; GREEN=''; YELLOW=''; CYAN=''; DIM=''; NC=''; BOLD=''
+  BLUE=''; MAGENTA=''; WHITE_BG=''
 fi
 
 say(){  echo -e "$1"; }
@@ -30,6 +32,22 @@ ok(){   echo -e "${GREEN}[OK]${NC} $1"; }
 warn(){ echo -e "${YELLOW}[!]${NC} $1"; }
 err(){  echo -e "${RED}[ERROR]${NC} $1"; }
 pause(){ read -rp "${DIM}Enter to go back...${NC}" _ || true; }
+divider(){ echo -e "${DIM}────────────────────────────────────────────${NC}"; }
+section(){ echo -e "  ${BOLD}$1$2${NC}"; }   # section "<color>" "TITLE"
+
+# Distinct high-contrast color for every single option number (cycles),
+# independent of the section color, so each digit is easy to spot at a glance.
+if [[ -t 1 ]]; then
+  BADGE=( $'\033[1;97;41m' $'\033[1;30;42m' $'\033[1;97;44m' \
+          $'\033[1;30;43m' $'\033[1;97;45m' $'\033[1;30;46m' \
+          $'\033[1;97;100m' $'\033[1;30;47m' )
+else
+  BADGE=( '' '' '' '' '' '' '' '' )
+fi
+num_badge(){
+  local n="$1" idx=$(( ($1-1) % ${#BADGE[@]} ))
+  printf "%s %2d %s)" "${BADGE[$idx]}" "$n" "${NC}"
+}
 
 [[ $EUID -eq 0 ]] || { err "Run as root:  sudo heysolo"; exit 1; }
 
@@ -143,19 +161,23 @@ idx_ok(){ [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= ${#T_SLUG[@]} )); }
 panel(){
   clear 2>/dev/null || true
   scan_terminals
-  local bot ip vs ss bs i st desk
+  local bot ip vs ss bs i st desk n
   bot="$(bot_state)"; ip="$(my_ip)"
   if vnc_up;    then vs=1; else vs=0; fi
   if screen_up; then ss=1; else ss=0; fi
   if [[ "${bot}" == "active" ]]; then bs=1; else bs=0; fi
 
-  say "${BOLD}H E Y S O L O${NC}  ${DIM}Telegram bridge + MT5 terminals${NC}"
+  say "${BOLD}${CYAN}H E Y S O L O${NC}  ${DIM}Telegram bridge + MT5 terminals${NC}"
+  divider
   say "  bot $(dot "${bs}") ${bot}    vnc $(dot "${vs}") :${VNC_PORT}    display $(dot "${ss}") ${SCREEN_RES}    terminals ${#T_SLUG[@]}"
   say "  ${DIM}ssh -L ${VNC_PORT}:localhost:${VNC_PORT} ${MT5_USER}@${ip:-SERVER_IP}   ->   RealVNC: localhost:${VNC_PORT}${NC}"
   say "  ${DIM}slow link? in RealVNC Viewer only: right-click the connection > Properties > Options > Picture quality = Low${NC}"
   echo
+  divider
+  section "${GREEN}" "TERMINALS  ${DIM}(type its number to manage it)${NC}"
+  divider
   if (( ${#T_SLUG[@]} == 0 )); then
-    say "  ${YELLOW}No terminals yet${NC} - press ${BOLD}p${NC} to prepare the server, then ${BOLD}i${NC} to install one."
+    say "  ${YELLOW}No terminals yet${NC} - choose ${BOLD}\"prepare server\"${NC} then ${BOLD}\"install/add terminal\"${NC} below."
   else
     for i in "${!T_SLUG[@]}"; do
       if is_up "${T_SLUG[$i]}" "${T_PREFIX[$i]}" "${T_PATH[$i]}"; then
@@ -164,16 +186,75 @@ panel(){
         st="${RED}stopped${NC}"
       fi
       if [[ "$(on_desk "${T_SLUG[$i]}")" == "1" ]]; then desk="on desktop"; else desk="${DIM}background${NC}"; fi
-      printf "  ${BOLD}%d${NC}  %-26s %-20b %b\n" "$((i+1))" "$(pretty "${T_SLUG[$i]}")" "${st}" "${desk}"
+      printf "  %s %-26s %-20b %b\n" "$(num_badge "$((i+1))")" "$(pretty "${T_SLUG[$i]}")" "${st}" "${desk}"
     done
   fi
   echo
-  say "  ${CYAN}terminals${NC}  ${BOLD}1..9${NC} start/stop   ${BOLD}r1${NC} restart   ${BOLD}d1${NC} desktop on/off   ${BOLD}k1${NC} remove"
-  say "             ${BOLD}a${NC} start all    ${BOLD}z${NC} stop all   ${BOLD}v${NC} vnc on/off       ${BOLD}w${NC} window to front"
-  say "  ${CYAN}setup${NC}      ${BOLD}p${NC} prepare server   ${BOLD}i${NC} install/add terminal   ${BOLD}m${NC} sync MQL5 files"
-  say "  ${CYAN}bot${NC}        ${BOLD}t${NC} bot setup        ${BOLD}b${NC} restart bot            ${BOLD}l${NC} bot logs"
-  say "  ${CYAN}system${NC}     ${BOLD}?${NC} doctor           ${BOLD}u${NC} update scripts         ${BOLD}X${NC} uninstall   ${BOLD}q${NC} quit"
+
+  n=${#T_SLUG[@]}
+  divider
+  section "${YELLOW}" "TERMINAL CONTROL"
+  divider
+  printf "  %s Start all terminals\n"     "$(num_badge "$((n+1))")"
+  printf "  %s Stop all terminals\n"      "$(num_badge "$((n+2))")"
+  printf "  %s Toggle VNC on/off\n"       "$(num_badge "$((n+3))")"
+  printf "  %s Bring window to front\n"   "$(num_badge "$((n+4))")"
   echo
+
+  divider
+  section "${BLUE}" "SETUP"
+  divider
+  printf "  %s Prepare server\n"            "$(num_badge "$((n+5))")"
+  printf "  %s Install / add terminal\n"    "$(num_badge "$((n+6))")"
+  printf "  %s Sync MQL5 files\n"           "$(num_badge "$((n+7))")"
+  echo
+
+  divider
+  section "${MAGENTA}" "BOT"
+  divider
+  printf "  %s Bot setup\n"               "$(num_badge "$((n+8))")"
+  printf "  %s Restart bot\n"             "$(num_badge "$((n+9))")"
+  printf "  %s View bot logs\n"           "$(num_badge "$((n+10))")"
+  echo
+
+  divider
+  section "${RED}" "SYSTEM"
+  divider
+  printf "  %s Doctor (diagnostics)\n"        "$(num_badge "$((n+11))")"
+  printf "  %s Update scripts\n"              "$(num_badge "$((n+12))")"
+  printf "  %s Uninstall\n"                   "$(num_badge "$((n+13))")"
+  printf "  %s Quit\n"                        "$(num_badge "$((n+14))")"
+  divider
+  echo
+}
+
+# ------------------------------------------------------------
+# Per-terminal submenu (numbered, no letters)
+# ------------------------------------------------------------
+terminal_submenu(){
+  local i="$1" sub st
+  while true; do
+    clear 2>/dev/null || true
+    scan_terminals
+    if is_up "${T_SLUG[$i]}" "${T_PREFIX[$i]}" "${T_PATH[$i]}"; then st="${GREEN}running${NC}"; else st="${RED}stopped${NC}"; fi
+    say "${BOLD}${GREEN}$(pretty "${T_SLUG[$i]}")${NC}  -  ${st}"
+    divider
+    say "  $(num_badge 1) Start / Stop (toggle)"
+    say "  $(num_badge 2) Restart"
+    say "  $(num_badge 3) Toggle desktop icon on/off"
+    say "  $(num_badge 4) Remove this terminal"
+    say "  ${BOLD}${DIM} 0 ${NC}) Back"
+    divider
+    read -rp "${BOLD}>${NC} " sub || return
+    case "${sub// /}" in
+      1) do_action "$((i+1))"; pause ;;
+      2) do_action "r$((i+1))"; pause ;;
+      3) do_action "d$((i+1))" ;;
+      4) do_action "k$((i+1))"; return ;;
+      0|"") return ;;
+      *) warn "invalid choice"; sleep 1 ;;
+    esac
+  done
 }
 
 # ------------------------------------------------------------
@@ -279,8 +360,41 @@ do_action(){
 
 if [[ -n "${1:-}" ]]; then scan_terminals; do_action "$1"; exit 0; fi
 
+dispatch_number(){
+  local choice="$1" n=${#T_SLUG[@]} off
+  if idx_ok "${choice}"; then
+    terminal_submenu "$((choice-1))"
+    return 0
+  fi
+  off=$((choice - n))
+  case "${off}" in
+    1)  do_action a ;;
+    2)  do_action z ;;
+    3)  do_action v ;;
+    4)  do_action w ;;
+    5)  do_action p; pause ;;
+    6)  do_action i; pause ;;
+    7)  do_action m ;;
+    8)  do_action t; pause ;;
+    9)  do_action b ;;
+    10) do_action l ;;
+    11) do_action '?' ;;
+    12) do_action u; pause ;;
+    13) do_action X; pause ;;
+    14) do_action q ;;
+    *)  warn "no option ${choice}"; sleep 1 ;;
+  esac
+}
+
 while true; do
   panel
   read -rp "${BOLD}>${NC} " CMD || { echo; exit 0; }
-  do_action "${CMD// /}"
+  CMD="${CMD// /}"
+  [[ -z "${CMD}" ]] && continue
+  if ! [[ "${CMD}" =~ ^[0-9]+$ ]]; then
+    warn "please type a number from the menu"
+    sleep 1
+    continue
+  fi
+  dispatch_number "${CMD}"
 done
