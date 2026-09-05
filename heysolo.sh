@@ -149,7 +149,14 @@ panel(){
   if screen_up; then ss=1; else ss=0; fi
   if [[ "${bot}" == "active" ]]; then bs=1; else bs=0; fi
 
-  say "${BOLD}H E Y S O L O${NC}  ${DIM}Telegram bridge + MT5 terminals${NC}"
+  local _title="H E Y S O L O" _cols _pad
+  _cols=$(tput cols 2>/dev/null || echo 80)
+  _pad=$(( (_cols - ${#_title}) / 2 ))
+  (( _pad < 0 )) && _pad=0
+  printf '%*s' "${_pad}" ""
+  say "${BOLD}${_title}${NC}"
+  echo
+  echo
   say "  bot $(dot "${bs}") ${bot}    vnc $(dot "${vs}") :${VNC_PORT}    display $(dot "${ss}") ${SCREEN_RES}    terminals ${#T_SLUG[@]}"
   say "  ${DIM}ssh -L ${VNC_PORT}:localhost:${VNC_PORT} ${MT5_USER}@${ip:-SERVER_IP}   ->   RealVNC: localhost:${VNC_PORT}${NC}"
   say "  ${DIM}slow link? in RealVNC Viewer only: right-click the connection > Properties > Options > Picture quality = Low${NC}"
@@ -168,11 +175,11 @@ panel(){
     done
   fi
   echo
-  say "  ${CYAN}terminals${NC}  ${BOLD}1..9${NC} start/stop   ${BOLD}r1${NC} restart   ${BOLD}d1${NC} desktop on/off   ${BOLD}k1${NC} remove"
-  say "             ${BOLD}a${NC} start all    ${BOLD}z${NC} stop all   ${BOLD}v${NC} vnc on/off       ${BOLD}w${NC} window to front"
-  say "  ${CYAN}setup${NC}      ${BOLD}p${NC} prepare server   ${BOLD}i${NC} install/add terminal   ${BOLD}m${NC} sync MQL5 files"
-  say "  ${CYAN}bot${NC}        ${BOLD}t${NC} bot setup        ${BOLD}b${NC} restart bot            ${BOLD}l${NC} bot logs"
-  say "  ${CYAN}system${NC}     ${BOLD}?${NC} doctor           ${BOLD}u${NC} update scripts         ${BOLD}X${NC} uninstall   ${BOLD}q${NC} quit"
+  say "  ${CYAN}terminals${NC}  [${BOLD}1..9${NC}] start/stop   [${BOLD}r1${NC}] restart   [${BOLD}d1${NC}] desktop on/off   [${BOLD}k1${NC}] remove"
+  say "             [${BOLD}a${NC}] start all    [${BOLD}z${NC}] stop all   [${BOLD}v${NC}] vnc on/off       [${BOLD}w${NC}] window to front"
+  say "  ${CYAN}setup${NC}      [${BOLD}p${NC}] prepare server   [${BOLD}i${NC}] install/add terminal   [${BOLD}m${NC}] sync MQL5 files"
+  say "  ${CYAN}bot${NC}        [${BOLD}t${NC}] bot setup        [${BOLD}b${NC}] restart bot            [${BOLD}l${NC}] bot logs"
+  say "  ${CYAN}system${NC}     [${BOLD}?${NC}] doctor           [${BOLD}u${NC}] update scripts         [${BOLD}X${NC}] uninstall   [${BOLD}q${NC}] quit"
   echo
 }
 
