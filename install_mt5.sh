@@ -26,7 +26,7 @@ WALLPAPER_NAME="heysolo-des.png"
 MT5_USER="mt5user"
 DISPLAY_NUM="1"                 # -> DISPLAY=:1
 VNC_PORT=5900
-SCREEN_RES="1280x1024x24"
+SCREEN_RES="1920x1080x24"
 
 # All brokers install into ONE shared wineprefix, each under its own
 # Program Files subfolder - the normal Windows layout.
