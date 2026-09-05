@@ -35,18 +35,17 @@ pause(){ read -rp "${DIM}Enter to go back...${NC}" _ || true; }
 divider(){ echo -e "${DIM}────────────────────────────────────────────${NC}"; }
 section(){ echo -e "  ${BOLD}$1$2${NC}"; }   # section "<color>" "TITLE"
 
-# Distinct high-contrast color for every single option number (cycles),
-# independent of the section color, so each digit is easy to spot at a glance.
+# Distinct color for every option number (cycles), independent of the
+# section color. Foreground-only (no background) — background colors don't
+# get reset cleanly on many terminals/SSH apps and bleed across the line.
 if [[ -t 1 ]]; then
-  BADGE=( $'\033[1;97;41m' $'\033[1;30;42m' $'\033[1;97;44m' \
-          $'\033[1;30;43m' $'\033[1;97;45m' $'\033[1;30;46m' \
-          $'\033[1;97;100m' $'\033[1;30;47m' )
+  BADGE=( "${RED}" "${GREEN}" "${YELLOW}" "${BLUE}" "${MAGENTA}" "${CYAN}" )
 else
-  BADGE=( '' '' '' '' '' '' '' '' )
+  BADGE=( '' '' '' '' '' '' )
 fi
 num_badge(){
   local n="$1" idx=$(( ($1-1) % ${#BADGE[@]} ))
-  printf "%s %2d %s)" "${BADGE[$idx]}" "$n" "${NC}"
+  printf "${BOLD}${BADGE[$idx]}%2d${NC})" "$n"
 }
 
 [[ $EUID -eq 0 ]] || { err "Run as root:  sudo heysolo"; exit 1; }
