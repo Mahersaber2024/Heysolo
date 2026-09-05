@@ -49,11 +49,18 @@ export COLOR_DEPTH SCREEN_GEOMETRY LOW_BANDWIDTH SCREEN_RES
 # x11vnc options in one place (used by every start below).
 #   -defer/-wait      : batch updates, ~12 fps instead of as-fast-as-possible
 #   -speeds modem     : x11vnc's own tuning for a slow link
-#   -nocursorshape    : one less cursor update stream
+#   -cursor arrow     : draw a plain static arrow shape instead of querying
+#                       Xvfb's real cursor (Xvfb's XFixes cursor support is
+#                       unreliable) - cheap, but still an actual shape
 #   -nowireframe      : no wireframe animation while dragging windows
+#   NOTE: do NOT add -nocursorshape here. It disables the RFB cursor-shape
+#   stream completely, and with no shape data at all the VNC viewer falls
+#   back to drawing a bare dot that does not track the real pointer -
+#   exactly the "mouse is a dot and clicks land nowhere" symptom, because
+#   you are aiming at the dot, not at the real (invisible) cursor position.
 VNC_BASE_OPTS="-forever -shared -noprimary -nosetprimary"
 if [[ "${LOW_BANDWIDTH}" == "1" ]]; then
-  VNC_TUNE_OPTS="-speeds modem -defer 80 -wait 80 -nocursorshape -cursor arrow -nowireframe"
+  VNC_TUNE_OPTS="-speeds modem -defer 80 -wait 80 -cursor arrow -nowireframe"
 else
   VNC_TUNE_OPTS=""
 fi
