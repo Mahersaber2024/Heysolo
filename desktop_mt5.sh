@@ -6,6 +6,28 @@ MT5_USER="${MT5_USER:-mt5user}"
 DISPLAY_NUM="${DISPLAY_NUM:-1}"
 SCREEN_RES="${SCREEN_RES:-1920x1080x24}"
 SCREEN_RES_WH="${SCREEN_RES%x*}"     # "1280x1024x24" -> "1280x1024", for wine's /desktop=name,WxH
+
+# ------------------------------------------------------------
+# WORKING AREA (screen minus the taskbar)
+#   Bug: every terminal's wine virtual desktop used to be sized to the FULL
+#   screen (SCREEN_RES_WH), i.e. exactly as tall as the display - including
+#   the 40px strip at the bottom where tint2 lives. With no real EWMH strut
+#   reserved (panel_dock was 0), openbox had no reason to leave that strip
+#   alone, so the terminal's window simply painted over the taskbar AND the
+#   wallpaper underneath it. Fix: give tint2 a real strut (panel_dock=1
+#   below) AND size every terminal's virtual desktop to the area that is
+#   actually left over, so it physically cannot cover the panel even if a
+#   window manager ignores struts for manually-sized windows.
+# ------------------------------------------------------------
+PANEL_HEIGHT="${PANEL_HEIGHT:-40}"
+compute_work_res(){
+  local w h
+  w="${SCREEN_RES_WH%x*}"
+  h="${SCREEN_RES_WH#*x}"
+  [[ "$w" =~ ^[0-9]+$ && "$h" =~ ^[0-9]+$ ]] || { echo "${SCREEN_RES_WH}"; return; }
+  echo "${w}x$((h - PANEL_HEIGHT))"
+}
+WORK_RES_WH="${WORK_RES_WH:-$(compute_work_res)}"   # e.g. "1920x1040" for a 1920x1080 screen
 REPO_OWNER="${REPO_OWNER:-Mahersaber2024}"
 REPO_NAME="${REPO_NAME:-Heysolo}"
 REPO_RAW="${REPO_RAW:-https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main}"
@@ -13,6 +35,11 @@ BG_SUBDIR="${BG_SUBDIR:-BG}"
 WALLPAPER_NAME="${WALLPAPER_NAME:-heysolo-des.png}"
 STATE_DIR="${STATE_DIR:-/etc/heysolo-mt5}"
 TERMINALS_FILE="${TERMINALS_FILE:-${STATE_DIR}/terminals.list}"
+# Per-terminal "show on the shared VNC desktop" switch - kept in its OWN file
+# (slug=0/1 lines) rather than as a 5th column in terminals.list, so nothing
+# that already does `IFS='|' read -r slug exe wineprefix termpath` on the
+# 4-column file breaks or silently swallows the flag into termpath.
+DESKTOP_VISIBLE_FILE="${DESKTOP_VISIBLE_FILE:-${STATE_DIR}/desktop_visible.list}"
 
 MT5_HOME="/home/${MT5_USER}"
 ASSET_DIR="${MT5_HOME}/.heysolo"
@@ -295,7 +322,7 @@ start_it(){
   # own wine virtual desktop per terminal - see start_terminal() in
   # install_mt5.sh for why (stops the "VNC clicks stop working after
   # switching between terminals" input-grab conflict).
-  screen -dmS "\${SLUG}" bash -c "export DISPLAY=:${DISPLAY_NUM} WINEDLLOVERRIDES='winemenubuilder.exe=d' WINEPREFIX='\${WINEPREFIX}'; wine explorer /desktop=\${SLUG},${SCREEN_RES_WH:-1280x1024} \"\${TERM_EXE}\""
+  screen -dmS "\${SLUG}" bash -c "export DISPLAY=:${DISPLAY_NUM} WINEDLLOVERRIDES='winemenubuilder.exe=d' WINEPREFIX='\${WINEPREFIX}'; wine explorer /desktop=\${SLUG},${WORK_RES_WH:-1280x1024} \"\${TERM_EXE}\""
 }
 
 if running; then
@@ -368,6 +395,10 @@ desktop_sync_icons(){
       warn "${slug}: no terminal64.exe - skipping its icon (finish the setup wizard first)."
       skipped=$((skipped+1)); continue
     fi
+    if [[ "$(terminal_desktop_visible "${slug}")" == "0" ]]; then
+      # background-only terminal: no icon, no launcher, nothing to switch to
+      skipped=$((skipped+1)); continue
+    fi
     desktop_write_launcher "$slug" "${exe:-}" "${wineprefix:-}" "${termpath}" >/dev/null || true
     n=$((n+1))
   done < "${TERMINALS_FILE}"
@@ -420,7 +451,7 @@ panel_position = bottom center horizontal
 panel_size = 100% 40
 panel_margin = 0 0
 panel_padding = 4 2 4
-panel_dock = 0
+panel_dock = 1
 wm_menu = 1
 panel_layer = top
 panel_background_id = 1
@@ -497,6 +528,13 @@ desktop_write_openbox_rules(){
     <application name="winecfg.exe*"><skip_taskbar>yes</skip_taskbar></application>
     <!-- MT5 terminals: normal, listed, decorated -->
     <application class="terminal64.exe*"><layer>normal</layer></application>
+    <!-- wine's virtual-desktop frame (wine explorer /desktop=NAME) is sized
+         to WORK_RES_WH now, not the full screen, but pin it to the top-left
+         corner too so it can never drift down over the taskbar strip. -->
+    <application class="explorer.exe*">
+      <position force="yes"><x>0</x><y>0</y></position>
+      <decor>no</decor>
+    </application>
   </applications>
 </openbox_config>
 EOF
@@ -558,6 +596,65 @@ desktop_ensure_title_watcher(){
   # already running -> nothing to do
   as_mt5 "screen -ls" 2>/dev/null | grep -q '\.titlewatch\b' && return 0
   as_mt5 "screen -dmS titlewatch bash -c 'export DISPLAY=:${DISPLAY_NUM}; ${script}'"
+}
+
+# ============================================================
+# PER-TERMINAL DESKTOP VISIBILITY
+#   Not every broker terminal needs to be something you switch to over VNC -
+#   some just need to sit in the background running an EA. "Desktop: ON"
+#   terminals get the usual wine virtual desktop, a taskbar entry and a
+#   desktop icon. "Desktop: OFF" terminals still run (same screen session,
+#   same wineprefix), they just never get wrapped into the shared virtual
+#   desktop, so they cannot fight over taskbar slots or grabs with the ones
+#   you actually watch.
+# ============================================================
+terminal_desktop_visible(){        # terminal_desktop_visible <slug>  -> prints 1 or 0
+  local slug="$1" v
+  if [[ -f "${DESKTOP_VISIBLE_FILE}" ]]; then
+    v=$(grep "^${slug}=" "${DESKTOP_VISIBLE_FILE}" 2>/dev/null | tail -n1 | cut -d= -f2)
+  fi
+  # default: visible, so existing installs keep behaving exactly as before
+  [[ "${v}" == "0" || "${v}" == "1" ]] || v=1
+  echo "${v}"
+}
+
+set_terminal_desktop_visible(){    # set_terminal_desktop_visible <slug> <0|1>
+  local slug="$1" val="$2"
+  mkdir -p "$(dirname "${DESKTOP_VISIBLE_FILE}")" 2>/dev/null || true
+  touch "${DESKTOP_VISIBLE_FILE}"
+  grep -v "^${slug}=" "${DESKTOP_VISIBLE_FILE}" > "${DESKTOP_VISIBLE_FILE}.tmp" 2>/dev/null || true
+  mv "${DESKTOP_VISIBLE_FILE}.tmp" "${DESKTOP_VISIBLE_FILE}" 2>/dev/null || true
+  echo "${slug}=${val}" >> "${DESKTOP_VISIBLE_FILE}"
+}
+
+remove_terminal_desktop_visible(){ # called when a terminal is uninstalled
+  local slug="$1"
+  [[ -f "${DESKTOP_VISIBLE_FILE}" ]] || return 0
+  grep -v "^${slug}=" "${DESKTOP_VISIBLE_FILE}" > "${DESKTOP_VISIBLE_FILE}.tmp" 2>/dev/null || true
+  mv "${DESKTOP_VISIBLE_FILE}.tmp" "${DESKTOP_VISIBLE_FILE}" 2>/dev/null || true
+}
+
+# A "Desktop: OFF" terminal still opens a normal top-level window on :1 (MT5
+# needs a display to run at all) - we just don't want it visible or fighting
+# for a taskbar slot. Wait for its window by PID and hide it immediately.
+desktop_hide_background_terminal(){   # desktop_hide_background_terminal <termpath>
+  local termpath="$1" tries=15 pid wid
+  command -v xdotool >/dev/null 2>&1 || return 0
+  command -v wmctrl  >/dev/null 2>&1 || return 0
+  while (( tries-- > 0 )); do
+    pid=$(as_mt5 "pgrep -f '${termpath}'" 2>/dev/null | head -n1)
+    [[ -n "${pid}" ]] && break
+    sleep 1
+  done
+  [[ -n "${pid}" ]] || return 0
+  tries=15
+  while (( tries-- > 0 )); do
+    wid=$(as_mt5 "xdotool search --pid ${pid}" 2>/dev/null | head -n1)
+    [[ -n "${wid}" ]] && break
+    sleep 1
+  done
+  [[ -n "${wid}" ]] || return 0
+  as_mt5 "wmctrl -ir ${wid} -b add,skip_taskbar,skip_pager,hidden" 2>/dev/null || true
 }
 
 # ============================================================
@@ -796,6 +893,10 @@ desktop_doctor(){
   echo "  wallpaper   : $([[ -s ${WALLPAPER_PATH} ]] && du -h ${WALLPAPER_PATH} | cut -f1 || echo MISSING)"
   echo "  windows     :"
   DISPLAY=":${DISPLAY_NUM}" timeout 8 wmctrl -lx 2>/dev/null | sed 's/^/     /' || echo "     (wmctrl unavailable)"
+  if [[ -s "${DESKTOP_VISIBLE_FILE}" ]]; then
+    echo "  desktop off :"
+    grep '=0$' "${DESKTOP_VISIBLE_FILE}" 2>/dev/null | cut -d= -f1 | sed 's/^/     - /'
+  fi
   header
 }
 
@@ -820,6 +921,9 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                ok "Taskbar cleaned - the 'desktop 1' button is gone." ;;
     start)     desktop_start ;;
     restore)   desktop_restore_window ;;
-    *) echo "Usage: sudo bash $0 [all|packages|wallpaper|icons|taskbar|titles|clipboard|clean|start|restore|doctor]"; exit 1 ;;
+    visible)   [[ -n "${2:-}" && -n "${3:-}" ]] || { echo "Usage: sudo bash $0 visible <slug> <0|1>"; exit 1; }
+               set_terminal_desktop_visible "$2" "$3"
+               ok "${2}: desktop visibility set to ${3}." ;;
+    *) echo "Usage: sudo bash $0 [all|packages|wallpaper|icons|taskbar|titles|clipboard|clean|start|restore|visible <slug> <0|1>|doctor]"; exit 1 ;;
   esac
 fi
