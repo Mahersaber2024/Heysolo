@@ -838,6 +838,8 @@ sync_mql5_assets(){
 
 sync_mql5_assets_all(){
   [[ -s "${TERMINALS_FILE}" ]] || return 0
+  dedupe_terminals   # a stale duplicate line for the same slug would otherwise
+                      # get synced twice below, printing its [OK] block twice
   MQL5_DIR_OWNER=()
   MQL5_SAW_SOURCES=0
   # Same terminal64.exe under two slugs = one install overwrote the other.
