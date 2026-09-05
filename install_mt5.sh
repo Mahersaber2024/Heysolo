@@ -712,22 +712,38 @@ read_origin(){                    # read_origin <origin.txt> -> lowercased path
     | sed 's:[\\/]*$::' | tr '[:upper:]' '[:lower:]'
 }
 
-# Each MT5 install gets its OWN data folder:
-#   <prefix>/drive_c/users/<user>/AppData/Roaming/MetaQuotes/Terminal/<hash>/MQL5
-# and every <hash> folder holds an origin.txt (UTF-16) naming the install
-# directory it belongs to. Since every broker shares one wineprefix now, that
-# AppData root holds one <hash> per broker, so origin.txt is the ONLY way to
-# tell them apart.
+# MetaTrader 5 decides portable-vs-not by testing whether ITS OWN install
+# folder is writable - if yes, it keeps ALL its data (MQL5, config, logs)
+# right next to terminal64.exe instead of AppData. Under Wine there is no
+# NTFS ACL / UAC blocking writes to "Program Files" the way real Windows
+# does, so every terminal installed by this script ends up running in that
+# auto-portable mode. Verified on a live box - both of these are real,
+# confirmed paths, not AppData:
+#   drive_c/Program Files/MetaTrader 5/MQL5/Experts
+#   drive_c/Program Files/Fusion Markets MetaTrader 5/MQL5/Experts
+# So the LOCAL folder next to the exe is checked FIRST now.
 #
-# BUG THIS FIXES: the old version compared only the LAST path component of the
-# install dir, as a SUBSTRING. "MetaTrader 5" (plain mt5setup) is a substring of
-# "FusionMarkets MetaTrader 5", so both brokers resolved to the SAME <hash>
-# folder: option 7 printed [OK] twice, copied everything into one terminal's
-# folder twice, and the other terminal never received a single file - exactly
-# the "it said OK but nothing showed up in MetaTrader" symptom. Now the FULL
-# Windows path must match exactly.
+# Only if that is missing do we fall back to the old AppData/<hash> lookup,
+# for the rare case where "Program Files" really is read-only (e.g. a real
+# Windows box sharing Common\Files, or the wineprefix got locked down by
+# hand) and MT5 was therefore forced into non-portable mode. In that mode
+# every <hash> folder holds an origin.txt (UTF-16) naming the install
+# directory it belongs to - since every broker can share one wineprefix,
+# origin.txt is the only way to tell them apart there. (Older bug, already
+# fixed here: comparing only the LAST path component as a SUBSTRING made
+# "MetaTrader 5" match inside "FusionMarkets MetaTrader 5" and both brokers
+# resolved to the same <hash>. Now the FULL Windows path must match exactly.)
 resolve_mql5_dir(){
   local wineprefix="$1" install_dir="$2"
+  # Portable mode (the common case under Wine): data folder IS the install
+  # folder. Requires the terminal's own config folder next to it too -
+  # otherwise we would happily copy into a freshly unpacked install dir that
+  # MT5 has never actually run from yet.
+  if [[ -d "${install_dir}/MQL5" && -d "${install_dir}/config" ]]; then
+    echo "${install_dir}/MQL5"
+    return 0
+  fi
+  # Non-portable fallback: match the AppData hash folder via origin.txt.
   local f want got
   want="$(win_path_of "${wineprefix}" "${install_dir}")"
   if [[ -n "${want}" ]]; then
@@ -736,14 +752,6 @@ resolve_mql5_dir(){
       got="$(read_origin "${f}")"
       [[ -n "${got}" && "${got}" == "${want}" ]] && { echo "$(dirname "${f}")/MQL5"; return 0; }
     done
-  fi
-  # Portable mode only: the data folder IS the install folder. Requires the
-  # terminal's own config folder next to it - otherwise we would happily copy
-  # into a freshly unpacked install dir that MT5 does not actually read, which
-  # is the other half of the "files went somewhere wrong" bug.
-  if [[ -d "${install_dir}/MQL5" && -d "${install_dir}/config" ]]; then
-    echo "${install_dir}/MQL5"
-    return 0
   fi
   return 1
 }
@@ -838,8 +846,6 @@ sync_mql5_assets(){
 
 sync_mql5_assets_all(){
   [[ -s "${TERMINALS_FILE}" ]] || return 0
-  dedupe_terminals   # a stale duplicate line for the same slug would otherwise
-                      # get synced twice below, printing its [OK] block twice
   MQL5_DIR_OWNER=()
   MQL5_SAW_SOURCES=0
   # Same terminal64.exe under two slugs = one install overwrote the other.
