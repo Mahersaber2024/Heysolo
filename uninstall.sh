@@ -239,7 +239,12 @@ stop_all_mt5(){
     done < "${TERMINALS_FILE}"
   fi
   as_mt5 "wineserver -k"
+  # helper screens created by the desktop module
   as_mt5 "screen -S vnc -X quit"
+  as_mt5 "screen -S titlewatch -X quit"
+  as_mt5 "screen -S clipwatch -X quit"
+  as_mt5 "screen -S panelwatch -X quit"
+  as_mt5 "pkill -x tint2"
   as_mt5 "pkill x11vnc"
   as_mt5 "pkill -f 'Xvfb :${DISPLAY_NUM}'"
   as_mt5 "pkill -x openbox"

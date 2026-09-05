@@ -26,7 +26,38 @@ WALLPAPER_NAME="heysolo-des.png"
 MT5_USER="mt5user"
 DISPLAY_NUM="1"                 # -> DISPLAY=:1
 VNC_PORT=5900
-SCREEN_RES="1920x1080x24"
+
+# ------------------------------------------------------------
+# DESKTOP QUALITY vs BANDWIDTH
+#   The geometry (the "scale" - how big everything looks inside MT5) stays at
+#   1920x1080. What we turn down is the QUALITY of the pixels being shipped:
+#     COLOR_DEPTH=16   -> 16-bit instead of 24-bit: ~half the bytes per pixel
+#                         (COLOR_DEPTH=8 goes even lower, 256 colours)
+#     LOW_BANDWIDTH=1  -> flat colour desktop instead of the photo wallpaper,
+#                         and x11vnc is tuned for a slow link (fewer frames)
+#   Change it for one run without editing anything:
+#     COLOR_DEPTH=8 sudo bash install_mt5.sh          # even lighter
+#     LOW_BANDWIDTH=0 COLOR_DEPTH=24 sudo bash ...    # back to pretty
+#   Xvfb falls back to 24-bit on its own if wine refuses the lower depth.
+# ------------------------------------------------------------
+COLOR_DEPTH="${COLOR_DEPTH:-16}"
+SCREEN_GEOMETRY="${SCREEN_GEOMETRY:-1920x1080}"
+LOW_BANDWIDTH="${LOW_BANDWIDTH:-1}"
+SCREEN_RES="${SCREEN_RES:-${SCREEN_GEOMETRY}x${COLOR_DEPTH}}"
+export COLOR_DEPTH SCREEN_GEOMETRY LOW_BANDWIDTH SCREEN_RES
+
+# x11vnc options in one place (used by every start below).
+#   -defer/-wait      : batch updates, ~12 fps instead of as-fast-as-possible
+#   -speeds modem     : x11vnc's own tuning for a slow link
+#   -nocursorshape    : one less cursor update stream
+#   -nowireframe      : no wireframe animation while dragging windows
+VNC_BASE_OPTS="-forever -shared -noprimary -nosetprimary"
+if [[ "${LOW_BANDWIDTH}" == "1" ]]; then
+  VNC_TUNE_OPTS="-speeds modem -defer 80 -wait 80 -nocursorshape -cursor arrow -nowireframe"
+else
+  VNC_TUNE_OPTS=""
+fi
+VNC_OPTS="${VNC_BASE_OPTS} ${VNC_TUNE_OPTS}"
 
 # All brokers install into ONE shared wineprefix, each under its own
 # Program Files subfolder - the normal Windows layout.
@@ -525,13 +556,20 @@ start_display(){
     warn "Removing a stale X lock (/tmp/.X${DISPLAY_NUM}-lock) from a previous run."
     rm -f "/tmp/.X${DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${DISPLAY_NUM}" 2>/dev/null || true
   fi
+  info "Display :${DISPLAY_NUM} = ${SCREEN_RES} (geometry ${SCREEN_GEOMETRY}, ${COLOR_DEPTH}-bit colour, low-bandwidth=${LOW_BANDWIDTH})."
   as_mt5 "screen -dmS vnc bash -c '
     export DISPLAY=:${DISPLAY_NUM};
-    Xvfb :${DISPLAY_NUM} -screen 0 ${SCREEN_RES} >/dev/null 2>&1 &
-    for i in \$(seq 1 30); do xdpyinfo >/dev/null 2>&1 && break; sleep 1; done;
+    Xvfb :${DISPLAY_NUM} -screen 0 ${SCREEN_RES} -nolisten tcp -dpi 96 >/dev/null 2>&1 &
+    for i in \$(seq 1 20); do xdpyinfo >/dev/null 2>&1 && break; sleep 1; done;
+    if ! xdpyinfo >/dev/null 2>&1; then
+      pkill -f \"Xvfb :${DISPLAY_NUM}\" >/dev/null 2>&1;
+      sleep 1;
+      Xvfb :${DISPLAY_NUM} -screen 0 ${SCREEN_GEOMETRY}x24 -nolisten tcp -dpi 96 >/dev/null 2>&1 &
+      for i in \$(seq 1 20); do xdpyinfo >/dev/null 2>&1 && break; sleep 1; done;
+    fi;
     openbox >/dev/null 2>&1 &
     sleep 1;
-    x11vnc -display :${DISPLAY_NUM} -forever -shared -noprimary -nosetprimary -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg;
+    x11vnc -display :${DISPLAY_NUM} ${VNC_OPTS} -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg;
     sleep infinity'"
   # wait for X itself instead of hoping 3 seconds was enough
   info "Waiting for the display to come up (up to 40s)..."
@@ -651,17 +689,63 @@ ensure_mql5_local_dir(){
 # Terminal/<hash> folder PER broker - each hash folder contains an
 # origin.txt (UTF-16) naming the install directory it belongs to, so that
 # is how we pick the right one instead of grabbing the first match.
+# Windows path of a directory inside the prefix, lowercased, exactly how MT5
+# writes it into origin.txt:
+#   <prefix>/drive_c/Program Files/Fusion MT5  ->  c:\program files\fusion mt5
+win_path_of(){
+  local wineprefix="$1" unix_dir="$2" rel
+  rel="${unix_dir#${wineprefix}/drive_c/}"
+  [[ "${rel}" == "${unix_dir}" ]] && { echo ""; return 0; }
+  rel="${rel//\//\\}"
+  printf 'c:\\%s' "${rel}" | tr '[:upper:]' '[:lower:]'
+}
+
+read_origin(){                    # read_origin <origin.txt> -> lowercased path
+  local f="$1" content
+  content=$(iconv -f UTF-16 -t UTF-8 "${f}" 2>/dev/null) \
+    || content=$(iconv -f UTF-16LE -t UTF-8 "${f}" 2>/dev/null) \
+    || content=$(cat "${f}" 2>/dev/null)
+  [[ -z "${content}" ]] && content=$(iconv -f UTF-16LE -t UTF-8 "${f}" 2>/dev/null)
+  [[ -z "${content}" ]] && content=$(cat "${f}" 2>/dev/null)
+  # strip NULs, CR/LF, a UTF-8 BOM and any trailing slash, then lowercase
+  printf '%s' "${content}" | tr -d '\0\r\n\357\273\277' \
+    | sed 's:[\\/]*$::' | tr '[:upper:]' '[:lower:]'
+}
+
+# Each MT5 install gets its OWN data folder:
+#   <prefix>/drive_c/users/<user>/AppData/Roaming/MetaQuotes/Terminal/<hash>/MQL5
+# and every <hash> folder holds an origin.txt (UTF-16) naming the install
+# directory it belongs to. Since every broker shares one wineprefix now, that
+# AppData root holds one <hash> per broker, so origin.txt is the ONLY way to
+# tell them apart.
+#
+# BUG THIS FIXES: the old version compared only the LAST path component of the
+# install dir, as a SUBSTRING. "MetaTrader 5" (plain mt5setup) is a substring of
+# "FusionMarkets MetaTrader 5", so both brokers resolved to the SAME <hash>
+# folder: option 7 printed [OK] twice, copied everything into one terminal's
+# folder twice, and the other terminal never received a single file - exactly
+# the "it said OK but nothing showed up in MetaTrader" symptom. Now the FULL
+# Windows path must match exactly.
 resolve_mql5_dir(){
   local wineprefix="$1" install_dir="$2"
-  local f content
-  for f in "${wineprefix}"/drive_c/users/*/AppData/Roaming/MetaQuotes/Terminal/*/origin.txt; do
-    [[ -f "${f}" ]] || continue
-    content=$(iconv -f UTF-16LE -t UTF-8 "${f}" 2>/dev/null | tr -d '\0')
-    [[ "${content}" == *"${install_dir##*/}"* ]] && { echo "$(dirname "${f}")/MQL5"; return 0; }
-  done
-  # Terminal never launched yet (or portable mode) - fall back to the
-  # install directory's own MQL5 folder.
-  [[ -d "${install_dir}/MQL5" ]] && echo "${install_dir}/MQL5"
+  local f want got
+  want="$(win_path_of "${wineprefix}" "${install_dir}")"
+  if [[ -n "${want}" ]]; then
+    for f in "${wineprefix}"/drive_c/users/*/AppData/Roaming/MetaQuotes/Terminal/*/origin.txt; do
+      [[ -f "${f}" ]] || continue
+      got="$(read_origin "${f}")"
+      [[ -n "${got}" && "${got}" == "${want}" ]] && { echo "$(dirname "${f}")/MQL5"; return 0; }
+    done
+  fi
+  # Portable mode only: the data folder IS the install folder. Requires the
+  # terminal's own config folder next to it - otherwise we would happily copy
+  # into a freshly unpacked install dir that MT5 does not actually read, which
+  # is the other half of the "files went somewhere wrong" bug.
+  if [[ -d "${install_dir}/MQL5" && -d "${install_dir}/config" ]]; then
+    echo "${install_dir}/MQL5"
+    return 0
+  fi
+  return 1
 }
 
 # Copies the shared Experts/Include/Indicators/set/Templates folders into
@@ -669,17 +753,40 @@ resolve_mql5_dir(){
 # .set files) and "Templates" -> MQL5/Profiles/Templates (chart templates) -
 # both official MT5 locations, so the files show up in the right menu inside
 # the terminal without the user moving anything by hand.
+declare -A MQL5_DIR_OWNER=()
+
+# Copies the shared Experts/Include/Indicators/set/Templates folders into THIS
+# terminal's own MQL5 data folder, then verifies every single file arrived.
+#   set       -> MQL5/Presets              (.set EA presets)
+#   Templates -> MQL5/Profiles/Templates   (chart templates)
+# Both are MT5's official locations, so the files show up in the right menu
+# inside the terminal without moving anything by hand.
 sync_mql5_assets(){
   local slug="$1" wineprefix="$2" termpath="${3:-}"
   ensure_mql5_local_dir
-  local mql5_dir
+  local mql5_dir="" install_dir=""
   if [[ -n "${termpath}" ]]; then
-    mql5_dir=$(resolve_mql5_dir "${wineprefix}" "$(dirname "${termpath}")")
+    install_dir="$(dirname "${termpath}")"
+    mql5_dir=$(resolve_mql5_dir "${wineprefix}" "${install_dir}") || mql5_dir=""
   fi
   if [[ -z "${mql5_dir}" ]]; then
-    warn "${slug}: MQL5 data folder not found yet - start the terminal once, then re-run this from the menu."
+    warn "${slug}: NOTHING COPIED - its MQL5 data folder does not exist yet."
+    warn "${slug}: start this terminal once (menu 3 -> Start) so MT5 creates it, then run option 7 again."
     return 1
   fi
+  # Two brokers resolving to ONE data folder means both installers used the
+  # same install directory (the second overwrote the first). Copying twice and
+  # printing OK twice would be a lie, so refuse and say why.
+  local owner="${MQL5_DIR_OWNER[${mql5_dir}]:-}"
+  if [[ -n "${owner}" && "${owner}" != "${slug}" ]]; then
+    warn "${slug}: SKIPPED - it shares one MQL5 data folder with '${owner}':"
+    warn "        ${mql5_dir}"
+    warn "        Both installers landed in the same Windows folder, so MT5 gives them one data folder."
+    warn "        Fix: remove one of them (menu 5) and reinstall it into its own folder (e.g. C:\\Program Files\\${slug})."
+    return 1
+  fi
+  MQL5_DIR_OWNER["${mql5_dir}"]="${slug}"
+
   local pairs=(
     "Experts:${mql5_dir}/Experts"
     "Include:${mql5_dir}/Include"
@@ -687,31 +794,84 @@ sync_mql5_assets(){
     "set:${mql5_dir}/Presets"
     "Templates:${mql5_dir}/Profiles/Templates"
   )
-  local pair src_name dest copied=0
+  local pair src_name dest src copied=0 total=0 missing_total=0 mq5_seen=0
+  echo -e "   ${BOLD}${slug}${NC} -> ${mql5_dir}"
   for pair in "${pairs[@]}"; do
     src_name="${pair%%:*}"; dest="${pair#*:}"
-    local src="${MQL5_LOCAL_DIR}/${src_name}"
+    src="${MQL5_LOCAL_DIR}/${src_name}"
     [[ -d "${src}" ]] || continue
-    find "${src}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q . || continue
-    mkdir -p "${dest}"
-    cp -rf "${src}/." "${dest}/" 2>/dev/null && copied=$((copied+1))
+    local n_src
+    n_src=$(find "${src}" -type f 2>/dev/null | wc -l | tr -d ' ')
+    (( n_src == 0 )) && continue
+    find "${src}" -type f -name '*.mq5' -print -quit 2>/dev/null | grep -q . && mq5_seen=1
+    mkdir -p "${dest}" 2>/dev/null || true
+    cp -rf "${src}/." "${dest}/" 2>/dev/null || true
+    # VERIFY instead of trusting cp's exit code: every source file must exist
+    # at the destination. This is what makes the [OK] line trustworthy.
+    local rel missing=0
+    while IFS= read -r rel; do
+      [[ -f "${dest}/${rel}" ]] || missing=$((missing+1))
+    done < <(cd "${src}" && find . -type f -printf '%P\n' 2>/dev/null)
+    total=$((total + n_src - missing))
+    missing_total=$((missing_total + missing))
+    if (( missing == 0 )); then
+      echo -e "      ${GREEN}v${NC} ${src_name}: ${n_src} file(s) -> ${dest#${mql5_dir}/}"
+      copied=$((copied+1))
+    else
+      warn "      ${src_name}: ${missing}/${n_src} file(s) did NOT arrive in ${dest}"
+    fi
   done
-  su - "${MT5_USER}" -c "true" >/dev/null 2>&1 || true
   chown -R "${MT5_USER}:${MT5_USER}" "${mql5_dir}" 2>/dev/null || true
-  if (( copied > 0 )); then
-    ok "${slug}: MQL5 assets copied into ${mql5_dir} (${copied} folder(s))."
-  else
+
+  if (( total == 0 && missing_total == 0 )); then
     info "${slug}: no files in ${MQL5_LOCAL_DIR} yet - nothing to copy."
+    return 0
   fi
+  if (( missing_total > 0 )); then
+    err "${slug}: ${missing_total} file(s) failed to copy (disk full? permissions?) - do NOT trust this terminal's set-up."
+    return 1
+  fi
+  ok "${slug}: ${total} file(s) verified in ${mql5_dir} (${copied} folder(s))."
+  (( mq5_seen == 1 )) && MQL5_SAW_SOURCES=1
+  return 0
 }
 
 sync_mql5_assets_all(){
   [[ -s "${TERMINALS_FILE}" ]] || return 0
-  local slug exe wineprefix termpath
+  MQL5_DIR_OWNER=()
+  MQL5_SAW_SOURCES=0
+  # Same terminal64.exe under two slugs = one install overwrote the other.
+  # Catch it here, before pretending both were synced.
+  local dup
+  dup=$(awk -F'|' 'NF && $4!=""{print $4}' "${TERMINALS_FILE}" 2>/dev/null | sort | uniq -d | head -n3)
+  if [[ -n "${dup}" ]]; then
+    warn "These terminals are registered with the SAME terminal64.exe, so they are really ONE install:"
+    printf '        %s\n' ${dup}
+    warn "Remove the duplicate (menu 5) and reinstall it into its own folder, or they will keep sharing EAs and charts."
+  fi
+  local slug exe wineprefix termpath n_ok=0 n_fail=0
   while IFS='|' read -r slug exe wineprefix termpath; do
     [[ -z "${slug:-}" ]] && continue
-    sync_mql5_assets "${slug}" "${wineprefix}" "${termpath:-}" || true
+    if sync_mql5_assets "${slug}" "${wineprefix}" "${termpath:-}"; then
+      n_ok=$((n_ok+1))
+    else
+      n_fail=$((n_fail+1))
+    fi
   done < "${TERMINALS_FILE}"
+  echo
+  header
+  if (( n_fail > 0 )); then
+    warn "MQL5 sync: ${n_ok} terminal(s) done, ${n_fail} NOT done (see the lines above)."
+  else
+    ok "MQL5 sync: ${n_ok} terminal(s) done, every file verified at its destination."
+  fi
+  if [[ "${MQL5_SAW_SOURCES:-0}" == "1" ]]; then
+    info "Heads-up: MT5's Navigator only lists COMPILED code. An .ex5 appears right away;"
+    info "a .mq5 has to be compiled once in MetaEditor (open it, F7) before it shows up."
+  fi
+  info "A running terminal caches its Navigator tree: right-click Navigator -> Refresh,"
+  info "or restart that terminal (menu 3 -> Restart) to be sure it re-reads the folders."
+  header
 }
 
 server_ip(){
@@ -907,8 +1067,20 @@ install_selected(){
       continue
     fi
 
+    # Two installers pointing at ONE terminal64.exe means the second wizard
+    # was left on the first one's destination folder. MT5 then keeps ONE data
+    # folder for both, so EAs/presets/charts get shared and option 7 can only
+    # ever sync one of them. Say it now, loudly, not three menus later.
+    local dup_slug=""
+    dup_slug=$(awk -F'|' -v p="${termpath}" -v s="${slug}" '$4==p && $1!=s{print $1; exit}' "${TERMINALS_FILE}" 2>/dev/null || true)
     register_terminal "${slug}" "${exe}" "${wineprefix}" "${termpath}"
     ok "${exe} really is installed -> ${termpath} (screen name: ${slug})."
+    if [[ -n "${dup_slug}" ]]; then
+      warn "${exe} installed into the SAME folder as '${dup_slug}':"
+      warn "        ${termpath}"
+      warn "They will share one MT5 data folder (same EAs, presets, charts, one login list)."
+      warn "Want them separate? Remove this one (menu 5) and rerun the wizard, changing the destination folder."
+    fi
 
     if declare -F set_terminal_desktop_visible >/dev/null 2>&1; then
       if [[ "${NONINTERACTIVE}" == "1" ]]; then
@@ -1065,7 +1237,7 @@ toggle_vnc_viewing(){
   read -rp "Choice: " V || V=""
   case "$V" in
     1)
-      as_mt5 "x11vnc -display :${DISPLAY_NUM} -forever -shared -noprimary -nosetprimary -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg"
+      as_mt5 "x11vnc -display :${DISPLAY_NUM} ${VNC_OPTS} -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg"
       ok "VNC turned on."
       # x11vnc only re-exports the existing X display - it never repairs pcmanfm
       # (icons), tint2 (taskbar) or autocutsel (clipboard) if any of them died
@@ -1159,9 +1331,19 @@ show_final_guide(){
   echo
   echo " On the VNC desktop you now have a Windows-like desktop:"
   echo "   * wallpaper from ${BG_SUBDIR}/${WALLPAPER_NAME}"
-  echo "   * one icon per terminal - double-click to open it,"
-  echo "     click again to 'Bring to front' or 'Close terminal'"
-  echo "   * taskbar at the bottom for minimized windows"
+  echo "   * one icon per terminal - double-click opens it, double-click again"
+  echo "     brings it to the front (right-click the icon for Restart / Close)"
+  echo "   * taskbar at the bottom: launcher buttons on the left (single click to"
+  echo "     switch terminal) + one button per open window + clock"
+  echo "   * Alt+Tab also switches between terminals"
+  echo "   * the taskbar strip is reserved on the screen itself, so a terminal"
+  echo "     window can no longer cover it - and a watchdog restarts it if it dies"
+  echo
+  echo -e " ${BOLD}Bandwidth / quality${NC} (geometry stays ${SCREEN_GEOMETRY} - nothing gets smaller):"
+  echo "   * colour depth ${COLOR_DEPTH}-bit, flat colour background, VNC tuned for a slow link"
+  echo "   * even lighter:   COLOR_DEPTH=8 sudo bash ${0##*/}"
+  echo "   * pretty again:   LOW_BANDWIDTH=0 COLOR_DEPTH=24 sudo bash ${0##*/}"
+  echo "   * in RealVNC Viewer also set Picture Quality -> Low (that is client-side)"
   echo
   echo " List everything (VNC + terminals):"
   echo "    su - ${MT5_USER} -c 'screen -ls'"
@@ -1176,7 +1358,7 @@ show_final_guide(){
   report_desktop_icon_health "${desk_cmd}"
   echo
   echo " Turn VNC on/off (to watch charts):"
-  echo "    su - ${MT5_USER} -c \"x11vnc -display :${DISPLAY_NUM} -forever -shared -noprimary -nosetprimary -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg\""
+  echo "    su - ${MT5_USER} -c \"x11vnc -display :${DISPLAY_NUM} ${VNC_OPTS} -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg\""
   echo "    su - ${MT5_USER} -c 'pkill x11vnc'"
   echo
   echo " Stop/restart ONE terminal (all brokers share one wineprefix now -"
@@ -1367,6 +1549,9 @@ main_menu(){
          echo "   ${MQL5_LOCAL_DIR}/Indicators  -> MQL5/Indicators"
          echo "   ${MQL5_LOCAL_DIR}/set         -> MQL5/Presets"
          echo "   ${MQL5_LOCAL_DIR}/Templates   -> MQL5/Profiles/Templates"
+         echo
+         echo " Each terminal has its OWN data folder - files are copied per terminal"
+         echo " and then verified file-by-file, so an [OK] means they are really there."
          header
          sync_mql5_assets_all
          press_enter ;;
