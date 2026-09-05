@@ -113,8 +113,16 @@ bot_state(){
   fi
   systemctl is-active "${BOT_SERVICE}" 2>/dev/null || echo "stopped"
 }
-vnc_up(){    pgrep -u "${MT5_USER}" -f x11vnc >/dev/null 2>&1; }
-screen_up(){ pgrep -f "Xvfb :${DISPLAY_NUM}" >/dev/null 2>&1; }
+# NOTE: this must be an EXACT process-name match (-x), not -f. The persistent
+# "screen -dmS vnc bash -c '... x11vnc ...; sleep infinity'" wrapper keeps
+# running forever (that's the point of sleep infinity), and its own command
+# line literally contains the text "x11vnc" and "Xvfb :${DISPLAY_NUM}" - so
+# `pgrep -f` matched THAT wrapper, not the real binary, and kept reporting
+# "up" even after `pkill x11vnc` had genuinely killed the real x11vnc process.
+# That's why toggling VNC off then on again always redid "off": vnc_up()
+# never actually flipped to false. -x matches only the real binary's own name.
+vnc_up(){    pgrep -u "${MT5_USER}" -x x11vnc >/dev/null 2>&1; }
+screen_up(){ pgrep -u "${MT5_USER}" -x Xvfb >/dev/null 2>&1; }
 my_ip(){ hostname -I 2>/dev/null | awk '{print $1}'; }
 
 declare -a T_SLUG T_EXE T_PREFIX T_PATH
@@ -260,14 +268,16 @@ do_action(){
     z)  for i in "${!T_SLUG[@]}"; do t_stop "$i"; done; sleep 1 ;;
     v)  if vnc_up; then
           as_mt5 "pkill x11vnc" 2>/dev/null || true
-          ok "VNC off (terminals keep running)."
+          sleep 1
+          if vnc_up; then err "VNC still running - kill failed."; else ok "VNC off (terminals keep running)."; fi
         else
           as_mt5 "x11vnc -display :${DISPLAY_NUM} ${VNC_OPTS} -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg"
           if [[ -s "${TERMINALS_FILE}" ]]; then export DESKTOP_ICONS=1; else export DESKTOP_ICONS=0; fi
           declare -F desktop_start >/dev/null 2>&1 && desktop_start >/dev/null 2>&1
-          ok "VNC on - connect to localhost:${VNC_PORT} through the ssh tunnel above."
+          sleep 1
+          if vnc_up; then ok "VNC on - connect to localhost:${VNC_PORT} through the ssh tunnel above."; else err "VNC did not start - check ~/.vnc/passwd exists for ${MT5_USER}."; fi
         fi
-        sleep 2 ;;
+        sleep 1 ;;
     w)  if declare -F desktop_restore_window >/dev/null 2>&1; then desktop_restore_window; else warn "desktop module missing"; fi ;;
     p)  run_mt5 step1; pause ;;
     i)  run_mt5 step2; pause ;;
