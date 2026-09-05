@@ -267,7 +267,8 @@ do_action(){
     i)  run_mt5 step2; pause ;;
     m)  if declare -F sync_mql5_assets_all >/dev/null 2>&1; then
           declare -F ensure_mql5_local_dir >/dev/null 2>&1 && ensure_mql5_local_dir
-          say "Upload into ${BOLD}${MQL5_LOCAL_DIR:-/opt/heysolo/mt5-mql5}${NC}/{Experts,Include,Indicators,set,Templates}, then run this again."
+          say "Upload into ${BOLD}${MQL5_LOCAL_DIR:-/opt/heysolo/mt5-mql5}${NC}/{Experts,Include,Indicators,set,Templates}"
+          read -rp "${DIM}Enter when the files are in place to sync...${NC}" _ || true
           sync_mql5_assets_all
         else warn "library not loaded"; fi
         pause ;;
