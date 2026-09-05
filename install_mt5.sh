@@ -612,8 +612,13 @@ print_terminal_list(){
     SLUGS+=("$slug"); PREFIXES+=("${wineprefix:-}"); PATHS+=("${termpath:-}")
     st=$(terminal_status "$slug" "${wineprefix:-}" "${termpath:-}")
     if [[ "$st" == "ACTIVE" ]]; then col="$GREEN"; else col="$RED"; fi
-    printf "  %2d) %-26s %-30s [%b%-10s%b]\n" \
-      "$i" "$(desktop_pretty_name "$slug")" "(${exe:-?})" "$col" "$st" "$NC"
+    local desk="ON" deskcol="$GREEN"
+    if declare -F terminal_desktop_visible >/dev/null 2>&1 \
+       && [[ "$(terminal_desktop_visible "$slug")" == "0" ]]; then
+      desk="OFF"; deskcol="$YELLOW"
+    fi
+    printf "  %2d) %-26s %-30s [%b%-10s%b] [Desktop:%b%-3s%b]\n" \
+      "$i" "$(desktop_pretty_name "$slug")" "(${exe:-?})" "$col" "$st" "$NC" "$deskcol" "$desk" "$NC"
     i=$((i+1))
   done < "${TERMINALS_FILE}"
   [[ ${#SLUGS[@]} -gt 0 ]] || return 1
@@ -904,6 +909,21 @@ install_selected(){
 
     register_terminal "${slug}" "${exe}" "${wineprefix}" "${termpath}"
     ok "${exe} really is installed -> ${termpath} (screen name: ${slug})."
+
+    if declare -F set_terminal_desktop_visible >/dev/null 2>&1; then
+      if [[ "${NONINTERACTIVE}" == "1" ]]; then
+        set_terminal_desktop_visible "${slug}" 1
+      else
+        local SHOW_ON_DESKTOP=""
+        read -rp "Show ${exe} on the shared VNC desktop (icon + taskbar + can switch to it)? [Y/n]: " SHOW_ON_DESKTOP || SHOW_ON_DESKTOP=""
+        if [[ "${SHOW_ON_DESKTOP,,}" == "n" ]]; then
+          set_terminal_desktop_visible "${slug}" 0
+          info "${slug} will run in the background only - no icon, no taskbar entry. Toggle it later from menu option 3."
+        else
+          set_terminal_desktop_visible "${slug}" 1
+        fi
+      fi
+    fi
   done
   desktop_sync_icons
 }
@@ -918,6 +938,24 @@ start_terminal(){
     warn "${slug}: terminal64.exe not found (was the wizard completed?)."
     return 1
   fi
+  local visible
+  if declare -F terminal_desktop_visible >/dev/null 2>&1; then
+    visible=$(terminal_desktop_visible "${slug}")
+  else
+    visible=1
+  fi
+  if [[ "${visible}" == "0" ]]; then
+    # Background-only terminal: no wine virtual desktop, no taskbar entry,
+    # no desktop icon - it just runs. It still needs a display (Xvfb), it
+    # just isn't part of the switchable "desktop" you look at over VNC.
+    as_mt5 "screen -dmS ${slug} bash -c '
+      export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
+      wine \"${termpath}\"'"
+    if declare -F desktop_hide_background_terminal >/dev/null 2>&1; then
+      ( desktop_hide_background_terminal "${termpath}" & )
+    fi
+    return 0
+  fi
   # Each terminal gets its own wine virtual desktop (own isolated top-level
   # window) instead of running "managed" directly on the shared display.
   # Two+ terminals each running their own wineserver but sharing one X
@@ -926,9 +964,11 @@ start_terminal(){
   # when you switch to the OTHER terminal, so VNC keeps repainting (prices
   # still move) but clicks stop reaching anything. /desktop= confines each
   # terminal's grabs to its own virtual screen so they can no longer collide.
+  # Sized to WORK_RES_WH (screen minus the taskbar), not the full screen, so
+  # it can no longer paint over the panel/wallpaper (see desktop_mt5.sh).
   as_mt5 "screen -dmS ${slug} bash -c '
     export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
-    wine explorer /desktop=${slug},${SCREEN_RES%x*} \"${termpath}\"'"
+    wine explorer /desktop=${slug},${WORK_RES_WH:-${SCREEN_RES%x*}} \"${termpath}\"'"
 }
 
 start_all_terminals(){
@@ -978,9 +1018,15 @@ manage_one_terminal(){
   local termpath="${PATHS[$((TIDX-1))]}"
   local st; st=$(terminal_status "$slug" "$wineprefix" "$termpath")
 
+  local desk="ON"
+  if declare -F terminal_desktop_visible >/dev/null 2>&1 \
+     && [[ "$(terminal_desktop_visible "$slug")" == "0" ]]; then
+    desk="OFF"
+  fi
   echo
-  echo -e " ${BOLD}$(desktop_pretty_name "$slug")${NC}  ->  status: ${st}"
-  echo " 1) Start   2) Stop   3) Restart   4) Status (all screens)   5) Bring window to front   6) Back"
+  echo -e " ${BOLD}$(desktop_pretty_name "$slug")${NC}  ->  status: ${st}   Desktop: ${desk}"
+  echo " 1) Start   2) Stop   3) Restart   4) Status (all screens)   5) Bring window to front"
+  echo " 6) Toggle desktop visibility (currently ${desk})   7) Back"
   read -rp "Choice: " ACT || ACT=""
   case "$ACT" in
     1) start_terminal "$slug" "$wineprefix" "$termpath" && ok "${slug} started." ;;
@@ -993,7 +1039,21 @@ manage_one_terminal(){
        start_terminal "$slug" "$wineprefix" "$termpath" && ok "${slug} restarted." ;;
     4) as_mt5 "screen -ls" || true ;;
     5) desktop_restore_window; return ;;
-    6) return ;;
+    6) if declare -F set_terminal_desktop_visible >/dev/null 2>&1; then
+         local new_val="1"; [[ "$desk" == "ON" ]] && new_val="0"
+         set_terminal_desktop_visible "$slug" "$new_val"
+         warn "Applies next time ${slug} is (re)started - stop then start it (or Restart) now to apply immediately."
+         if [[ "$new_val" == "1" ]]; then
+           ok "${slug} will show on the desktop (icon + taskbar) from its next start."
+           declare -F desktop_sync_icons >/dev/null 2>&1 && desktop_sync_icons
+         else
+           ok "${slug} will run in the background only from its next start."
+           rm -f "/home/${MT5_USER}/Desktop/mt5-${slug}.desktop" 2>/dev/null || true
+         fi
+       else
+         warn "${DESKTOP_MODULE} is missing - cannot toggle."
+       fi ;;
+    7) return ;;
     *) warn "Invalid." ;;
   esac
   press_enter
@@ -1128,6 +1188,11 @@ show_final_guide(){
   echo "    SFTP the new .exe into ${MT5_LOCAL_DIR}"
   echo "    then re-run this script -> 'Step 2 - Install MT5 terminals'"
   echo
+  echo " Not every terminal needs to be on the VNC desktop - a [Desktop:OFF]"
+  echo " terminal keeps running but has no icon and no taskbar entry, so it"
+  echo " can't be confused with the ones you actually switch between."
+  echo "    menu option 3 (\"Manage one terminal\") -> pick it -> option 6"
+  echo
   echo " Push Experts/Include/Indicators/set/Templates into EVERY terminal:"
   echo "    SFTP your files into the matching subfolder of ${MQL5_LOCAL_DIR}"
   echo "    then run this script -> menu option 9 (\"Sync MQL5 assets\")"
@@ -1250,6 +1315,7 @@ uninstall_terminal(){
   grep -v "^${slug}|" "${TERMINALS_FILE}" > "${TERMINALS_FILE}.tmp" 2>/dev/null || true
   mv "${TERMINALS_FILE}.tmp" "${TERMINALS_FILE}" 2>/dev/null || true
   rm -f "/home/${MT5_USER}/Desktop/mt5-${slug}.desktop" "/home/${MT5_USER}/.heysolo/bin/mt5-${slug}.sh" 2>/dev/null || true
+  declare -F remove_terminal_desktop_visible >/dev/null 2>&1 && remove_terminal_desktop_visible "${slug}"
   ok "${slug} removed."
   press_enter
 }
