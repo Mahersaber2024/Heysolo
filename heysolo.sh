@@ -165,7 +165,7 @@ panel(){
   say "  ${DIM}slow link? in RealVNC Viewer only: right-click the connection > Properties > Options > Picture quality = Low${NC}"
   echo
   if (( ${#T_SLUG[@]} == 0 )); then
-    say "  ${YELLOW}No terminals yet${NC} - press ${BOLD}p${NC} to prepare the server, then ${BOLD}i${NC} to install one."
+    say "  ${YELLOW}No terminals yet${NC} - press ${BOLD}P${NC} to prepare the server, then ${BOLD}I${NC} to install one."
   else
     for i in "${!T_SLUG[@]}"; do
       if is_up "${T_SLUG[$i]}" "${T_PREFIX[$i]}" "${T_PATH[$i]}"; then
@@ -178,14 +178,14 @@ panel(){
     done
   fi
   echo
-  say "  ${CYAN}terminals${NC}  [${BOLD}1..9${NC}] start/stop   [${BOLD}r1${NC}] restart   [${BOLD}d1${NC}] desktop on/off   [${BOLD}k1${NC}] remove"
-  say "             [${BOLD}a${NC}] start all    [${BOLD}z${NC}] stop all   [${BOLD}v${NC}] vnc on/off       [${BOLD}w${NC}] window to front"
+  say "  ${CYAN}TERMINALS${NC}  [${BOLD}1..9${NC}] start/stop   [${BOLD}R1${NC}] restart   [${BOLD}D1${NC}] desktop on/off   [${BOLD}K1${NC}] remove"
+  say "             [${BOLD}A${NC}] start all    [${BOLD}Z${NC}] stop all   [${BOLD}V${NC}] vnc on/off       [${BOLD}W${NC}] window to front"
   echo
-  say "  ${CYAN}setup${NC}      [${BOLD}p${NC}] prepare server   [${BOLD}i${NC}] install/add terminal   [${BOLD}m${NC}] sync MQL5 files"
+  say "  ${CYAN}SETUP${NC}      [${BOLD}P${NC}] prepare server   [${BOLD}I${NC}] install/add terminal   [${BOLD}M${NC}] sync MQL5 files"
   echo
-  say "  ${CYAN}bot${NC}        [${BOLD}T${NC}] bot setup        [${BOLD}b${NC}] restart bot            [${BOLD}l${NC}] bot logs"
+  say "  ${CYAN}BOT${NC}        [${BOLD}T${NC}] bot setup        [${BOLD}B${NC}] restart bot            [${BOLD}L${NC}] bot logs"
   echo
-  say "  ${CYAN}system${NC}     [${BOLD}?${NC}] doctor           [${BOLD}u${NC}] update scripts         [${BOLD}X${NC}] uninstall   [${BOLD}q${NC}] quit"
+  say "  ${CYAN}SYSTEM${NC}     [${BOLD}?${NC}] doctor           [${BOLD}U${NC}] update scripts         [${BOLD}X${NC}] uninstall   [${BOLD}Q${NC}] quit"
   echo
 }
 
@@ -216,7 +216,7 @@ do_action(){
     sleep 1; return 0
   fi
 
-  case "${verb}" in
+  case "${verb,,}" in
     r)  idx_ok "${num}" || { warn "which one? e.g. r1"; sleep 1; return 0; }
         i=$((num-1)); t_stop "$i"; sleep 3; t_start "$i"; sleep 1 ;;
     d)  idx_ok "${num}" || { warn "which one? e.g. d1"; sleep 1; return 0; }
@@ -278,12 +278,12 @@ do_action(){
           sync_mql5_assets_all
         else warn "library not loaded"; fi
         pause ;;
-    T)  bash "${SCRIPTS_DIR}/install.sh"; pause ;;
+    t)  bash "${SCRIPTS_DIR}/install.sh"; pause ;;
     b)  if systemctl restart "${BOT_SERVICE}" 2>/dev/null; then ok "bot restarted."; else err "could not restart ${BOT_SERVICE}"; fi; sleep 1 ;;
     l)  say "${DIM}Ctrl+C to come back${NC}"; journalctl -u "${BOT_SERVICE}" -n 50 -f || true ;;
     "?") run_mt5 doctor; pause ;;
     u)  update_scripts; pause ;;
-    X)  bash "${SCRIPTS_DIR}/uninstall.sh"; pause ;;
+    x)  bash "${SCRIPTS_DIR}/uninstall.sh"; pause ;;
     q)  echo "bye"; exit 0 ;;
     *)  warn "unknown key: ${raw}"; sleep 1 ;;
   esac
