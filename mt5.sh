@@ -23,6 +23,12 @@ VNC_PORT=5900
 
 STATE_DIR="/etc/heysolo-mt5"
 DESKTOP_ENV_FILE="${STATE_DIR}/desktop.env"
+
+# Any value already set on the command line (e.g. LOW_BANDWIDTH=0 sudo bash ...)
+# wins. Otherwise, whatever was chosen the LAST time step 1 ran wins - not the
+# hard-coded fallback. This is what makes the desktop look the SAME every time
+# it is (re)started, instead of a different one each time these scripts are
+# invoked fresh (menu, step2, VNC toggle, reboot...).
 [[ -f "${DESKTOP_ENV_FILE}" ]] && source "${DESKTOP_ENV_FILE}" 2>/dev/null || true
 
 COLOR_DEPTH="${COLOR_DEPTH:-16}"
@@ -189,8 +195,23 @@ init_prefix(){
   purge_wine_shortcuts
 }
 
+# ---------------------------------------------------------------------------
+# Desktop layer (wallpaper / icons / taskbar / clipboard / window helpers).
+#
+# This is NOT an installer - it is a plain library of functions used by the
+# MT5 setup steps below and by the heysolo panel (which sources everything
+# above the "case" dispatcher at the bottom of this file - see heysolo.sh).
+# It used to live in its own file (desktop_mt5.sh) that had to be located or
+# re-downloaded separately; it is defined directly here instead, so there is
+# nothing desktop-related left to fetch, install, or go missing.
+# ---------------------------------------------------------------------------
+
 MT5_USER="${MT5_USER:-mt5user}"
 DISPLAY_NUM="${DISPLAY_NUM:-1}"
+
+# Same settings file mt5.sh writes/reads - guarantees this script gives
+# the SAME wallpaper/colour-depth result whether it's called from step1, step2,
+# the heysolo panel, the boot-recovery service, or run by hand on its own.
 STATE_DIR="${STATE_DIR:-/etc/heysolo-mt5}"
 DESKTOP_ENV_FILE="${DESKTOP_ENV_FILE:-${STATE_DIR}/desktop.env}"
 [[ -f "${DESKTOP_ENV_FILE}" ]] && source "${DESKTOP_ENV_FILE}" 2>/dev/null || true
@@ -1056,7 +1077,11 @@ WANT_ICONS="${DESKTOP_ICONS}"
 while true; do
   if [[ "\${WANT_ICONS}" == "1" ]] && command -v pcmanfm >/dev/null 2>&1 \
      && ! pgrep -f 'pcmanfm[[:space:]]+--desktop' >/dev/null 2>&1; then
-    setsid pcmanfm --desktop --profile="\${PROFILE}" >/dev/null 2>&1 &
+    if command -v dbus-launch >/dev/null 2>&1; then
+      setsid dbus-launch --exit-with-session pcmanfm --desktop --profile="\${PROFILE}" >/dev/null 2>&1 &
+    else
+      setsid pcmanfm --desktop --profile="\${PROFILE}" >/dev/null 2>&1 &
+    fi
     sleep 3
   fi
   if ! pgrep -x tint2 >/dev/null 2>&1; then
@@ -2563,7 +2588,6 @@ case "${1:-menu}" in
           as_mt5 "screen -ls" || true
           HEYSOLO_CLEAN_EXIT=1 ;;
   desktop)
-
     require_root
     shift
     case "${1:-all}" in
