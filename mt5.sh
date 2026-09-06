@@ -792,6 +792,30 @@ desktop_write_openbox_rules(){
   rc="${dir}/rc.xml"
   mkdir -p "${dir}" 2>/dev/null || true
 
+  # explorer.exe is wine's virtual-desktop container ONLY when WINE_VDESKTOP=1.
+  # In that mode it must be pinned borderless at (0,0) to act as a fake fullscreen
+  # root. Otherwise (default now) explorer.exe is just a normal window - the MT5
+  # installer's file dialogs and "Open Data Folder" both run as explorer.exe, so
+  # forcing them to (0,0) with no decor hides their titlebar/close button off-screen.
+  local explorer_rule
+  if [[ "${WINE_VDESKTOP:-0}" == "1" ]]; then
+    explorer_rule='<application class="explorer.exe*">
+      <position force="yes"><x>0</x><y>0</y></position>
+      <decor>no</decor>
+      <layer>normal</layer>
+      <fullscreen>no</fullscreen>
+      <maximized>no</maximized>
+    </application>'
+  else
+    explorer_rule='<application class="explorer.exe*">
+      <placement><policy>Smart</policy><center>yes</center></placement>
+      <decor>yes</decor>
+      <layer>normal</layer>
+      <fullscreen>no</fullscreen>
+      <maximized>no</maximized>
+    </application>'
+  fi
+
   if [[ -s "${rc}" ]] && ! grep -q 'HeySolo openbox rules - rev 2' "${rc}" 2>/dev/null; then
     cp -f "${rc}" "${rc}.heysolo.bak" 2>/dev/null || true
   fi
@@ -960,13 +984,7 @@ desktop_write_openbox_rules(){
       <maximized>no</maximized>
     </application>
     
-    <application class="explorer.exe*">
-      <position force="yes"><x>0</x><y>0</y></position>
-      <decor>no</decor>
-      <layer>normal</layer>
-      <fullscreen>no</fullscreen>
-      <maximized>no</maximized>
-    </application>
+    ${explorer_rule}
   </applications>
 </openbox_config>
 EOF
@@ -2588,6 +2606,9 @@ case "${1:-menu}" in
           as_mt5 "screen -ls" || true
           HEYSOLO_CLEAN_EXIT=1 ;;
   desktop)
+    # Desktop-only maintenance (wallpaper/icons/taskbar/etc). Not a separate
+    # installer - just direct access to the library functions defined above,
+    # for rebuilding one piece of the desktop without a full install/step.
     require_root
     shift
     case "${1:-all}" in
