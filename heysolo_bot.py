@@ -45,7 +45,13 @@ OUTBOX_POLL_SECONDS = settings.get_outbox_poll_seconds()
 # by scanning the wine prefixes on the server.
 
 _COMMON_GLOB_PATTERNS = [
-    "/home/*/*/drive_c/users/*/AppData/Roaming/MetaQuotes/Terminal/Common/Files",
+    # mt5.sh gives every terminal its own isolated wineprefix under
+    # /home/<user>/mt5-terminals/<slug>/ (see WINEPREFIX_BASE /
+    # wineprefix_for_slug in mt5.sh), so there are TWO directories
+    # between /home/<user>/ and drive_c ("mt5-terminals" and "<slug>"),
+    # not one - this pattern needs both wildcard levels or it never matches.
+    "/home/*/*/*/drive_c/users/*/AppData/Roaming/MetaQuotes/Terminal/Common/Files",
+    # Fallback for a plain, non-isolated ~/.wine prefix (one level only).
     "/home/*/.wine/drive_c/users/*/AppData/Roaming/MetaQuotes/Terminal/Common/Files",
     "/root/.wine/drive_c/users/*/AppData/Roaming/MetaQuotes/Terminal/Common/Files",
 ]
