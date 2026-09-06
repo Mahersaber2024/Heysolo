@@ -329,7 +329,7 @@ uninstall_everything(){
   [[ -d "${BACKUP_DIR}" ]] && echo " Backup of your old settings: ${BACKUP_DIR}"
   echo " Reinstall any time:"
   echo "   bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main/install.sh)"
-  echo "   bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main/install_mt5.sh)"
+  echo "   bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main/mt5.sh)"
   header
 }
 

@@ -35,25 +35,29 @@ and uninstalling any of it - is done from inside this one panel:
 
 - **T** - runs the bot installer/manager (`install.sh`) for the Telegram side.
 - **P** then **I** - prepares the server and installs/adds an MT5 terminal
-  (`install_mt5.sh`), one wizard per terminal, over VNC.
+  (`mt5.sh`), one wizard per terminal, over VNC.
 - **X** - opens the uninstaller (`uninstall.sh`) with options to remove the
   bot, the MT5 terminals + desktop, or everything.
 - **U** - re-downloads the latest version of all the scripts below.
 
-Under the hood, `heysolo.sh` downloads `install.sh`, `install_mt5.sh`,
-`desktop_mt5.sh`, and `uninstall.sh` once into `/opt/heysolo/scripts` and
-calls whichever one a menu option needs - so nothing about how the bot or the
-terminals actually get installed lives in more than one place. You should not
-need to download or run any of those four scripts directly; if you find
-yourself doing that, use the matching panel option instead.
+Under the hood, `heysolo.sh` downloads `install.sh`, `mt5.sh`, and
+`uninstall.sh` once into `/opt/heysolo/scripts` and calls whichever one a
+menu option needs - so nothing about how the bot or the terminals actually
+get installed lives in more than one place. You should not need to download
+or run any of those three scripts directly; if you find yourself doing that,
+use the matching panel option instead.
 
-### Desktop module (`desktop_mt5.sh`)
+### Desktop layer (part of `mt5.sh`)
 
-Everything about how the VNC desktop looks (wallpaper, icons, taskbar) lives
-in `desktop_mt5.sh`, sourced automatically by `install_mt5.sh`. It has no
-separate install path of its own - it's only ever driven through the
-`heysolo` panel (`D1` to toggle a terminal on/off the desktop, `W` to restore
-a window) or through the `M` menu option for syncing MQL5 assets.
+Everything about how the VNC desktop looks (wallpaper, icons, taskbar) is
+defined inside `mt5.sh` itself. It isn't an installer in its own
+right, so it doesn't get its own top-level script - it's a block of plain
+functions (`desktop_*`) that `mt5.sh` uses while setting up a
+terminal, and that the `heysolo` panel picks up the same way it picks up
+every other MT5 panel function. It's only ever driven through the panel
+(`D1` to toggle a terminal on/off the desktop, `W` to restore a window, `M`
+for syncing MQL5 assets) or through `sudo bash mt5.sh desktop
+<icons|wallpaper|taskbar|start|doctor|...>` for one-off maintenance.
 
 ## Installation Path
 
@@ -192,9 +196,10 @@ its logs.)
 BG/heysolo-des.png     desktop wallpaper used on the VNC desktop
 MT5/*.exe              MT5 / prop-firm terminal installers
 heysolo.sh             the installer - the only entry point end users run
-install.sh             bot component, called by heysolo.sh (panel: T)
-install_mt5.sh         MT5/VNC component, called by heysolo.sh (panel: P, I)
-desktop_mt5.sh         desktop component, sourced by install_mt5.sh
+install.sh             bot installer, called by heysolo.sh (panel: T)
+mt5.sh                 MT5/VNC installer, called by heysolo.sh (panel: P, I) -
+                        also holds the desktop_* functions (wallpaper, icons,
+                        taskbar); that part is library code, not an installer
 uninstall.sh           uninstall component, called by heysolo.sh (panel: X)
 heysolo_bot.py         the bot itself
 heysolo_settings.py    settings handling

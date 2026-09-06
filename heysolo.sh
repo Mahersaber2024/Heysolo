@@ -5,7 +5,12 @@ set -uo pipefail
 REPO_RAW="https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main"
 SCRIPTS_DIR="/opt/heysolo/scripts"
 CLI_PATH="/usr/local/bin/heysolo"
-SCRIPT_LIST=(heysolo.sh install.sh install_mt5.sh desktop_mt5.sh uninstall.sh)
+# Only genuine installers/entry-points are listed here. The desktop layer
+# (wallpaper/icons/taskbar) is not an installer - it's a library of functions
+# that now lives inside mt5.sh itself (it's sourced from there, the
+# same way the MT5 panel functions below are), so there is no separate
+# desktop_mt5.sh file to fetch or go missing anymore.
+SCRIPT_LIST=(heysolo.sh install.sh mt5.sh uninstall.sh)
 
 if [[ -t 1 ]]; then
   RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
@@ -60,9 +65,9 @@ install_cli(){
 ensure_scripts
 install_cli
 
-MT5_SCRIPT="${SCRIPTS_DIR}/install_mt5.sh"
+MT5_SCRIPT="${SCRIPTS_DIR}/mt5.sh"
 
-LIB_CACHE="${SCRIPTS_DIR}/.install_mt5.lib.sh"
+LIB_CACHE="${SCRIPTS_DIR}/.mt5.lib.sh"
 MT5_LIB=0
 if [[ -s "${MT5_SCRIPT}" ]]; then
   if sed '/^case "\${1:-menu}" in/,$d' "${MT5_SCRIPT}" > "${LIB_CACHE}" 2>/dev/null; then
@@ -264,7 +269,7 @@ do_action(){
   esac
 }
 
-(( MT5_LIB == 1 )) || warn "install_mt5.sh not found - terminal actions disabled (press u to update scripts)."
+(( MT5_LIB == 1 )) || warn "mt5.sh not found - terminal actions disabled (press u to update scripts)."
 
 if [[ -n "${1:-}" ]]; then scan_terminals; do_action "$1"; exit 0; fi
 
