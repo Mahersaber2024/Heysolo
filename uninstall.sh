@@ -18,6 +18,7 @@ SHARED_COMMON_DIR="${MT5_HOME}/.heysolo-common"
 
 LAUNCHER_DIR="/opt/heysolo"
 LAUNCHER_CLI="/usr/local/bin/heysolo"
+MT5_EXE_DIR="/opt/heysolo/mt5"
 
 BACKUP_ROOT="/root"
 BACKUP_PREFIX="heysolo-backup-"
@@ -229,6 +230,7 @@ uninstall_mt5(){
   rm -f  "${MT5_HOME}"/*.exe 2>/dev/null || true
   rm -rf "${MT5_HOME}/.wine" 2>/dev/null || true
   rm -rf "${MT5_STATE_DIR}"
+  clean_launcher_dir_keep_mt5
   rm -rf "${MT5_HOME}/.vnc" 2>/dev/null || true
   if [[ -d "${SHARED_COMMON_DIR}" ]]; then
     rm -rf "${SHARED_COMMON_DIR}"
@@ -267,13 +269,18 @@ remove_mt5_user(){
 bot_installed(){ [[ -f "${SERVICE_FILE}" ]] || [[ -d "$(bot_dir)" ]]; }
 mt5_installed(){ id "${MT5_USER}" &>/dev/null || [[ -d "${MT5_STATE_DIR}" ]]; }
 
+clean_launcher_dir_keep_mt5(){
+  [[ -d "${LAUNCHER_DIR}" ]] || return 0
+  find "${LAUNCHER_DIR}" -mindepth 1 -maxdepth 1 -not -name "$(basename "${MT5_EXE_DIR}")" -exec rm -rf {} + 2>/dev/null || true
+}
+
 cleanup_launcher_if_unused(){
   if bot_installed || mt5_installed; then
     return 0
   fi
   if [[ -d "${LAUNCHER_DIR}" || -f "${LAUNCHER_CLI}" ]]; then
-    info "Nothing left for the heysolo launcher to manage - removing ${LAUNCHER_DIR} and ${LAUNCHER_CLI}..."
-    rm -rf "${LAUNCHER_DIR}"
+    info "Nothing left for the heysolo launcher to manage - removing ${LAUNCHER_DIR} (keeping ${MT5_EXE_DIR}) and ${LAUNCHER_CLI}..."
+    clean_launcher_dir_keep_mt5
     rm -f "${LAUNCHER_CLI}"
     ok "Launcher removed."
   fi
