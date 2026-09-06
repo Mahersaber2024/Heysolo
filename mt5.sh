@@ -166,6 +166,22 @@ _as_user(){
   fi
 }
 
+# Same as _as_user, but keeps stdout/stderr instead of throwing it away, so a
+# silent wine/wineboot failure isn't just "nothing happened" - there's a log
+# to look at. Used for the steps that are most likely to fail silently
+# (prefix init, the actual installer launch).
+_as_user_logged(){
+  local secs="$1" cmd="$2" logfile="$3"
+  mkdir -p "$(dirname "${logfile}")" 2>/dev/null || true
+  if command -v runuser >/dev/null 2>&1; then
+    setsid timeout -k 5 "${secs}" runuser -u "${MT5_USER}" -- \
+      bash -lc "${cmd}" </dev/null >>"${logfile}" 2>&1
+  else
+    setsid timeout -k 5 "${secs}" su "${MT5_USER}" -s /bin/bash -c \
+      "${cmd}" </dev/null >>"${logfile}" 2>&1
+  fi
+}
+
 as_mt5(){
   _as_user "${AS_MT5_TIMEOUT:-120}" "export DISPLAY=:${DISPLAY_NUM}; $1"
 }
@@ -177,6 +193,22 @@ NONINTERACTIVE="${NONINTERACTIVE:-0}"
 as_wine(){
   _as_user "${AS_WINE_TIMEOUT:-1800}" \
     "export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX='$1'; $2"
+}
+
+as_wine_logged(){
+  local wineprefix="$1" cmd="$2" logfile="$3"
+  _as_user_logged "${AS_WINE_TIMEOUT:-1800}" \
+    "export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX='${wineprefix}'; ${cmd}" "${logfile}"
+}
+
+show_wine_log_tail(){
+  local logfile="$1" n="${2:-25}"
+  if [[ -s "${logfile}" ]]; then
+    warn "Last ${n} lines of ${logfile}:"
+    tail -n "${n}" "${logfile}" | sed 's/^/    /'
+  else
+    warn "No wine output was captured in ${logfile} (nothing printed anything - check the VNC window itself)."
+  fi
 }
 
 purge_wine_shortcuts(){
@@ -193,10 +225,13 @@ purge_wine_shortcuts(){
 }
 init_prefix(){
   local wineprefix="$1"
+  local logfile="/var/log/heysolo-wine-init-$(basename "${wineprefix}").log"
   info "Preparing the wine prefix (first boot, this takes a few seconds)..."
 
-  AS_WINE_TIMEOUT=300 as_wine "${wineprefix}" \
-    "wineboot --init >/dev/null 2>&1; wineserver -w" || true
+  if ! AS_WINE_TIMEOUT=300 as_wine_logged "${wineprefix}" "wineboot --init; wineserver -w" "${logfile}"; then
+    warn "wineboot did not finish cleanly for ${wineprefix} - the terminal may fail to appear next."
+    show_wine_log_tail "${logfile}"
+  fi
   purge_wine_shortcuts
 }
 
@@ -2162,9 +2197,11 @@ install_selected(){
 
     marker="/tmp/.heysolo-mark-${slug}"
     touch "${marker}"
+    local wine_log="/var/log/heysolo-wine-install-${slug}.log"
+    : > "${wine_log}" 2>/dev/null || true
 
     info "Trying the silent install (/auto) for ${exe}..."
-    as_wine "${wineprefix}" "cd ~ && wine './${exe}' /auto" >/dev/null 2>&1 || true
+    as_wine_logged "${wineprefix}" "cd ~ && wine './${exe}' /auto" "${wine_log}" || true
     as_wine "${wineprefix}" "wineserver -w" >/dev/null 2>&1 || true
     termpath=$(find "${wineprefix}/drive_c" -maxdepth 5 -newer "${marker}" -name 'terminal64.exe' 2>/dev/null | head -n1)
 
@@ -2172,8 +2209,8 @@ install_selected(){
       warn "Silent install did not take for ${exe} - opening the setup wizard."
       warn "Connect via VNC NOW, then click Next -> Next -> Install."
       read -rp "Press Enter once your VNC viewer is connected: " _ || true
-      as_wine "${wineprefix}" "cd ~ && wine './${exe}'" \
-        || as_wine "${wineprefix}" "wine start /unix '${dest_path}' /wait" \
+      as_wine_logged "${wineprefix}" "cd ~ && wine './${exe}'" "${wine_log}" \
+        || as_wine_logged "${wineprefix}" "wine start /unix '${dest_path}' /wait" "${wine_log}" \
         || true
       as_wine "${wineprefix}" "wineserver -w" >/dev/null 2>&1 || true
       termpath=$(find "${wineprefix}/drive_c" -maxdepth 5 -newer "${marker}" -name 'terminal64.exe' 2>/dev/null | head -n1)
@@ -2184,6 +2221,7 @@ install_selected(){
 
     if [[ -z "${termpath}" ]]; then
       err "${exe}: terminal64.exe not found -> the install did NOT complete."
+      show_wine_log_tail "${wine_log}"
       warn "Nothing was registered, so the menu will keep showing it as unfinished."
       warn "Retry: 'Add a new terminal' -> pick ${exe} again (nothing is re-downloaded twice for nothing)."
       continue
