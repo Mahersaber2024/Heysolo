@@ -228,7 +228,9 @@ do_action(){
         read -rp "Delete $(pretty "${T_SLUG[$i]}") and its files? type yes: " C || C=""
         [[ "${C}" == "yes" ]] || { warn "cancelled"; sleep 1; return 0; }
         t_stop "$i"
-        if [[ -n "${T_PATH[$i]}" ]]; then
+        if declare -F remove_terminal_files >/dev/null 2>&1; then
+          remove_terminal_files "${T_SLUG[$i]}" "${T_PREFIX[$i]}" "${T_PATH[$i]}"
+        elif [[ -n "${T_PATH[$i]}" ]]; then
           dir="$(dirname "${T_PATH[$i]}")"
           if declare -F resolve_mql5_dir >/dev/null 2>&1; then
             mq="$(resolve_mql5_dir "${T_PREFIX[$i]}" "${dir}")"
