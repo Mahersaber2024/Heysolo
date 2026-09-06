@@ -701,7 +701,7 @@ border_width = 0
 background_color = #2e5aac 100
 border_color = #2e5aac 100
 
-panel_monitor = all
+panel_monitor = 1
 panel_position = bottom center horizontal
 panel_size = 100% 40
 panel_margin = 0 0
@@ -711,7 +711,7 @@ wm_menu = 1
 panel_layer = top
 autohide = 0
 disable_transparency = 1
-panel_background_id = 1
+panel_background_id = 2
 panel_items = LTSC
 
 taskbar_mode = single_desktop
