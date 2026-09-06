@@ -4,7 +4,7 @@ set -uo pipefail
 SERVICE_NAME="heysolo-bot"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 BOT_STATE_FILE="/etc/${SERVICE_NAME}.install_dir"
-DEFAULT_BOT_DIR="/opt/heysolo-bot"
+DEFAULT_BOT_DIR="/opt/heysolo/bot"
 SETTINGS_FILE="heysolo_settings.json"
 
 MT5_USER="mt5user"

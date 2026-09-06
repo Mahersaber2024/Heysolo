@@ -4,7 +4,7 @@ set -euo pipefail
 
 REPO_URL="https://github.com/Mahersaber2024/Heysolo.git"
 SERVICE_NAME="heysolo-bot"
-DEFAULT_INSTALL_DIR="/opt/heysolo-bot"
+DEFAULT_INSTALL_DIR="/opt/heysolo/bot"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 STATE_FILE="/etc/${SERVICE_NAME}.install_dir"
 SETTINGS_FILE="heysolo_settings.json"

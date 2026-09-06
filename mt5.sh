@@ -63,7 +63,6 @@ MQL5_LOCAL_DIR="/opt/heysolo/mt5-mql5"
 TERMINALS_FILE="${STATE_DIR}/terminals.list"
 VNC_PASS_FILE="/home/${MT5_USER}/.vnc/passwd"
 
-HEYSOLO_LIB_DIR="/opt/heysolo"
 
 if [[ -t 1 ]]; then
   RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'

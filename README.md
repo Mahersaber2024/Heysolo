@@ -61,15 +61,17 @@ for syncing MQL5 assets) or through `sudo bash mt5.sh desktop
 
 ## Installation Path
 
-The default installation path for the bot is:
+Everything lives under one project directory, `/opt/heysolo`:
 
 ```text
-/opt/heysolo-bot
+/opt/heysolo/scripts   heysolo.sh, install.sh, mt5.sh, uninstall.sh
+/opt/heysolo/bot       bot files, heysolo_settings.json, the Python venv
+/opt/heysolo/mt5       MT5 / prop-firm terminal installers
+/opt/heysolo/mt5-mql5  MQL5 assets (Experts, Include, Indicators, set, Templates)
 ```
 
-Project files, `heysolo_settings.json`, and the Python virtual environment are
-all stored in this directory. Scripts and MT5 installers live under
-`/opt/heysolo`.
+The bot's own path is remembered in `/etc/heysolo-bot.install_dir`, so if you
+ever change it during setup, every panel action still finds it correctly.
 
 ## Different-Server Setup (Windows MT5 + Linux Bot)
 
