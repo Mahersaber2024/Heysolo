@@ -228,11 +228,34 @@ init_prefix(){
   local logfile="/var/log/heysolo-wine-init-$(basename "${wineprefix}").log"
   info "Preparing the wine prefix (first boot, this takes a few seconds)..."
 
+  # Always create the prefix directory ourselves (as root, with the right
+  # owner) instead of leaving it to wine to create on its own the first time
+  # it runs. If this step is skipped and wineboot ever fails partway - wrong
+  # permissions, no space, a killed process - wine is left trying to chdir
+  # into a directory that doesn't fully exist, which is exactly the
+  # "wine: chdir to ... No such file or directory" failure this fixes.
+  mkdir -p "${wineprefix}"
+  chown -R "${MT5_USER}:${MT5_USER}" "${wineprefix}"
+  if [[ ! -d "${wineprefix}" ]]; then
+    err "Could not create the wine prefix directory at ${wineprefix} (check disk space and permissions)."
+    return 1
+  fi
+
   if ! AS_WINE_TIMEOUT=300 as_wine_logged "${wineprefix}" "wineboot --init; wineserver -w" "${logfile}"; then
     warn "wineboot did not finish cleanly for ${wineprefix} - the terminal may fail to appear next."
     show_wine_log_tail "${logfile}"
   fi
   purge_wine_shortcuts
+
+  # A prefix is only really usable once wine has actually populated it -
+  # drive_c existing is the real signal, not just the directory being there.
+  # Without this check, a failed wineboot still leaves an (empty) directory
+  # behind, so the next run's "already exists, skip init" check in
+  # install_selected would wrongly treat it as already prepared.
+  if [[ ! -d "${wineprefix}/drive_c" ]]; then
+    err "The wine prefix at ${wineprefix} was not actually initialized (no drive_c folder) - wineboot failed."
+    return 1
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -2190,9 +2213,13 @@ install_selected(){
     # it can never land on someone else's terminal64.exe, and removing this
     # terminal later can safely wipe the whole prefix without touching anyone
     # else's install.
-    if [[ ! -d "${wineprefix}" ]]; then
+    if [[ ! -d "${wineprefix}/drive_c" ]]; then
       info "Creating an isolated wine prefix for ${exe} at ${wineprefix} ..."
-      init_prefix "${wineprefix}"
+      if ! init_prefix "${wineprefix}"; then
+        err "${exe}: could not set up its wine prefix - skipping this terminal (nothing else was touched)."
+        warn "Retry: 'Add a new terminal' -> pick ${exe} again once the problem above is fixed."
+        continue
+      fi
     fi
 
     marker="/tmp/.heysolo-mark-${slug}"
