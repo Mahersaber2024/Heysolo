@@ -311,7 +311,7 @@ desktop_install_packages(){
 
 desktop_prepare_dirs(){
 
-  mkdir -p "${ASSET_DIR}" "${ICON_DIR}" "${BIN_DIR}" "${DESKTOP_DIR}" \
+  mkdir -p "${ASSET_DIR}" "${ICON_DIR}" "${BIN_DIR}" "${DESKTOP_DIR}" "${ASSET_DIR}/logs" \
            "${MT5_HOME}/.config/pcmanfm/${PCMAN_PROFILE}" \
            "${MT5_HOME}/.config/tint2" "${MT5_HOME}/.config/openbox" 2>/dev/null || true
   chown -R "${MT5_USER}:${MT5_USER}" "${ASSET_DIR}" "${DESKTOP_DIR}" "${MT5_HOME}/.config" 2>/dev/null || true
@@ -681,6 +681,7 @@ desktop_sync_icons(){
 
 TINT2_CONF="${MT5_HOME}/.config/tint2/tint2rc"
 TINT2_LOCK="${ASSET_DIR}/tint2.lock"
+TINT2_LOG="${ASSET_DIR}/logs/tint2.log"
 
 desktop_write_tint2_conf(){
   su - "${MT5_USER}" -c "mkdir -p '${MT5_HOME}/.config/tint2'"
@@ -1066,7 +1067,7 @@ CONF="${TINT2_CONF}"
 LOCK="${TINT2_LOCK}"
 while true; do
   if ! pgrep -x tint2 >/dev/null 2>&1; then
-    flock -w 5 "\${LOCK}" -c 'pgrep -x tint2 >/dev/null 2>&1 || setsid tint2 -c "'"\${CONF}"'" >/dev/null 2>&1 &'
+    flock -w 5 "\${LOCK}" -c 'pgrep -x tint2 >/dev/null 2>&1 || setsid tint2 -c "'"\${CONF}"'" >>"'"${TINT2_LOG}"'" 2>&1 &'
     sleep 2
   fi
   if command -v xdotool >/dev/null 2>&1; then
@@ -1100,7 +1101,8 @@ desktop_ensure_taskbar(){
 
   desktop_write_tint2_conf
 
-  mt5_run_quiet 15 "flock -w 5 '${TINT2_LOCK}' -c 'pkill -x tint2 >/dev/null 2>&1; sleep 1; setsid tint2 -c \"${TINT2_CONF}\" >/dev/null 2>&1 &'" || true
+  mkdir -p "$(dirname "${TINT2_LOG}")" 2>/dev/null || true
+  mt5_run_quiet 15 "flock -w 5 '${TINT2_LOCK}' -c 'pkill -x tint2 >/dev/null 2>&1; sleep 1; setsid tint2 -c \"${TINT2_CONF}\" >>\"${TINT2_LOG}\" 2>&1 &'" || true
   sleep 2
   desktop_hide_desktop_window
   desktop_ensure_panel_watchdog

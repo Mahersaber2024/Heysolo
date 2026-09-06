@@ -192,6 +192,16 @@ journalctl -u heysolo-bot -f
 (Both are also available from the panel: **B** restarts the bot, **L** tails
 its logs.)
 
+### Desktop / taskbar logs (VNC side)
+
+The `tint2` taskbar (on the `mt5user` VNC desktop) logs its own stdout/stderr
+instead of discarding it, so you can watch it live if the taskbar ever fails
+to start or renders wrong:
+
+```bash
+tail -f /home/mt5user/.heysolo/logs/tint2.log
+```
+
 ## Repository Layout
 
 ```text
