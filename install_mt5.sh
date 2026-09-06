@@ -466,11 +466,18 @@ setup_vnc_password(){
 }
 
 start_display(){
-  if as_mt5 "screen -ls" 2>/dev/null | grep -q '\.vnc\b'; then
+  if as_mt5 "screen -ls" 2>/dev/null | grep -q '\.vnc\b' \
+     && pgrep -u "${MT5_USER}" -x Xvfb >/dev/null 2>&1 \
+     && timeout 5 su - "${MT5_USER}" -c "DISPLAY=:${DISPLAY_NUM} xdpyinfo" >/dev/null 2>&1; then
     info "Virtual display / VNC is already running."
     declare -F desktop_wait_for_x >/dev/null 2>&1 && { desktop_wait_for_x 20 || true; }
     desktop_start
     return
+  fi
+  if as_mt5 "screen -ls" 2>/dev/null | grep -q '\.vnc\b'; then
+    warn "Found a leftover 'vnc' screen session with no live display - clearing it out."
+    as_mt5 "screen -S vnc -X quit" >/dev/null 2>&1 || true
+    sleep 1
   fi
   info "Starting the virtual display (Xvfb) and VNC..."
   as_mt5 "screen -wipe" >/dev/null 2>&1 || true
