@@ -1,20 +1,12 @@
 #!/usr/bin/env bash
-# =============================================================
-# uninstall.sh - HeySolo one-shot uninstaller
-# =============================================================
 set -uo pipefail
 
-# ============================================================
-# CONFIG (must match the installers)
-# ============================================================
-# --- bot ---
 SERVICE_NAME="heysolo-bot"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 BOT_STATE_FILE="/etc/${SERVICE_NAME}.install_dir"
 DEFAULT_BOT_DIR="/opt/heysolo-bot"
 SETTINGS_FILE="heysolo_settings.json"
 
-# --- mt5 ---
 MT5_USER="mt5user"
 DISPLAY_NUM="1"
 MT5_STATE_DIR="/etc/heysolo-mt5"
@@ -22,24 +14,19 @@ TERMINALS_FILE="${MT5_STATE_DIR}/terminals.list"
 MT5_HOME="/home/${MT5_USER}"
 ASSET_DIR="${MT5_HOME}/.heysolo"
 DESKTOP_DIR="${MT5_HOME}/Desktop"
-# shared Common\Files bridge folder (install_mt5.sh) - kept separate from
-# ASSET_DIR on purpose so a "desktop only" removal never touches bot data
 SHARED_COMMON_DIR="${MT5_HOME}/.heysolo-common"
+
+LAUNCHER_DIR="/opt/heysolo"
+LAUNCHER_CLI="/usr/local/bin/heysolo"
 
 BACKUP_ROOT="/root"
 BACKUP_PREFIX="heysolo-backup-"
 BACKUP_DIR="${BACKUP_ROOT}/${BACKUP_PREFIX}$(date +%Y%m%d-%H%M%S)"
-# how many old backups to keep around - every extra run of install.sh/uninstall.sh
-# used to leave a brand new heysolo-backup-<timestamp> folder in /root forever;
-# we now prune down to the newest KEEP_BACKUPS after each new one is made.
 KEEP_BACKUPS=3
 
 DO_BOT=0; DO_MT5=0; DO_DESKTOP=0
 ASSUME_YES=0; KEEP_SETTINGS=0; PURGE_USER=0; PURGE_PACKAGES=0
 
-# ============================================================
-# COLORS / HELPERS
-# ============================================================
 if [[ -t 1 ]]; then
   RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
   CYAN='\033[0;36m'; BLUE='\033[0;34m'; MAGENTA='\033[0;35m'
@@ -69,7 +56,6 @@ as_mt5(){
 }
 
 confirm(){
-  # confirm "question" -> 0 = yes
   [[ ${ASSUME_YES} -eq 1 ]] && return 0
   local ans
   read -rp "$1 (y/N): " ans
@@ -85,9 +71,6 @@ show_banner(){
   echo
 }
 
-# ============================================================
-# WHAT IS ACTUALLY INSTALLED?
-# ============================================================
 bot_dir(){
   if [[ -f "${BOT_STATE_FILE}" ]]; then
     cat "${BOT_STATE_FILE}"
@@ -101,13 +84,11 @@ show_state(){
   header
   title "DETECTED INSTALLATION"
   header
-  # bot
   if [[ -f "${SERVICE_FILE}" || -d "${bd}" ]]; then
     echo -e "  Telegram bot     : ${GREEN}FOUND${NC}  (${bd})"
   else
     echo -e "  Telegram bot     : ${RED}not found${NC}"
   fi
-  # mt5
   if id "${MT5_USER}" &>/dev/null || [[ -d "${MT5_STATE_DIR}" ]]; then
     local n=0
     [[ -s "${TERMINALS_FILE}" ]] && n=$(awk -F'|' 'NF && $1!=""' "${TERMINALS_FILE}" | wc -l | tr -d ' ')
@@ -121,23 +102,21 @@ show_state(){
   else
     echo -e "  MT5 terminals    : ${RED}not found${NC}"
   fi
-  # desktop
   if [[ -d "${ASSET_DIR}" || -d "${DESKTOP_DIR}" ]]; then
     echo -e "  VNC desktop      : ${GREEN}FOUND${NC}  (wallpaper + icons)"
   else
     echo -e "  VNC desktop      : ${RED}not found${NC}"
   fi
-  # shared bot<->EA bridge folder
   if [[ -d "${SHARED_COMMON_DIR}" ]]; then
     echo -e "  Bot bridge data  : ${GREEN}FOUND${NC}  (${SHARED_COMMON_DIR})"
+  fi
+  if [[ -d "${LAUNCHER_DIR}" || -f "${LAUNCHER_CLI}" ]]; then
+    echo -e "  heysolo launcher : ${GREEN}FOUND${NC}  (${LAUNCHER_DIR}, ${LAUNCHER_CLI})"
   fi
   header
   echo
 }
 
-# ============================================================
-# BACKUP (settings + terminal registry, always, before deleting)
-# ============================================================
 backup_state(){
   local bd; bd=$(bot_dir)
   local made=0
@@ -160,9 +139,6 @@ backup_state(){
   prune_old_backups
 }
 
-# Keep only the newest KEEP_BACKUPS backup folders under /root - stops
-# heysolo-backup-* from piling up forever after repeated install/uninstall
-# cycles (this was the reported bug: every run left a brand new one behind).
 prune_old_backups(){
   local dirs old
   mapfile -t dirs < <(ls -1dt "${BACKUP_ROOT}/${BACKUP_PREFIX}"* 2>/dev/null)
@@ -172,9 +148,6 @@ prune_old_backups(){
   done
 }
 
-# ============================================================
-# 1) BOT
-# ============================================================
 uninstall_bot(){
   local bd; bd=$(bot_dir)
   info "Removing the Telegram bot (${SERVICE_NAME})..."
@@ -194,16 +167,12 @@ uninstall_bot(){
     ok "Removed ${bd}"
   fi
   rm -f "${BOT_STATE_FILE}"
-  # leftover journal is harmless, but clear it if the user asked to purge
   if [[ ${PURGE_PACKAGES} -eq 1 ]]; then
     journalctl --vacuum-time=1s --unit "${SERVICE_NAME}" >/dev/null 2>&1 || true
   fi
   ok "Telegram bot uninstalled."
 }
 
-# ============================================================
-# 2) DESKTOP LAYER
-# ============================================================
 uninstall_desktop(){
   info "Removing the VNC desktop layer (wallpaper, icons, taskbar)..."
   as_mt5 "pkill -x tint2"
@@ -216,9 +185,6 @@ uninstall_desktop(){
   ok "Desktop layer removed."
 }
 
-# ============================================================
-# 3) MT5 TERMINALS + VNC
-# ============================================================
 stop_all_mt5(){
   info "Stopping every terminal, wine server, VNC and the virtual display..."
   if [[ -s "${TERMINALS_FILE}" ]]; then
@@ -229,7 +195,6 @@ stop_all_mt5(){
     done < "${TERMINALS_FILE}"
   fi
   as_mt5 "wineserver -k"
-  # helper screens created by the desktop module
   as_mt5 "screen -S vnc -X quit"
   as_mt5 "screen -S titlewatch -X quit"
   as_mt5 "screen -S clipwatch -X quit"
@@ -239,7 +204,6 @@ stop_all_mt5(){
   as_mt5 "pkill -f 'Xvfb :${DISPLAY_NUM}'"
   as_mt5 "pkill -x openbox"
   as_mt5 "screen -wipe"
-  # anything still owned by mt5user
   pkill -u "${MT5_USER}" -f wine    2>/dev/null || true
   pkill -u "${MT5_USER}" -f x11vnc  2>/dev/null || true
   pkill -u "${MT5_USER}" -f Xvfb    2>/dev/null || true
@@ -261,7 +225,6 @@ uninstall_mt5(){
       [[ -n "${exe:-}" ]] && rm -f "${MT5_HOME}/${exe}" 2>/dev/null || true
     done < "${TERMINALS_FILE}"
   fi
-  # catch prefixes that were never registered
   rm -rf "${MT5_HOME}"/mt5-* 2>/dev/null || true
   rm -f  "${MT5_HOME}"/*.exe 2>/dev/null || true
   rm -rf "${MT5_HOME}/.wine" 2>/dev/null || true
@@ -301,9 +264,21 @@ remove_mt5_user(){
   fi
 }
 
-# ============================================================
-# 4) PACKAGES (opt-in, they can be shared with other apps)
-# ============================================================
+bot_installed(){ [[ -f "${SERVICE_FILE}" ]] || [[ -d "$(bot_dir)" ]]; }
+mt5_installed(){ id "${MT5_USER}" &>/dev/null || [[ -d "${MT5_STATE_DIR}" ]]; }
+
+cleanup_launcher_if_unused(){
+  if bot_installed || mt5_installed; then
+    return 0
+  fi
+  if [[ -d "${LAUNCHER_DIR}" || -f "${LAUNCHER_CLI}" ]]; then
+    info "Nothing left for the heysolo launcher to manage - removing ${LAUNCHER_DIR} and ${LAUNCHER_CLI}..."
+    rm -rf "${LAUNCHER_DIR}"
+    rm -f "${LAUNCHER_CLI}"
+    ok "Launcher removed."
+  fi
+}
+
 do_purge_packages(){
   info "Purging packages..."
   apt-get purge -y \
@@ -315,7 +290,6 @@ do_purge_packages(){
   ok "Packages purged (python3/git/curl were left alone on purpose)."
 }
 
-# confirming wrapper - kept for CLI --purge-packages / scripted use
 purge_packages(){
   warn "About to purge apt packages installed by the installers."
   warn "Skip this if anything else on the server uses wine / VNC / a desktop."
@@ -323,9 +297,6 @@ purge_packages(){
   do_purge_packages
 }
 
-# ============================================================
-# FULL WIPE
-# ============================================================
 uninstall_everything(){
   show_state
   warn "This removes the Telegram bot, ALL MT5 terminals, their wine prefixes,"
@@ -343,6 +314,7 @@ uninstall_everything(){
   PURGE_USER=1
   uninstall_mt5
   do_purge_packages
+  cleanup_launcher_if_unused
   echo
   header
   title "EVERYTHING REMOVED"
@@ -354,9 +326,6 @@ uninstall_everything(){
   header
 }
 
-# ============================================================
-# MENU
-# ============================================================
 main_menu(){
   while true; do
     clear 2>/dev/null || true
@@ -372,6 +341,7 @@ main_menu(){
       1) if confirm "This removes the Telegram bot service, ${DEFAULT_BOT_DIR} and its venv. Continue?"; then
            backup_state
            uninstall_bot
+           cleanup_launcher_if_unused
          fi
          press_enter ;;
       2) if confirm "This removes ALL MT5 terminals, the VNC desktop, the ${MT5_USER} account and their apt packages (wine, x11vnc, Xvfb, pcmanfm, tint2...). Continue?"; then
@@ -379,6 +349,7 @@ main_menu(){
            PURGE_USER=1
            uninstall_mt5
            do_purge_packages
+           cleanup_launcher_if_unused
          fi
          press_enter ;;
       0) echo "Goodbye!"; exit 0 ;;
@@ -387,9 +358,6 @@ main_menu(){
   done
 }
 
-# ============================================================
-# ARGS
-# ============================================================
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --all)            DO_BOT=1; DO_MT5=1; DO_DESKTOP=1 ;;
@@ -400,7 +368,7 @@ while [[ $# -gt 0 ]]; do
     --purge-user)     PURGE_USER=1 ;;
     --purge-packages) PURGE_PACKAGES=1 ;;
     -y|--yes)         ASSUME_YES=1 ;;
-    -h|--help)        sed -n '2,40p' "$0"; exit 0 ;;
+    -h|--help)        echo "Usage: uninstall.sh [--all|--bot|--mt5|--desktop] [--keep-settings] [--purge-user] [--purge-packages] [-y|--yes]"; exit 0 ;;
     *) err "Unknown option: $1"; exit 1 ;;
   esac
   shift
@@ -412,7 +380,7 @@ show_banner
 if [[ ${DO_BOT} -eq 1 && ${DO_MT5} -eq 1 ]]; then
   uninstall_everything
 elif [[ ${DO_BOT} -eq 1 ]]; then
-  confirm "Remove the Telegram bot and its files?" && { backup_state; uninstall_bot; }
+  confirm "Remove the Telegram bot and its files?" && { backup_state; uninstall_bot; cleanup_launcher_if_unused; }
 elif [[ ${DO_MT5} -eq 1 ]]; then
   confirm "Remove all MT5 terminals, wine prefixes and the desktop?" && { backup_state; uninstall_mt5; }
   if [[ ${PURGE_PACKAGES} -eq 1 ]]; then
@@ -420,6 +388,7 @@ elif [[ ${DO_MT5} -eq 1 ]]; then
   else
     confirm "Also purge their apt packages (wine, x11vnc, Xvfb, pcmanfm, tint2, ...)?" && purge_packages
   fi
+  cleanup_launcher_if_unused
 elif [[ ${DO_DESKTOP} -eq 1 ]]; then
   confirm "Remove wallpaper, desktop icons and the taskbar?" && uninstall_desktop
 else
