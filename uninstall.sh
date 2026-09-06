@@ -304,10 +304,7 @@ remove_mt5_user(){
 # ============================================================
 # 4) PACKAGES (opt-in, they can be shared with other apps)
 # ============================================================
-purge_packages(){
-  warn "About to purge apt packages installed by the installers."
-  warn "Skip this if anything else on the server uses wine / VNC / a desktop."
-  confirm "Purge packages now?" || { info "Skipped."; return; }
+do_purge_packages(){
   info "Purging packages..."
   apt-get purge -y \
     x11vnc xvfb openbox tint2 wmctrl xdotool \
@@ -316,6 +313,14 @@ purge_packages(){
     >/dev/null 2>&1 || true
   apt-get autoremove -y >/dev/null 2>&1 || true
   ok "Packages purged (python3/git/curl were left alone on purpose)."
+}
+
+# confirming wrapper - kept for CLI --purge-packages / scripted use
+purge_packages(){
+  warn "About to purge apt packages installed by the installers."
+  warn "Skip this if anything else on the server uses wine / VNC / a desktop."
+  confirm "Purge packages now?" || { info "Skipped."; return; }
+  do_purge_packages
 }
 
 # ============================================================
@@ -335,8 +340,9 @@ uninstall_everything(){
   fi
   backup_state
   uninstall_bot
+  PURGE_USER=1
   uninstall_mt5
-  purge_packages
+  do_purge_packages
   echo
   header
   title "EVERYTHING REMOVED"
@@ -356,27 +362,25 @@ main_menu(){
     clear 2>/dev/null || true
     show_banner
     show_state
-    echo -e " ${BOLD}1)${NC} Remove the Telegram bot  (service, files, venv, its Python packages)"
-    echo -e " ${BOLD}2)${NC} Remove MT5 terminals + desktop  (wine prefixes, VNC, and their apt packages)"
-    echo -e " ${BOLD}3)${NC} Remove EVERYTHING (bot + MT5 + desktop + all packages)"
-    echo -e " ${BOLD}4)${NC} Remove the desktop layer only (keep terminals)"
-    echo -e " ${BOLD}5)${NC} Delete the ${MT5_USER} account (+ its home)"
+    echo -e " ${BOLD}1)${NC} Remove the Telegram bot  -  service, files, venv, its Python packages"
+    echo -e " ${BOLD}2)${NC} Remove MT5 + desktop     -  terminals, wine, VNC, ${MT5_USER} account, all their apt packages"
     echo -e " ${BOLD}0)${NC} Exit"
     echo
     header
     read -rp "Choice: " CH
     case "${CH}" in
-      1) confirm "Remove the Telegram bot, its service and its Python packages (venv)?" \
-           && { backup_state; uninstall_bot; }
-         press_enter ;;
-      2) if confirm "Remove all MT5 terminals, wine prefixes and the desktop?"; then
-           backup_state; uninstall_mt5
-           confirm "Also purge their apt packages (wine, x11vnc, Xvfb, pcmanfm, tint2, ...)?" && purge_packages
+      1) if confirm "This removes the Telegram bot service, ${DEFAULT_BOT_DIR} and its venv. Continue?"; then
+           backup_state
+           uninstall_bot
          fi
          press_enter ;;
-      3) uninstall_everything; press_enter ;;
-      4) confirm "Remove wallpaper, desktop icons and the taskbar?" && uninstall_desktop; press_enter ;;
-      5) confirm "Delete user ${MT5_USER} and everything in its home?" && remove_mt5_user; press_enter ;;
+      2) if confirm "This removes ALL MT5 terminals, the VNC desktop, the ${MT5_USER} account and their apt packages (wine, x11vnc, Xvfb, pcmanfm, tint2...). Continue?"; then
+           backup_state
+           PURGE_USER=1
+           uninstall_mt5
+           do_purge_packages
+         fi
+         press_enter ;;
       0) echo "Goodbye!"; exit 0 ;;
       *) warn "Invalid."; sleep 1 ;;
     esac
