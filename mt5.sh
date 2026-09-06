@@ -285,13 +285,6 @@ DESK_STEP=0
 step(){ DESK_STEP=$((DESK_STEP+1)); echo -e "${CYAN}  [desktop ${DESK_STEP}/8] $1${NC}"; }
 
 wait_for_dpkg_lock(){
-  # Right before this runs, step1 has usually just finished several other
-  # apt-get calls (base packages, i386, wine, user creation) - the dpkg lock
-  # can still be held by a trailing dpkg/needrestart hook for a few seconds.
-  # Installing straight into that lock makes apt-get exit non-zero, and since
-  # every desktop apt-get call is intentionally `|| true` (so one missing
-  # package never aborts the whole desktop setup), that failure was silent -
-  # pcmanfm/tint2 would just come back "missing" with no visible error.
   local tries="${1:-30}"
   while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1; do
     (( tries-- <= 0 )) && break
@@ -303,14 +296,11 @@ desktop_install_packages(){
   info "Installing desktop packages (wallpaper, icons, taskbar)..."
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
   wait_for_dpkg_lock
-  apt-get update -y >/dev/null 2>&1 || true
   apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
     pcmanfm feh tint2 wmctrl xdotool zenity dbus-x11 autocutsel \
     icoutils imagemagick x11-utils xprop x11-xserver-utils \
     >/dev/null 2>&1 || true
   if ! command -v tint2 >/dev/null 2>&1 || ! command -v pcmanfm >/dev/null 2>&1; then
-    # One retry, in case the first attempt lost a lock race rather than the
-    # packages genuinely being unavailable.
     wait_for_dpkg_lock
     apt-get install -y pcmanfm feh tint2 icoutils imagemagick >/dev/null 2>&1 || true
   fi
@@ -1398,11 +1388,26 @@ show_banner(){
 
 APT_Q=(-y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
 
+ensure_universe_component(){
+  if command -v add-apt-repository >/dev/null 2>&1; then
+    add-apt-repository -y universe >/dev/null 2>&1 || true
+    return
+  fi
+  local f=/etc/apt/sources.list.d/ubuntu.sources
+  if [[ -f "$f" ]] && ! grep -q universe "$f"; then
+    sed -i '/^Components:/ s/$/ universe/' "$f" 2>/dev/null || true
+  fi
+  if [[ -f /etc/apt/sources.list ]]; then
+    sed -i -E '/ubuntu\.com\/ubuntu [a-z-]+ main( |$)/{ /universe/! s/main/main universe/ }' /etc/apt/sources.list 2>/dev/null || true
+  fi
+}
+
 install_system_packages(){
 
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
 
   info "Base packages: xvfb x11vnc screen wget openbox ..."
+  ensure_universe_component
   apt-get update -y || true
   apt-get install "${APT_Q[@]}" \
     xvfb x11vnc screen wget curl openbox \
