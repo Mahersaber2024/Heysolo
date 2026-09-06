@@ -23,12 +23,6 @@ VNC_PORT=5900
 
 STATE_DIR="/etc/heysolo-mt5"
 DESKTOP_ENV_FILE="${STATE_DIR}/desktop.env"
-
-# Any value already set on the command line (e.g. LOW_BANDWIDTH=0 sudo bash ...)
-# wins. Otherwise, whatever was chosen the LAST time step 1 ran wins - not the
-# hard-coded fallback. This is what makes the desktop look the SAME every time
-# it is (re)started, instead of a different one each time these scripts are
-# invoked fresh (menu, step2, VNC toggle, reboot...).
 [[ -f "${DESKTOP_ENV_FILE}" ]] && source "${DESKTOP_ENV_FILE}" 2>/dev/null || true
 
 COLOR_DEPTH="${COLOR_DEPTH:-16}"
@@ -195,23 +189,8 @@ init_prefix(){
   purge_wine_shortcuts
 }
 
-# ---------------------------------------------------------------------------
-# Desktop layer (wallpaper / icons / taskbar / clipboard / window helpers).
-#
-# This is NOT an installer - it is a plain library of functions used by the
-# MT5 setup steps below and by the heysolo panel (which sources everything
-# above the "case" dispatcher at the bottom of this file - see heysolo.sh).
-# It used to live in its own file (desktop_mt5.sh) that had to be located or
-# re-downloaded separately; it is defined directly here instead, so there is
-# nothing desktop-related left to fetch, install, or go missing.
-# ---------------------------------------------------------------------------
-
 MT5_USER="${MT5_USER:-mt5user}"
 DISPLAY_NUM="${DISPLAY_NUM:-1}"
-
-# Same settings file mt5.sh writes/reads - guarantees this script gives
-# the SAME wallpaper/colour-depth result whether it's called from step1, step2,
-# the heysolo panel, the boot-recovery service, or run by hand on its own.
 STATE_DIR="${STATE_DIR:-/etc/heysolo-mt5}"
 DESKTOP_ENV_FILE="${DESKTOP_ENV_FILE:-${STATE_DIR}/desktop.env}"
 [[ -f "${DESKTOP_ENV_FILE}" ]] && source "${DESKTOP_ENV_FILE}" 2>/dev/null || true
@@ -222,13 +201,10 @@ LOW_BANDWIDTH="${LOW_BANDWIDTH:-1}"
 SCREEN_RES="${SCREEN_RES:-${SCREEN_GEOMETRY}x${COLOR_DEPTH}}"
 SCREEN_RES_WH="${SCREEN_RES%x*}"
 DESKTOP_BG_COLOR="${DESKTOP_BG_COLOR:-#0b1220}"
-if [[ "${LOW_BANDWIDTH}" == "1" ]]; then
-  USE_WALLPAPER_IMAGE="${USE_WALLPAPER_IMAGE:-0}"
-else
-  USE_WALLPAPER_IMAGE="${USE_WALLPAPER_IMAGE:-1}"
-fi
+USE_WALLPAPER_IMAGE="${USE_WALLPAPER_IMAGE:-1}"
 
 PANEL_HEIGHT="${PANEL_HEIGHT:-40}"
+WINE_VDESKTOP="${WINE_VDESKTOP:-0}"
 compute_work_res(){
   local w h
   w="${SCREEN_RES_WH%x*}"
@@ -483,6 +459,7 @@ SLUG="${slug}"
 TERM_EXE="${termpath}"
 REGISTRY="${TERMINALS_FILE}"
 WORK_RES="${WORK_RES_WH:-1280x1024}"
+VDESKTOP="${WINE_VDESKTOP:-0}"
 LOGDIR="\$HOME/.heysolo/logs"
 LOG="\${LOGDIR}/\${SLUG}.log"
 mkdir -p "\${LOGDIR}" 2>/dev/null || true
@@ -578,8 +555,13 @@ start_it(){
   screen -wipe >/dev/null 2>&1 || true
   screen -S "\${SLUG}" -X quit >/dev/null 2>&1 || true
 
-  screen -dmS "\${SLUG}" bash -c "export DISPLAY=:${DISPLAY_NUM} WINEDLLOVERRIDES='winemenubuilder.exe=d' WINEPREFIX='\${WINEPREFIX}'; wine explorer /desktop=\${SLUG},\${WORK_RES} \"\${TERM_EXE}\" >> '\${LOG}' 2>&1"
-  log "started: \${TERM_EXE} (desktop \${SLUG},\${WORK_RES})"
+  if [[ "\${VDESKTOP}" == "1" ]]; then
+    screen -dmS "\${SLUG}" bash -c "export DISPLAY=:${DISPLAY_NUM} WINEDLLOVERRIDES='winemenubuilder.exe=d' WINEPREFIX='\${WINEPREFIX}'; wine explorer /desktop=\${SLUG},\${WORK_RES} \"\${TERM_EXE}\" >> '\${LOG}' 2>&1"
+    log "started: \${TERM_EXE} (wine desktop)"
+  else
+    screen -dmS "\${SLUG}" bash -c "export DISPLAY=:${DISPLAY_NUM} WINEDLLOVERRIDES='winemenubuilder.exe=d' WINEPREFIX='\${WINEPREFIX}'; wine \"\${TERM_EXE}\" >> '\${LOG}' 2>&1"
+    log "started: \${TERM_EXE} (normal window)"
+  fi
 }
 
 case "\${1:-open}" in
@@ -669,8 +651,12 @@ desktop_sync_icons(){
     n=$((n+1))
   done < "${TERMINALS_FILE}"
 
-  if desktop_manager_active && command -v pcmanfm >/dev/null 2>&1; then
-    mt5_run_quiet 10 "pcmanfm --reconfigure"
+  if command -v pcmanfm >/dev/null 2>&1; then
+    if desktop_manager_active; then
+      mt5_run_quiet 10 "pcmanfm --reconfigure"
+    elif [[ "${DESKTOP_ICONS}" == "1" ]]; then
+      desktop_launch_manager
+    fi
   fi
 
   if pgrep -u "${MT5_USER}" -x tint2 >/dev/null 2>&1; then
@@ -1065,7 +1051,14 @@ desktop_write_panel_watchdog(){
 #!/usr/bin/env bash
 CONF="${TINT2_CONF}"
 LOCK="${TINT2_LOCK}"
+PROFILE="${PCMAN_PROFILE}"
+WANT_ICONS="${DESKTOP_ICONS}"
 while true; do
+  if [[ "\${WANT_ICONS}" == "1" ]] && command -v pcmanfm >/dev/null 2>&1 \
+     && ! pgrep -f 'pcmanfm[[:space:]]+--desktop' >/dev/null 2>&1; then
+    setsid pcmanfm --desktop --profile="\${PROFILE}" >/dev/null 2>&1 &
+    sleep 3
+  fi
   if ! pgrep -x tint2 >/dev/null 2>&1; then
     flock -w 5 "\${LOCK}" -c 'pgrep -x tint2 >/dev/null 2>&1 || setsid tint2 -c "'"\${CONF}"'" >>"'"${TINT2_LOG}"'" 2>&1 &'
     sleep 2
@@ -2167,9 +2160,15 @@ start_terminal(){
     return 0
   fi
 
-  as_mt5 "screen -dmS ${slug} bash -c '
-    export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
-    wine explorer /desktop=${slug},${WORK_RES_WH:-${SCREEN_RES%x*}} \"${termpath}\"'"
+  if [[ "${WINE_VDESKTOP:-0}" == "1" ]]; then
+    as_mt5 "screen -dmS ${slug} bash -c '
+      export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
+      wine explorer /desktop=${slug},${WORK_RES_WH:-${SCREEN_RES%x*}} \"${termpath}\"'"
+  else
+    as_mt5 "screen -dmS ${slug} bash -c '
+      export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
+      wine \"${termpath}\"'"
+  fi
 }
 
 start_all_terminals(){
@@ -2564,9 +2563,7 @@ case "${1:-menu}" in
           as_mt5 "screen -ls" || true
           HEYSOLO_CLEAN_EXIT=1 ;;
   desktop)
-    # Desktop-only maintenance (wallpaper/icons/taskbar/etc). Not a separate
-    # installer - just direct access to the library functions defined above,
-    # for rebuilding one piece of the desktop without a full install/step.
+
     require_root
     shift
     case "${1:-all}" in
