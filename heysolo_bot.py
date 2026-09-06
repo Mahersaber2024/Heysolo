@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from dataclasses import dataclass, field
 from pathlib import Path
 import os
+import glob
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -35,16 +36,60 @@ THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT = (
 )
 OUTBOX_POLL_SECONDS = settings.get_outbox_poll_seconds()
 
-def default_common_files_dir() -> Path:
+
+# ---- MT5 "Common\Files" folder discovery -----------------------------------
+# On real Windows this folder lives at %APPDATA%\MetaQuotes\Terminal\Common\Files
+# and every terminal shares it automatically - no per-EA setup needed. This bot
+# is a plain Linux process (systemd, root), not something running inside Wine,
+# so $APPDATA is never set for it. It has to locate the folder on disk itself
+# by scanning the wine prefixes on the server.
+
+_COMMON_GLOB_PATTERNS = [
+    "/home/*/*/drive_c/users/*/AppData/Roaming/MetaQuotes/Terminal/Common/Files",
+    "/home/*/.wine/drive_c/users/*/AppData/Roaming/MetaQuotes/Terminal/Common/Files",
+    "/root/.wine/drive_c/users/*/AppData/Roaming/MetaQuotes/Terminal/Common/Files",
+]
+
+def find_common_files_candidates() -> list[Path]:
+    found = []
+    for pattern in _COMMON_GLOB_PATTERNS:
+        for p in glob.glob(pattern):
+            pp = Path(p)
+            if pp.is_dir():
+                found.append(pp)
+    found.sort(key=lambda pp: pp.stat().st_mtime, reverse=True)
+    return found
+
+def auto_detect_common_files_dir() -> Path | None:
+    candidates = find_common_files_candidates()
+    return candidates[0] if candidates else None
+
+def resolve_common_files_dir() -> tuple[Path, str]:
+    """(path, source) - source is 'manual', 'appdata', 'auto', or 'fallback'."""
     override = settings.get_common_files_dir()
     if override:
-        return Path(override)
+        return Path(override), "manual"
     appdata = os.environ.get("APPDATA")
     if appdata:
-        return Path(appdata) / "MetaQuotes" / "Terminal" / "Common" / "Files"
-    return Path("./MT5_Common_Files")
+        return Path(appdata) / "MetaQuotes" / "Terminal" / "Common" / "Files", "appdata"
+    auto = auto_detect_common_files_dir()
+    if auto:
+        return auto, "auto"
+    return Path("./MT5_Common_Files"), "fallback"
 
-COMMON_DIR = default_common_files_dir()
+def apply_common_files_dir(new_dir: Path, source: str):
+    global COMMON_DIR, COMMON_DIR_SOURCE, BRIDGE_DIR, OUTBOX_DIR, PHOTOS_DIR, CONTROL_DIR, ACCOUNT_DIR
+    COMMON_DIR = new_dir
+    COMMON_DIR_SOURCE = source
+    BRIDGE_DIR = COMMON_DIR / "TelegramBridge"
+    OUTBOX_DIR = BRIDGE_DIR / "Outbox"
+    PHOTOS_DIR = BRIDGE_DIR / "Photos"
+    CONTROL_DIR = BRIDGE_DIR / "Control"
+    ACCOUNT_DIR = COMMON_DIR / "AccountStatus"
+    for d in (OUTBOX_DIR, PHOTOS_DIR, CONTROL_DIR, ACCOUNT_DIR):
+        d.mkdir(parents=True, exist_ok=True)
+
+COMMON_DIR, COMMON_DIR_SOURCE = resolve_common_files_dir()
 BRIDGE_DIR = COMMON_DIR / "TelegramBridge"
 OUTBOX_DIR = BRIDGE_DIR / "Outbox"
 PHOTOS_DIR = BRIDGE_DIR / "Photos"
@@ -56,6 +101,8 @@ if not BOT_TOKEN:
 
 for d in (OUTBOX_DIR, PHOTOS_DIR, CONTROL_DIR, ACCOUNT_DIR):
     d.mkdir(parents=True, exist_ok=True)
+
+log.info("Common\\Files folder (%s): %s", COMMON_DIR_SOURCE, COMMON_DIR)
 
 G_ACCOUNT = "▤"
 G_BIAS = "◈"
@@ -507,6 +554,7 @@ def admin_panel_view() -> dict:
         [InlineKeyboardButton(f"{G_ADMIN} Admins", callback_data="ADM_LIST")],
         [InlineKeyboardButton("▣ Reporting Group", callback_data="ADM_SETCHAT")],
         [InlineKeyboardButton("◇ Notifications", callback_data="ADM_NOTIF")],
+        [InlineKeyboardButton("🗂 Common Files Folder", callback_data="ADM_COMMON")],
         [InlineKeyboardButton(f"{G_ACCOUNT} Status", callback_data="ADM_STATUS")],
     ])
     return {
@@ -583,9 +631,35 @@ def status_panel_view() -> dict:
         f"{G_ROW} Symbols (from EA): <code>{', '.join(syms) or 'waiting for EA'}</code>\n"
         f"{G_ROW} Notify: <code>{', '.join(k for k, v in settings.get_notify().items() if v) or 'all off'}</code>\n"
         f"{G_ROW} Window: <code>{window_line}</code>\n"
-        f"{G_ROW} Bridge: <code>{BRIDGE_DIR}</code>"
+        f"{G_ROW} Bridge: <code>{BRIDGE_DIR}</code>\n"
+        f"{G_ROW} Common dir: <code>{COMMON_DIR}</code> ({COMMON_DIR_SOURCE})"
     )
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"{G_BACK} Back", callback_data="ADM_PANEL")]])
+    return {"text": text, "reply_markup": kb, "parse_mode": ParseMode.HTML}
+
+def common_dir_view() -> dict:
+    exists = COMMON_DIR.exists()
+    source_label = {
+        "manual": "✎ set manually",
+        "appdata": f"{G_OK} from $APPDATA (running inside Wine)",
+        "auto": f"{G_OK} auto-detected",
+        "fallback": f"{G_BAD} not found on this server",
+    }.get(COMMON_DIR_SOURCE, COMMON_DIR_SOURCE)
+    exists_label = f"{G_OK} exists" if exists else f"{G_BAD} does not exist yet"
+    text = (
+        f"🗂 <b>Common Files Folder</b>\n"
+        f"This is the one folder every MT5 terminal (and every EA) shares - "
+        f"the bot reads/writes here. Set it once and future EAs need no extra setup.\n\n"
+        f"{G_ROW} Path: <code>{COMMON_DIR}</code>\n"
+        f"{G_ROW} Source: {source_label}\n"
+        f"{G_ROW} On disk: {exists_label}"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"{G_AUTO} Auto-detect now", callback_data="ADM_COMMON_AUTO")],
+        [InlineKeyboardButton(f"{G_MANUAL} Set manually", callback_data="ADM_COMMON_SET")],
+        [InlineKeyboardButton("↺ Clear override (use auto-detect)", callback_data="ADM_COMMON_CLEAR")],
+        [InlineKeyboardButton(f"{G_BACK} Back", callback_data="ADM_PANEL")],
+    ])
     return {"text": text, "reply_markup": kb, "parse_mode": ParseMode.HTML}
 
 TOPIC_SPECS = [("bias", "Bias"), ("trade", "Trades"), ("log", "Logs"), ("result", "Results")]
@@ -758,6 +832,42 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         v = status_panel_view()
         await q.edit_message_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
 
+    elif data == "ADM_COMMON":
+        await q.answer()
+        v = common_dir_view()
+        await q.edit_message_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+
+    elif data == "ADM_COMMON_AUTO":
+        found = auto_detect_common_files_dir()
+        if found:
+            settings.set_common_files_dir("")  # drop any stale manual override
+            apply_common_files_dir(found, "auto")
+            await q.answer("Found it")
+        else:
+            await q.answer("No MT5 Common\\Files folder found on this server yet.", show_alert=True)
+        v = common_dir_view()
+        await q.edit_message_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+
+    elif data == "ADM_COMMON_SET":
+        _pending[uid] = "set_common"
+        await q.answer()
+        await q.edit_message_text(
+            f"{G_MANUAL} <b>Set Common Files Folder</b>\n"
+            f"Current: <code>{COMMON_DIR}</code>\n"
+            "Send the full Linux path to the terminal's <code>Common/Files</code> folder, e.g.:\n"
+            "<code>/home/mt5user/mt5-terminals/drive_c/users/mt5user/AppData/Roaming/MetaQuotes/Terminal/Common/Files</code>\n"
+            "Send <code>cancel</code> to abort.",
+            parse_mode=ParseMode.HTML,
+        )
+
+    elif data == "ADM_COMMON_CLEAR":
+        settings.set_common_files_dir("")
+        new_dir, source = resolve_common_files_dir()
+        apply_common_files_dir(new_dir, source)
+        await q.answer("Override cleared")
+        v = common_dir_view()
+        await q.edit_message_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update):
         return
@@ -804,6 +914,26 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             if kb is None:
                 await send_admin_panel(update)
+        elif action == "set_common":
+            p = Path(text)
+            if not p.is_absolute():
+                await msg.reply_text(
+                    f"{G_BAD} Send a full absolute path, starting with <code>/</code>. "
+                    "Send it again or <code>cancel</code>.", parse_mode=ParseMode.HTML)
+                _pending[uid] = action
+                return
+            if not p.is_dir():
+                await msg.reply_text(
+                    f"{G_BAD} That path does not exist on this server: <code>{p}</code>\n"
+                    "Double check it (create the folder first if it's really missing). "
+                    "Send it again or <code>cancel</code>.", parse_mode=ParseMode.HTML)
+                _pending[uid] = action
+                return
+            settings.set_common_files_dir(str(p))
+            apply_common_files_dir(p, "manual")
+            await msg.reply_text(f"{G_OK} Common Files Folder set to:\n<code>{p}</code>", parse_mode=ParseMode.HTML)
+            v = common_dir_view()
+            await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         return
 
     if text == BTN_ADMIN:
