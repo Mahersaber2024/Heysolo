@@ -27,37 +27,11 @@ MT5_USER="mt5user"
 DISPLAY_NUM="1"                 # -> DISPLAY=:1
 VNC_PORT=5900
 
-# ------------------------------------------------------------
-# DESKTOP QUALITY vs BANDWIDTH
-#   The geometry (the "scale" - how big everything looks inside MT5) stays at
-#   1920x1080. What we turn down is the QUALITY of the pixels being shipped:
-#     COLOR_DEPTH=16   -> 16-bit instead of 24-bit: ~half the bytes per pixel
-#                         (COLOR_DEPTH=8 goes even lower, 256 colours)
-#     LOW_BANDWIDTH=1  -> flat colour desktop instead of the photo wallpaper,
-#                         and x11vnc is tuned for a slow link (fewer frames)
-#   Change it for one run without editing anything:
-#     COLOR_DEPTH=8 sudo bash install_mt5.sh          # even lighter
-#     LOW_BANDWIDTH=0 COLOR_DEPTH=24 sudo bash ...    # back to pretty
-#   Xvfb falls back to 24-bit on its own if wine refuses the lower depth.
-# ------------------------------------------------------------
 COLOR_DEPTH="${COLOR_DEPTH:-16}"
 SCREEN_GEOMETRY="${SCREEN_GEOMETRY:-1920x1080}"
 LOW_BANDWIDTH="${LOW_BANDWIDTH:-1}"
 SCREEN_RES="${SCREEN_RES:-${SCREEN_GEOMETRY}x${COLOR_DEPTH}}"
 export COLOR_DEPTH SCREEN_GEOMETRY LOW_BANDWIDTH SCREEN_RES
-
-# x11vnc options in one place (used by every start below).
-#   -defer/-wait      : batch updates, ~12 fps instead of as-fast-as-possible
-#   -speeds modem     : x11vnc's own tuning for a slow link
-#   -cursor arrow     : draw a plain static arrow shape instead of querying
-#                       Xvfb's real cursor (Xvfb's XFixes cursor support is
-#                       unreliable) - cheap, but still an actual shape
-#   -nowireframe      : no wireframe animation while dragging windows
-#   NOTE: do NOT add -nocursorshape here. It disables the RFB cursor-shape
-#   stream completely, and with no shape data at all the VNC viewer falls
-#   back to drawing a bare dot that does not track the real pointer -
-#   exactly the "mouse is a dot and clicks land nowhere" symptom, because
-#   you are aiming at the dot, not at the real (invisible) cursor position.
 VNC_BASE_OPTS="-forever -shared -noprimary -nosetprimary"
 if [[ "${LOW_BANDWIDTH}" == "1" ]]; then
   VNC_TUNE_OPTS="-speeds modem -defer 80 -wait 80 -cursor arrow -nowireframe"
@@ -69,9 +43,6 @@ VNC_OPTS="${VNC_BASE_OPTS} ${VNC_TUNE_OPTS}"
 # All brokers install into ONE shared wineprefix, each under its own
 # Program Files subfolder - the normal Windows layout.
 WINEPREFIX_SHARED="/home/${MT5_USER}/mt5-terminals"
-
-# --- LOCAL installer folder: upload your *.exe files here over SFTP ---
-# Nothing is fetched from GitHub. Put e.g. combatcapitalmarkets5setup.exe here.
 MT5_LOCAL_DIR="/opt/heysolo/mt5"
 MQL5_LOCAL_DIR="/opt/heysolo/mt5-mql5"
 
@@ -237,9 +208,6 @@ load_desktop_module(){
     # shellcheck source=/dev/null
     source "${candidate}"
   else
-    # Persist it: running the installer as `bash <(curl ...)` left NOTHING on
-    # disk, so `sudo bash desktop_mt5.sh icons` from the final guide failed
-    # with "No such file or directory". Keep a real copy under /opt/heysolo.
     cache="/tmp/${DESKTOP_MODULE}"
     if curl -fsSL "${REPO_RAW}/${DESKTOP_MODULE}" -o "${cache}" 2>/dev/null && [[ -s "${cache}" ]]; then
       if mkdir -p "${HEYSOLO_LIB_DIR}" 2>/dev/null \
@@ -318,15 +286,6 @@ ensure_wine32(){
     || true
 }
 
-# ============================================================
-# WINE VERSION GATE
-#   MT5 itself refuses to work properly below Wine 10:
-#     "unstable and unsupported Wine 9.0 ..., please upgrade to Wine 10.0"
-#   On Wine 9 the terminal starts and draws charts, but the login to a broker
-#   account fails (its network/TLS layer is what breaks), which looks like a
-#   broker problem and is not. So: WineHQ 10.x is installed on purpose, and an
-#   existing wine older than 10 is upgraded instead of being accepted.
-# ============================================================
 WINE_MIN_MAJOR=10
 
 wine_major(){
@@ -340,9 +299,6 @@ wine_is_recent_enough(){
   (( $(wine_major) >= WINE_MIN_MAJOR ))
 }
 
-# Add WineHQ's own repository - the only source that carries current Wine.
-# The distro package is stuck on Wine 9 on today's Ubuntu/Debian, and MT5
-# cannot log in to a broker account on Wine 9, so this is not optional.
 add_winehq_repo(){
   [[ "${WINEHQ_REPO_READY:-0}" == "1" ]] && return 0
   local osid codename
