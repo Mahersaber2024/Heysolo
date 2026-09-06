@@ -191,19 +191,6 @@ stop_all_mt5(){
   if [[ -s "${TERMINALS_FILE}" ]]; then
     while IFS='|' read -r slug exe wineprefix termpath; do
       [[ -z "${slug:-}" ]] && continue
-      # Ask the terminal to close normally first (so it saves its own state
-      # before everything gets removed) rather than jumping straight to
-      # wineserver -k, which cuts it off mid-run with no chance to save.
-      if [[ -n "${termpath:-}" ]]; then
-        local wid waited=0
-        wid=$(as_mt5 "wmctrl -lx 2>/dev/null | awk 'tolower(\$3) ~ /terminal64\\.exe/ {print \$1; exit}'")
-        if [[ -n "${wid}" ]]; then
-          as_mt5 "wmctrl -ic ${wid}" 2>/dev/null || true
-          while as_mt5 "pgrep -f '${termpath}'" >/dev/null 2>&1 && (( waited < 10 )); do
-            sleep 1; ((waited++))
-          done
-        fi
-      fi
       [[ -n "${wineprefix:-}" ]] && as_mt5 "WINEPREFIX='${wineprefix}' wineserver -k"
       as_mt5 "screen -S ${slug} -X quit"
     done < "${TERMINALS_FILE}"
