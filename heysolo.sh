@@ -10,7 +10,7 @@ CLI_PATH="/usr/local/bin/heysolo"
 # that now lives inside mt5.sh itself (it's sourced from there, the
 # same way the MT5 panel functions below are), so there is no separate
 # desktop_mt5.sh file to fetch or go missing anymore.
-SCRIPT_LIST=(heysolo.sh install.sh mt5.sh uninstall.sh)
+SCRIPT_LIST=(heysolo.sh install.sh mt5.sh uninstall.sh win/wine-stealth.sh win/test-stealth.sh win/install-stealth.sh)
 
 if [[ -t 1 ]]; then
   RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
@@ -28,6 +28,7 @@ pause(){ read -rp "${DIM}Enter to go back...${NC}" _ || true; }
 [[ $EUID -eq 0 ]] || { err "Run as root:  sudo heysolo"; exit 1; }
 
 fetch_one(){
+  mkdir -p "$(dirname "${SCRIPTS_DIR}/$1")" 2>/dev/null || true
   curl -fsSL "${REPO_RAW}/$1" -o "${SCRIPTS_DIR}/$1.part" 2>/dev/null \
     && [[ -s "${SCRIPTS_DIR}/$1.part" ]] \
     && mv -f "${SCRIPTS_DIR}/$1.part" "${SCRIPTS_DIR}/$1" \
@@ -42,7 +43,7 @@ ensure_scripts(){
     echo "  fetching ${f}..."
     fetch_one "${f}" || err "could not download ${f}"
   done
-  chmod +x "${SCRIPTS_DIR}"/*.sh 2>/dev/null || true
+  chmod +x "${SCRIPTS_DIR}"/*.sh "${SCRIPTS_DIR}"/*/*.sh 2>/dev/null || true
 }
 
 update_scripts(){
@@ -50,7 +51,7 @@ update_scripts(){
   for f in "${SCRIPT_LIST[@]}"; do
     if fetch_one "${f}"; then ok "${f}"; else warn "${f} kept (download failed)"; fi
   done
-  chmod +x "${SCRIPTS_DIR}"/*.sh 2>/dev/null || true
+  chmod +x "${SCRIPTS_DIR}"/*.sh "${SCRIPTS_DIR}"/*/*.sh 2>/dev/null || true
   warn "Re-open the panel to pick up a new heysolo.sh."
 }
 
@@ -163,6 +164,7 @@ panel(){
   say "             [${BOLD}A${NC}] start all    [${BOLD}Z${NC}] stop all   [${BOLD}V${NC}] vnc on/off       [${BOLD}W${NC}] window to front"
   echo
   say "  ${CYAN}SETUP${NC}      [${BOLD}P${NC}] prepare server   [${BOLD}I${NC}] install/add terminal   [${BOLD}M${NC}] sync MQL5 files"
+  say "             [${BOLD}S${NC}] wine stealth     ${DIM}hide Wine from brokers (spoof Windows 10)${NC}"
   echo
   say "  ${CYAN}BOT${NC}        [${BOLD}T${NC}] bot setup        [${BOLD}B${NC}] restart bot            [${BOLD}L${NC}] bot logs"
   echo
@@ -251,6 +253,12 @@ do_action(){
     w)  if declare -F desktop_restore_window >/dev/null 2>&1; then desktop_restore_window; else warn "desktop module missing"; fi ;;
     p)  run_mt5 step1; pause ;;
     i)  run_mt5 step2; pause ;;
+    s)  if [[ -s "${SCRIPTS_DIR}/win/wine-stealth.sh" ]]; then
+          bash "${SCRIPTS_DIR}/win/wine-stealth.sh"
+        else
+          warn "win/wine-stealth.sh not found - press u to update scripts."
+        fi
+        pause ;;
     m)  if declare -F sync_mql5_assets_all >/dev/null 2>&1; then
           declare -F ensure_mql5_local_dir >/dev/null 2>&1 && ensure_mql5_local_dir
           say "Upload into ${BOLD}${MQL5_LOCAL_DIR:-/opt/heysolo/mt5-mql5}${NC}/{Experts,Include,Indicators,set,Templates}"
