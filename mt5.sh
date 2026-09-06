@@ -1611,6 +1611,42 @@ link_winehq_binaries(){
   return 0
 }
 
+# `wine --version` only proves the binary is installed - it says nothing
+# about whether wine can actually create and boot a prefix for MT5_USER,
+# which is exactly the step that was failing silently and only showing up
+# much later, mid-terminal-install ("wine: chdir to ... No such file or
+# directory"). This runs that real end-to-end check once, right after the
+# user exists, so a broken wine setup is caught and reported in Step 1 -
+# not discovered halfway through installing a broker's terminal in Step 2.
+verify_wine_works(){
+  if ! id "${MT5_USER}" &>/dev/null; then
+    warn "Cannot smoke-test wine yet - user ${MT5_USER} does not exist."
+    return 1
+  fi
+  info "Verifying wine can actually create a prefix for ${MT5_USER} (smoke test)..."
+  local test_prefix="/home/${MT5_USER}/.heysolo-wine-smoketest"
+  local logfile="/var/log/heysolo-wine-smoketest.log"
+  rm -rf "${test_prefix}"
+  mkdir -p "${test_prefix}"
+  chown -R "${MT5_USER}:${MT5_USER}" "${test_prefix}"
+  : > "${logfile}" 2>/dev/null || true
+
+  AS_WINE_TIMEOUT=180 as_wine_logged "${test_prefix}" "wineboot --init; wineserver -w" "${logfile}" || true
+
+  if [[ -d "${test_prefix}/drive_c" ]]; then
+    ok "wine smoke test passed - it can build a working prefix for ${MT5_USER}."
+    rm -rf "${test_prefix}"
+    return 0
+  fi
+
+  err "wine smoke test FAILED - wine cannot build a working prefix for ${MT5_USER}."
+  show_wine_log_tail "${logfile}"
+  warn "Every terminal install would fail the same way until this is fixed."
+  warn "Common causes: no disk space on /home, wrong ownership of /home/${MT5_USER},"
+  warn "or a broken/partial wine install. Check the log above, fix it, then re-run Step 1."
+  return 1
+}
+
 install_wine(){
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
   link_winehq_binaries
@@ -2565,6 +2601,7 @@ step1_prepare_server(){
 
   guard "system packages"  install_system_packages
   guard "mt5 user"         setup_mt5_user
+  guard "wine smoke test"  verify_wine_works
   guard "vnc password"     setup_vnc_password
   guard "desktop packages" desktop_install_packages
   guard "upload folder"    ensure_local_mt5_dir
