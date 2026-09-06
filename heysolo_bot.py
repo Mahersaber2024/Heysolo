@@ -35,7 +35,6 @@ THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT = (
 )
 OUTBOX_POLL_SECONDS = settings.get_outbox_poll_seconds()
 
-
 def default_common_files_dir() -> Path:
     override = settings.get_common_files_dir()
     if override:
@@ -44,7 +43,6 @@ def default_common_files_dir() -> Path:
     if appdata:
         return Path(appdata) / "MetaQuotes" / "Terminal" / "Common" / "Files"
     return Path("./MT5_Common_Files")
-
 
 COMMON_DIR = default_common_files_dir()
 BRIDGE_DIR = COMMON_DIR / "TelegramBridge"
@@ -80,7 +78,6 @@ G_FLAT = "○"
 G_ROW = "▸"
 RULE = "─" * 27
 
-
 def _read_account_file(path: Path) -> dict:
     out: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -88,7 +85,6 @@ def _read_account_file(path: Path) -> dict:
         if sep:
             out[key.strip()] = value.strip()
     return out
-
 
 def list_accounts() -> list[dict]:
     accounts = []
@@ -105,20 +101,17 @@ def list_accounts() -> list[dict]:
         })
     return accounts
 
-
 def _f(raw: dict, key: str, default: float = 0.0) -> float:
     try:
         return float(raw[key])
     except (KeyError, TypeError, ValueError):
         return default
 
-
 def _i(raw: dict, key: str, default: int = 0) -> int:
     try:
         return int(float(raw[key]))
     except (KeyError, TypeError, ValueError):
         return default
-
 
 def read_dashboard(login: str) -> dict | None:
     path = ACCOUNT_DIR / f"account_{login}.txt"
@@ -153,17 +146,14 @@ def read_dashboard(login: str) -> dict | None:
         "challenge_passed": raw.get("challengePassed", "").lower() == "true",
     }
 
-
 _STATUS_GLYPH = {
     "Completed": G_OK, "Allowed": G_OK, "Active": G_OK,
     "In Progress": G_WAIT,
     "Failed": G_BAD, "Stopped": G_BAD, "Locked": G_BAD,
 }
 
-
 def _mark(status: str) -> str:
     return _STATUS_GLYPH.get(status, G_NEUTRAL)
-
 
 E_MET, E_PROGRESS, E_BREACHED, E_UNKNOWN = "✅", "⏳", "❌", "⚪"
 _STATUS_EMOJI = {
@@ -173,17 +163,14 @@ _STATUS_EMOJI = {
 }
 BAR_FULL, BAR_EMPTY, BAR_WIDTH = "\u25b0", "\u25b1", 10
 
-
 def _emoji_mark(status: str) -> str:
     return _STATUS_EMOJI.get(status, E_UNKNOWN)
-
 
 def _bar(current: float, limit: float) -> str:
     if limit <= 0:
         return BAR_EMPTY * BAR_WIDTH
     filled = int(round(max(0.0, min(current / limit, 1.0)) * BAR_WIDTH))
     return BAR_FULL * filled + BAR_EMPTY * (BAR_WIDTH - filled)
-
 
 def _rule(emoji: str, label: str, current: float, limit: float, status: str, unit: str = "%") -> str:
     fmt = "{:.2f}" if unit == "%" else "{:.0f}"
@@ -193,10 +180,8 @@ def _rule(emoji: str, label: str, current: float, limit: float, status: str, uni
         f"<b>{cur}{unit}</b> / {lim}{unit} {_emoji_mark(status)}"
     )
 
-
 def _row(label: str, value: str, mark: str = "") -> str:
     return f"{label:<13}{value:>17}{('  ' + mark) if mark else ''}"
-
 
 def format_stats_message(login: str) -> str:
     d = read_dashboard(login)
@@ -238,7 +223,6 @@ def format_stats_message(login: str) -> str:
         lines.append(f"<i>updated {d['updated']}</i>")
     return "\n".join(lines)
 
-
 def get_symbols_for_login(login: str | None) -> list[str]:
     if not login:
         return []
@@ -253,13 +237,11 @@ def get_symbols_for_login(login: str | None) -> list[str]:
             out.append(s)
     return out
 
-
 NO_SYMBOLS_TEXT = (
     f"{G_WAIT} No symbols yet.\n"
     "Symbols are read from the EA input <code>SymbolsInput</code> and refresh automatically "
     "on every export. Edit them on the chart, not here."
 )
-
 
 @dataclass
 class AccountState:
@@ -268,10 +250,8 @@ class AccountState:
     bias: dict = field(default_factory=dict)
     _seeded: bool = False
 
-
 _state: dict[str, AccountState] = {}
 _active_login: dict[int, str] = {}
-
 
 def get_state(login: str) -> AccountState:
     st = _state.setdefault(login, AccountState())
@@ -285,7 +265,6 @@ def get_state(login: str) -> AccountState:
             st._seeded = True
     return st
 
-
 def write_control(login: str):
     st = get_state(login)
     path = CONTROL_DIR / f"Control_{login}.txt"
@@ -295,7 +274,6 @@ def write_control(login: str):
     tmp.write_text("\n".join(lines) + "\n", encoding="ascii")
     tmp.replace(path)
 
-
 def resolve_login(user_id: int) -> str | None:
     accounts = list_accounts()
     if not accounts:
@@ -304,10 +282,8 @@ def resolve_login(user_id: int) -> str | None:
         return accounts[0]["login"]
     return _active_login.get(user_id, accounts[0]["login"])
 
-
 def is_allowed(user_id) -> bool:
     return settings.is_authorized(user_id)
-
 
 _EVENT_TYPE_TO_THREAD = {
     "BIAS": THREAD_BIAS,
@@ -316,9 +292,7 @@ _EVENT_TYPE_TO_THREAD = {
     "RESULT": THREAD_RESULT,
 }
 
-
 NY_TZ = ZoneInfo("America/New_York")
-
 
 def _parse_hhmm(value: str) -> int | None:
     try:
@@ -329,7 +303,6 @@ def _parse_hhmm(value: str) -> int | None:
     if not (0 <= h <= 23 and 0 <= m <= 59):
         return None
     return h * 60 + m
-
 
 def in_delivery_window() -> bool:
     w = settings.get_notify_window()
@@ -344,7 +317,6 @@ def in_delivery_window() -> bool:
         return start <= now_min <= end
     return now_min >= start or now_min <= end
 
-
 def should_relay(event_type: str) -> tuple[bool, str]:
     kind = (event_type or "LOG").lower()
     if not settings.is_notify_enabled(kind):
@@ -353,7 +325,6 @@ def should_relay(event_type: str) -> tuple[bool, str]:
         w = settings.get_notify_window()
         return False, f"outside the {w['start']}-{w['end']} NY window"
     return True, ""
-
 
 def parse_event(path: Path) -> tuple[str, int, str, str, str]:
     raw = path.read_text(encoding="utf-8", errors="ignore")
@@ -368,7 +339,6 @@ def parse_event(path: Path) -> tuple[str, int, str, str, str]:
         elif ln.startswith("ACCOUNT="):
             account = ln.split("=", 1)[1].strip()
     return event_type, thread_id, photo, account, body
-
 
 async def watch_outbox(app: Application):
     bot = app.bot
@@ -412,28 +382,22 @@ async def watch_outbox(app: Application):
             log.error("Outbox watcher error: %s", e)
         await asyncio.sleep(OUTBOX_POLL_SECONDS)
 
-
 BTN_BIAS = f"{G_BIAS} Bias"
 BTN_ACCOUNT = f"{G_ACCOUNT} Account"
 BTN_ADMIN = f"{G_ADMIN} Admin"
-
 
 def mode_button(st: "AccountState") -> str:
     manual = (st.mode == "MANUAL")
     return f"{G_MANUAL if manual else G_AUTO} Mode ({'Manual' if manual else 'Auto'})"
 
-
 def trading_button(st: "AccountState") -> str:
     return f"{G_ON if st.trading else G_OFF} Trading ({'On' if st.trading else 'Off'})"
 
-
 _TOGGLE_RE = re.compile(r"^\s*\S*\s*(Mode|Trading)\s*\(.*\)\s*$")
-
 
 def toggle_kind(text: str) -> str | None:
     m = _TOGGLE_RE.match(text)
     return m.group(1) if m else None
-
 
 def build_main_keyboard(user_id: int, st: "AccountState | None" = None) -> ReplyKeyboardMarkup:
     st = st or AccountState()
@@ -444,7 +408,6 @@ def build_main_keyboard(user_id: int, st: "AccountState | None" = None) -> Reply
     if settings.is_admin(user_id):
         rows.append([BTN_ADMIN])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
-
 
 def bias_keyboard(login: str, st: AccountState) -> InlineKeyboardMarkup | None:
     syms = get_symbols_for_login(login)
@@ -461,12 +424,10 @@ def bias_keyboard(login: str, st: AccountState) -> InlineKeyboardMarkup | None:
         rows.append(row)
     return InlineKeyboardMarkup(rows)
 
-
 def _account_tag(login: str) -> str:
     if len(list_accounts()) > 1:
         return f"{G_ACCOUNT} <code>{login}</code>\n"
     return ""
-
 
 def bias_header(login: str, st: "AccountState") -> str:
     manual = (st.mode == "MANUAL")
@@ -482,7 +443,6 @@ def bias_header(login: str, st: "AccountState") -> str:
         f"{mode_line}\n"
         f"<i>{G_BULL} bullish  {G_BEAR} bearish  {G_FLAT} none  {G_NEUTRAL} from EA SymbolsInput</i>"
     )
-
 
 def accounts_list_view(user_id: int) -> dict:
     accounts = list_accounts()
@@ -501,7 +461,6 @@ def accounts_list_view(user_id: int) -> dict:
     )
     return {"text": text, "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
 
-
 def account_detail_view(user_id: int, login: str) -> dict:
     active = resolve_login(user_id)
     text = format_stats_message(login)
@@ -511,13 +470,11 @@ def account_detail_view(user_id: int, login: str) -> dict:
     kb_rows.append([InlineKeyboardButton(f"{G_BACK} All accounts", callback_data="ACC_LIST")])
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
-
 async def guard(update: Update) -> bool:
     if not is_allowed(update.effective_user.id):
         await update.effective_message.reply_text(f"{G_BAD} Not authorized.")
         return False
     return True
-
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update):
@@ -541,10 +498,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text, reply_markup=build_main_keyboard(uid, st), parse_mode=ParseMode.HTML
     )
 
-
 _pending: dict[int, str] = {}
 CANCEL_WORDS = {"cancel", "/cancel", "لغو"}
-
 
 def admin_panel_view() -> dict:
     kb = InlineKeyboardMarkup([
@@ -560,7 +515,6 @@ def admin_panel_view() -> dict:
         "parse_mode": ParseMode.HTML,
     }
 
-
 def admins_list_view() -> dict:
     ids = settings.get_admin_ids()
     rows = [[InlineKeyboardButton(f"{G_DEL} {i}", callback_data=f"ADM_DELADMIN_{i}")] for i in ids]
@@ -573,7 +527,6 @@ def admins_list_view() -> dict:
         f"{G_ADMIN} <b>Admins</b>\nNone set yet (bot is open to everyone)."
     )
     return {"text": text, "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
-
 
 def users_list_view() -> dict:
     ids = settings.get_user_ids()
@@ -588,10 +541,8 @@ def users_list_view() -> dict:
     text += f"\n<i>Users get Bias, Account, Mode and Trading. No Admin panel.</i>"
     return {"text": text, "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
 
-
 NOTIFY_LABELS = [("bias", "Bias signals"), ("trade", "Trades"),
                  ("log", "Logs"), ("result", "Results")]
-
 
 def notifications_view() -> dict:
     n = settings.get_notify()
@@ -613,7 +564,6 @@ def notifications_view() -> dict:
         f"{G_ROW} NY time now: <code>{now_ny}</code> - {live}"
     )
     return {"text": text, "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
-
 
 def status_panel_view() -> dict:
     w = settings.get_notify_window()
@@ -638,9 +588,7 @@ def status_panel_view() -> dict:
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"{G_BACK} Back", callback_data="ADM_PANEL")]])
     return {"text": text, "reply_markup": kb, "parse_mode": ParseMode.HTML}
 
-
 TOPIC_SPECS = [("bias", "Bias"), ("trade", "Trades"), ("log", "Logs"), ("result", "Results")]
-
 
 def _apply_group(chat_id_str: str, thread_ids: dict):
     settings.set_chat_id(chat_id_str)
@@ -653,7 +601,6 @@ def _apply_group(chat_id_str: str, thread_ids: dict):
     _EVENT_TYPE_TO_THREAD.update({
         "BIAS": THREAD_BIAS, "TRADE": THREAD_TRADE, "LOG": THREAD_LOG, "RESULT": THREAD_RESULT,
     })
-
 
 async def provision_group(bot, chat_id_str: str, force: bool = False) -> tuple[bool, str, InlineKeyboardMarkup | None]:
     try:
@@ -690,11 +637,9 @@ async def provision_group(bot, chat_id_str: str, force: bool = False) -> tuple[b
         + "\n".join(f"{G_ROW} {name}" for _, name in TOPIC_SPECS)
     ), None
 
-
 async def send_admin_panel(update: Update):
     v = admin_panel_view()
     await update.effective_message.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
-
 
 async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
     q = update.callback_query
@@ -813,7 +758,6 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         v = status_panel_view()
         await q.edit_message_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
 
-
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update):
         return
@@ -917,7 +861,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await msg.reply_text(format_stats_message(login), parse_mode=ParseMode.HTML)
 
-
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update):
         return
@@ -1010,16 +953,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = bias_keyboard(login, st)
         await q.edit_message_text(bias_header(login, st), reply_markup=kb, parse_mode=ParseMode.HTML)
 
-
 STARTUP_TEXT = (
     "🤖 <b>Bot is running</b>\n"
     "🟢 Connected to Telegram and listening for EA events."
 )
 
-
 def _plain(html_text: str) -> str:
     return re.sub(r"<[^>]+>", "", html_text)
-
 
 async def send_startup_notice(bot):
     accounts = list_accounts()
@@ -1049,12 +989,10 @@ async def send_startup_notice(bot):
     except TelegramError as e:
         log.error("Could not post the startup notice: %s", e)
 
-
 async def post_init(app: Application):
     asyncio.create_task(watch_outbox(app))
     await send_startup_notice(app.bot)
     log.info("Bot started. Outbox: %s | Photos: %s | Control: %s", OUTBOX_DIR, PHOTOS_DIR, CONTROL_DIR)
-
 
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
@@ -1062,7 +1000,6 @@ def main():
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.run_polling(close_loop=False)
-
 
 if __name__ == "__main__":
     main()

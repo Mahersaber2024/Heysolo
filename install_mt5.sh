@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# =============================================================
-# install_mt5.sh - MT5 / Prop-firm terminals installer over VNC
 
 set -uo pipefail
 set -E
@@ -11,20 +9,16 @@ HEYSOLO_LAST_ERR=""
 
 trap 'HEYSOLO_LAST_ERR="line ${LINENO} (exit $?)"' ERR
 
-# ============================================================
-# CONFIG
-# ============================================================
 REPO_OWNER="Mahersaber2024"
 REPO_NAME="Heysolo"
 REPO_API="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents"
 REPO_RAW="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main"
 
-# --- repo layout (only the wallpaper still comes from the repo) ---
 BG_SUBDIR="BG"
 WALLPAPER_NAME="heysolo-des.png"
 
 MT5_USER="mt5user"
-DISPLAY_NUM="1"                 # -> DISPLAY=:1
+DISPLAY_NUM="1"
 VNC_PORT=5900
 
 COLOR_DEPTH="${COLOR_DEPTH:-16}"
@@ -32,33 +26,29 @@ SCREEN_GEOMETRY="${SCREEN_GEOMETRY:-1920x1080}"
 LOW_BANDWIDTH="${LOW_BANDWIDTH:-1}"
 SCREEN_RES="${SCREEN_RES:-${SCREEN_GEOMETRY}x${COLOR_DEPTH}}"
 export COLOR_DEPTH SCREEN_GEOMETRY LOW_BANDWIDTH SCREEN_RES
+
 VNC_BASE_OPTS="-forever -shared -noprimary -nosetprimary"
 if [[ "${LOW_BANDWIDTH}" == "1" ]]; then
-  VNC_TUNE_OPTS="-speeds modem -defer 80 -wait 80 -cursor arrow -nowireframe"
+  VNC_TUNE_OPTS="-speeds modem -defer 80 -wait 80 -nowireframe"
 else
   VNC_TUNE_OPTS=""
 fi
 VNC_OPTS="${VNC_BASE_OPTS} ${VNC_TUNE_OPTS}"
 
-# All brokers install into ONE shared wineprefix, each under its own
-# Program Files subfolder - the normal Windows layout.
 WINEPREFIX_SHARED="/home/${MT5_USER}/mt5-terminals"
+
 MT5_LOCAL_DIR="/opt/heysolo/mt5"
 MQL5_LOCAL_DIR="/opt/heysolo/mt5-mql5"
 
 STATE_DIR="/etc/heysolo-mt5"
-TERMINALS_FILE="${STATE_DIR}/terminals.list"   # slug|exe_name|wineprefix|terminal_exe
+TERMINALS_FILE="${STATE_DIR}/terminals.list"
 VNC_PASS_FILE="/home/${MT5_USER}/.vnc/passwd"
 
 DESKTOP_MODULE="desktop_mt5.sh"
 HEYSOLO_LIB_DIR="/opt/heysolo"
-# Real path of the desktop module on this server, so the final guide can print
-# a command that actually works instead of a bare filename.
+
 DESKTOP_MODULE_PATH=""
 
-# ============================================================
-# COLORS
-# ============================================================
 if [[ -t 1 ]]; then
   RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
   CYAN='\033[0;36m'; BLUE='\033[0;34m'; MAGENTA='\033[0;35m'
@@ -82,25 +72,22 @@ require_root(){
   if [[ $EUID -ne 0 ]]; then
     err "This script must be run as root (or with sudo)."
     echo "    sudo bash $0"
-    HEYSOLO_CLEAN_EXIT=1     # a wrong invocation is not a crash
+    HEYSOLO_CLEAN_EXIT=1
     exit 1
   fi
 }
 
-# ============================================================
-# ERROR REPORTING  (nothing may ever fail silently again)
 log_line(){ printf '%s %s\n' "$(date '+%F %T' 2>/dev/null)" "$1" 2>/dev/null >> "${HEYSOLO_LOG}" || true; }
 
 start_logging(){
   mkdir -p "$(dirname "${HEYSOLO_LOG}")" 2>/dev/null || true
   if ! ( : 2>/dev/null >> "${HEYSOLO_LOG}" ); then
-    HEYSOLO_LOG="/tmp/heysolo-install.log"      # not root yet, or /var/log is read-only
+    HEYSOLO_LOG="/tmp/heysolo-install.log"
     ( : 2>/dev/null >> "${HEYSOLO_LOG}" ) || HEYSOLO_LOG="/dev/null"
   fi
   log_line "=== run started (pid $$, user $(id -un 2>/dev/null)) ==="
 }
 
-# Fatal on purpose: says what happened, where the log is, then stops.
 die(){
   err "$1"
   log_line "FATAL: $1"
@@ -111,7 +98,7 @@ die(){
 }
 
 declare -a HEYSOLO_STAGE_WARNINGS=()
-guard(){                          # guard <label> <command...>
+guard(){
   local label="$1"; shift
   local rc=0
   HEYSOLO_LAST_ERR=""
@@ -148,7 +135,7 @@ trap _on_exit EXIT
 
 start_logging
 
-_as_user(){                      # _as_user <seconds> <command string>
+_as_user(){
   local secs="$1" cmd="$2"
   if command -v runuser >/dev/null 2>&1; then
     setsid timeout -k 5 "${secs}" runuser -u "${MT5_USER}" -- \
@@ -165,7 +152,6 @@ as_mt5(){
 
 WINE_NO_MENU="WINEDLLOVERRIDES=winemenubuilder.exe,mscoree,mshtml=d WINEDEBUG=-all"
 
-# Fully non-interactive step 1: no wizard, no dialog, no keypress.
 NONINTERACTIVE="${NONINTERACTIVE:-0}"
 
 as_wine(){
@@ -173,7 +159,6 @@ as_wine(){
     "export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX='$1'; $2"
 }
 
-# Delete every launcher wine created by itself, keep our own mt5-*.desktop
 purge_wine_shortcuts(){
   local home="/home/${MT5_USER}" d
   for d in "${home}/Desktop" "${home}/.local/share/applications" \
@@ -189,32 +174,29 @@ purge_wine_shortcuts(){
 init_prefix(){
   local wineprefix="$1"
   info "Preparing the wine prefix (first boot, this takes a few seconds)..."
-  # mscoree/mshtml disabled -> wine never asks to download mono/gecko,
-  # so this stage can't stop on a dialog.
+
   AS_WINE_TIMEOUT=300 as_wine "${wineprefix}" \
     "wineboot --init >/dev/null 2>&1; wineserver -w" || true
   purge_wine_shortcuts
 }
 
-# ============================================================
-# DESKTOP MODULE (wallpaper / icons / taskbar) - kept separate
-# ============================================================
 load_desktop_module(){
   local here="" candidate cache
   here=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)
   candidate="${here:+${here}/${DESKTOP_MODULE}}"
   if [[ -n "${candidate}" && -f "${candidate}" ]]; then
     DESKTOP_MODULE_PATH="${candidate}"
-    # shellcheck source=/dev/null
+
     source "${candidate}"
   else
+
     cache="/tmp/${DESKTOP_MODULE}"
     if curl -fsSL "${REPO_RAW}/${DESKTOP_MODULE}" -o "${cache}" 2>/dev/null && [[ -s "${cache}" ]]; then
       if mkdir -p "${HEYSOLO_LIB_DIR}" 2>/dev/null \
          && cp -f "${cache}" "${HEYSOLO_LIB_DIR}/${DESKTOP_MODULE}" 2>/dev/null; then
         DESKTOP_MODULE_PATH="${HEYSOLO_LIB_DIR}/${DESKTOP_MODULE}"
       fi
-      # shellcheck source=/dev/null
+
       source "${cache}"
     fi
   fi
@@ -231,9 +213,6 @@ load_desktop_module(){
 }
 load_desktop_module
 
-# ============================================================
-# BANNER
-# ============================================================
 show_banner(){
   echo
   header
@@ -248,16 +227,12 @@ show_banner(){
   echo
 }
 
-# ============================================================
-# SYSTEM PACKAGES
-# ============================================================
 APT_Q=(-y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
 
 install_system_packages(){
-  # Nothing below may ever stop and ask a question.
+
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
 
-  # --- exactly the README order: base pkgs -> i386 -> wine ---
   info "Base packages: xvfb x11vnc screen wget openbox ..."
   apt-get update -y || true
   apt-get install "${APT_Q[@]}" \
@@ -275,11 +250,8 @@ install_system_packages(){
   install_wine
 }
 
-# ------------------------------------------------------------
-# WINE - installed in STEP 1, and we refuse to pretend it worked
-# ------------------------------------------------------------
 ensure_wine32(){
-  # 32-bit runtime: many prop-firm installers/terminals still need it
+
   apt-get install -y wine32 >/dev/null 2>&1 \
     || apt-get install -y wine32:i386 >/dev/null 2>&1 \
     || apt-get install -y libwine:i386 >/dev/null 2>&1 \
@@ -302,10 +274,10 @@ wine_is_recent_enough(){
 add_winehq_repo(){
   [[ "${WINEHQ_REPO_READY:-0}" == "1" ]] && return 0
   local osid codename
-  # shellcheck source=/dev/null
+
   . /etc/os-release 2>/dev/null || true
   osid="${ID:-debian}"; codename="${VERSION_CODENAME:-}"
-  # Ubuntu derivatives (Mint, Pop!_OS, ...) must use the Ubuntu codename.
+
   if [[ "${osid}" != "ubuntu" && "${osid}" != "debian" ]]; then
     if [[ "${ID_LIKE:-}" == *ubuntu* ]]; then
       osid="ubuntu"; codename="${UBUNTU_CODENAME:-${codename}}"
@@ -326,9 +298,6 @@ add_winehq_repo(){
   return 0
 }
 
-# Newest first: devel > staging > stable. We stop at the first branch that
-# actually gives us Wine >= WINE_MIN_MAJOR, so the server always ends up on a
-# current Wine instead of whatever ancient build the distro ships.
 install_wine_winehq(){
   add_winehq_repo || return 1
   local branch avail
@@ -352,7 +321,6 @@ install_wine_winehq(){
   return 1
 }
 
-# WineHQ installs into /opt/wine-stable, which is not on PATH.
 link_winehq_binaries(){
   local d
   for d in /opt/wine-stable/bin /opt/wine-staging/bin /opt/wine-devel/bin; do
@@ -384,8 +352,6 @@ install_wine(){
     info "Installing wine - this is the big one, it can take several minutes..."
   fi
 
-  # WineHQ FIRST: the distro package is Wine 9 on current Ubuntu/Debian and
-  # MT5 cannot log in with it.
   install_wine_winehq || true
   link_winehq_binaries
 
@@ -429,9 +395,6 @@ install_wine(){
   return 0
 }
 
-# ============================================================
-# MT5 USER
-# ============================================================
 setup_mt5_user(){
   if id "${MT5_USER}" &>/dev/null; then
     info "User ${MT5_USER} already exists."
@@ -443,6 +406,7 @@ setup_mt5_user(){
     passwd "${MT5_USER}"
     ok "User ${MT5_USER} created."
   fi
+  loginctl enable-linger "${MT5_USER}" 2>/dev/null || true
   mkdir -p "${STATE_DIR}"
   touch "${TERMINALS_FILE}"
   dedupe_terminals
@@ -456,7 +420,6 @@ setup_vnc_password(){
     [[ "${CHNG,,}" != "y" ]] && return
   fi
 
-  # Hands-off mode: VNC_PASSWORD=... bash install_mt5.sh   (or auto-generated)
   if [[ -n "${VNC_PASSWORD:-}" || "${NONINTERACTIVE}" == "1" ]]; then
     local pw="${VNC_PASSWORD:-}"
     [[ -z "${pw}" ]] && pw=$(tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 12 || true)
@@ -502,9 +465,6 @@ setup_vnc_password(){
   ok "VNC password saved."
 }
 
-# ============================================================
-# VIRTUAL DISPLAY + VNC (persistent, own screen session)
-# ============================================================
 start_display(){
   if as_mt5 "screen -ls" 2>/dev/null | grep -q '\.vnc\b'; then
     info "Virtual display / VNC is already running."
@@ -514,7 +474,7 @@ start_display(){
   fi
   info "Starting the virtual display (Xvfb) and VNC..."
   as_mt5 "screen -wipe" >/dev/null 2>&1 || true
-  # a stale lock from a previous run stops Xvfb dead
+
   if [[ -e "/tmp/.X${DISPLAY_NUM}-lock" ]] && ! pgrep -f "Xvfb :${DISPLAY_NUM}" >/dev/null 2>&1; then
     warn "Removing a stale X lock (/tmp/.X${DISPLAY_NUM}-lock) from a previous run."
     rm -f "/tmp/.X${DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${DISPLAY_NUM}" 2>/dev/null || true
@@ -534,7 +494,7 @@ start_display(){
     sleep 1;
     x11vnc -display :${DISPLAY_NUM} ${VNC_OPTS} -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg;
     sleep infinity'"
-  # wait for X itself instead of hoping 3 seconds was enough
+
   info "Waiting for the display to come up (up to 40s)..."
   if declare -F desktop_wait_for_x >/dev/null 2>&1; then
     desktop_wait_for_x 40 || true
@@ -564,12 +524,9 @@ print_vnc_access(){
   echo
 }
 
-# ============================================================
-# TERMINAL REGISTRY (dedupe + live status)
-# ============================================================
 dedupe_terminals(){
   [[ -s "${TERMINALS_FILE}" ]] || return 0
-  # keep the newest line per slug, preserve order
+
   if tac "${TERMINALS_FILE}" 2>/dev/null | awk -F'|' 'NF && !seen[$1]++' | tac \
        > "${TERMINALS_FILE}.tmp" 2>/dev/null; then
     mv "${TERMINALS_FILE}.tmp" "${TERMINALS_FILE}" 2>/dev/null || true
@@ -602,7 +559,6 @@ terminal_status(){
   echo "NOT ACTIVE"
 }
 
-# Prints an aligned, colored, de-duplicated list and fills SLUGS/PREFIXES/PATHS
 declare -a SLUGS=() PREFIXES=() PATHS=()
 print_terminal_list(){
   dedupe_terminals
@@ -626,9 +582,6 @@ print_terminal_list(){
   return 0
 }
 
-# ============================================================
-# LOCAL INSTALLER FOLDER (you fill it over SFTP)
-# ============================================================
 ensure_local_mt5_dir(){
   mkdir -p "${MT5_LOCAL_DIR}"
   if id "${MT5_USER}" &>/dev/null; then
@@ -645,16 +598,6 @@ ensure_mql5_local_dir(){
   chmod -R 2775 "${MQL5_LOCAL_DIR}" 2>/dev/null || true
 }
 
-# Each MT5 install creates its own MQL5 data folder under
-#   <wineprefix>/drive_c/users/<user>/AppData/Roaming/MetaQuotes/Terminal/<hash>/MQL5
-# The <hash> is only known after the terminal has actually run once. Since
-# every broker now shares one wineprefix, that AppData root holds one
-# Terminal/<hash> folder PER broker - each hash folder contains an
-# origin.txt (UTF-16) naming the install directory it belongs to, so that
-# is how we pick the right one instead of grabbing the first match.
-# Windows path of a directory inside the prefix, lowercased, exactly how MT5
-# writes it into origin.txt:
-#   <prefix>/drive_c/Program Files/Fusion MT5  ->  c:\program files\fusion mt5
 win_path_of(){
   local wineprefix="$1" unix_dir="$2" rel
   rel="${unix_dir#${wineprefix}/drive_c/}"
@@ -663,53 +606,26 @@ win_path_of(){
   printf 'c:\\%s' "${rel}" | tr '[:upper:]' '[:lower:]'
 }
 
-read_origin(){                    # read_origin <origin.txt> -> lowercased path
+read_origin(){
   local f="$1" content
   content=$(iconv -f UTF-16 -t UTF-8 "${f}" 2>/dev/null) \
     || content=$(iconv -f UTF-16LE -t UTF-8 "${f}" 2>/dev/null) \
     || content=$(cat "${f}" 2>/dev/null)
   [[ -z "${content}" ]] && content=$(iconv -f UTF-16LE -t UTF-8 "${f}" 2>/dev/null)
   [[ -z "${content}" ]] && content=$(cat "${f}" 2>/dev/null)
-  # strip NULs, CR/LF, a UTF-8 BOM and any trailing slash, then lowercase
+
   printf '%s' "${content}" | tr -d '\0\r\n\357\273\277' \
     | sed 's:[\\/]*$::' | tr '[:upper:]' '[:lower:]'
 }
 
-# MetaTrader 5 decides portable-vs-not by testing whether ITS OWN install
-# folder is writable - if yes, it keeps ALL its data (MQL5, config, logs)
-# right next to terminal64.exe instead of AppData. Under Wine there is no
-# NTFS ACL / UAC blocking writes to "Program Files" the way real Windows
-# does, so every terminal installed by this script ends up running in that
-# auto-portable mode. Verified on a live box - both of these are real,
-# confirmed paths, not AppData:
-#   drive_c/Program Files/MetaTrader 5/MQL5/Experts
-#   drive_c/Program Files/Fusion Markets MetaTrader 5/MQL5/Experts
-# So the LOCAL folder next to the exe is checked FIRST now.
-#
-# Only if that is missing do we fall back to the old AppData/<hash> lookup,
-# for the rare case where "Program Files" really is read-only (e.g. a real
-# Windows box sharing Common\Files, or the wineprefix got locked down by
-# hand) and MT5 was therefore forced into non-portable mode. In that mode
-# every <hash> folder holds an origin.txt (UTF-16) naming the install
-# directory it belongs to - since every broker can share one wineprefix,
-# origin.txt is the only way to tell them apart there. (Older bug, already
-# fixed here: comparing only the LAST path component as a SUBSTRING made
-# "MetaTrader 5" match inside "FusionMarkets MetaTrader 5" and both brokers
-# resolved to the same <hash>. Now the FULL Windows path must match exactly.)
 resolve_mql5_dir(){
   local wineprefix="$1" install_dir="$2"
-  # Portable mode (the common case under Wine): data folder IS the install
-  # folder. We used to also require a "config" folder next to it before
-  # trusting this, to avoid copying into a freshly unpacked install MT5 had
-  # never run from - but "config" can take longer than our post-start sleep
-  # to appear, so that extra check was causing real portable installs to be
-  # missed and silently falling back to the (wrong, or stale) AppData lookup
-  # below. MQL5/ existing next to terminal64.exe is enough on its own.
+
   if [[ -d "${install_dir}/MQL5" ]]; then
     echo "${install_dir}/MQL5"
     return 0
   fi
-  # Non-portable fallback: match the AppData hash folder via origin.txt.
+
   local f want got
   want="$(win_path_of "${wineprefix}" "${install_dir}")"
   if [[ -n "${want}" ]]; then
@@ -722,19 +638,8 @@ resolve_mql5_dir(){
   return 1
 }
 
-# Copies the shared Experts/Include/Indicators/set/Templates folders into
-# this terminal's own MQL5 folder. "set" -> MQL5/Presets (MT5's own name for
-# .set files) and "Templates" -> MQL5/Profiles/Templates (chart templates) -
-# both official MT5 locations, so the files show up in the right menu inside
-# the terminal without the user moving anything by hand.
 declare -A MQL5_DIR_OWNER=()
 
-# Copies the shared Experts/Include/Indicators/set/Templates folders into THIS
-# terminal's own MQL5 data folder, then verifies every single file arrived.
-#   set       -> MQL5/Presets              (.set EA presets)
-#   Templates -> MQL5/Profiles/Templates   (chart templates)
-# Both are MT5's official locations, so the files show up in the right menu
-# inside the terminal without moving anything by hand.
 sync_mql5_assets(){
   local slug="$1" wineprefix="$2" termpath="${3:-}"
   ensure_mql5_local_dir
@@ -748,9 +653,7 @@ sync_mql5_assets(){
     warn "${slug}: start this terminal once (menu 3 -> Start) so MT5 creates it, then run option 7 again."
     return 1
   fi
-  # Two brokers resolving to ONE data folder means both installers used the
-  # same install directory (the second overwrote the first). Copying twice and
-  # printing OK twice would be a lie, so refuse and say why.
+
   local owner="${MQL5_DIR_OWNER[${mql5_dir}]:-}"
   if [[ -n "${owner}" && "${owner}" != "${slug}" ]]; then
     warn "${slug}: SKIPPED - it shares one MQL5 data folder with '${owner}':"
@@ -780,8 +683,7 @@ sync_mql5_assets(){
     find "${src}" -type f -name '*.mq5' -print -quit 2>/dev/null | grep -q . && mq5_seen=1
     mkdir -p "${dest}" 2>/dev/null || true
     cp -rf "${src}/." "${dest}/" 2>/dev/null || true
-    # VERIFY instead of trusting cp's exit code: every source file must exist
-    # at the destination. This is what makes the [OK] line trustworthy.
+
     local rel missing=0
     while IFS= read -r rel; do
       [[ -f "${dest}/${rel}" ]] || missing=$((missing+1))
@@ -814,8 +716,7 @@ sync_mql5_assets_all(){
   [[ -s "${TERMINALS_FILE}" ]] || return 0
   MQL5_DIR_OWNER=()
   MQL5_SAW_SOURCES=0
-  # Same terminal64.exe under two slugs = one install overwrote the other.
-  # Catch it here, before pretending both were synced.
+
   local dup
   dup=$(awk -F'|' 'NF && $4!=""{print $4}' "${TERMINALS_FILE}" 2>/dev/null | sort | uniq -d | head -n3)
   if [[ -n "${dup}" ]]; then
@@ -903,9 +804,6 @@ list_local_installers(){
   echo
 }
 
-# ============================================================
-# DISCOVER + SELECT INSTALLERS FROM THE LOCAL FOLDER
-# ============================================================
 declare -a AVAILABLE_EXES=()
 declare -a SELECTED_EXES=()
 
@@ -953,7 +851,7 @@ select_installers(){
       fi
     done
   fi
-  # drop duplicate picks (e.g. "1,1,3")
+
   if [[ ${#SELECTED_EXES[@]} -gt 0 ]]; then
     mapfile -t SELECTED_EXES < <(printf '%s\n' "${SELECTED_EXES[@]}" | awk '!seen[$0]++')
   fi
@@ -965,14 +863,11 @@ select_installers(){
 }
 
 slugify(){
-  # combatcapitalmarkets5setup.exe -> combatcapitalmarkets5setup
+
   local base="${1%.*}"
   echo "$base" | tr '[:upper:] ' '[:lower:]_' | tr -cd 'a-z0-9_-'
 }
 
-# ============================================================
-# INSTALL SELECTED TERMINALS (download + run wizard once each)
-# ============================================================
 install_selected(){
   start_display
   print_vnc_access
@@ -994,13 +889,12 @@ install_selected(){
       err "Missing or empty: ${src} - upload it over SFTP first."
       continue
     fi
-    # Copy into mt5user's home so wine runs it with the right ownership.
+
     info "Copying ${src} -> ${dest_path} ..."
     cp -f "${src}" "${dest_path}"
     chown "${MT5_USER}:${MT5_USER}" "${dest_path}"
     chmod 755 "${dest_path}"
-    # A truncated upload or a renamed non-exe is "non-empty" but is not an
-    # installer - check for the MZ (PE) magic before wasting a wine prefix.
+
     if [[ "$(head -c2 "${dest_path}" 2>/dev/null || true)" != "MZ" ]]; then
       err "${exe} is not a Windows executable (bad/incomplete upload) - skipped."
       rm -f "${dest_path}"
@@ -1008,13 +902,9 @@ install_selected(){
     fi
     ok "Ready: ${dest_path} ($(du -h "${dest_path}" 2>/dev/null | cut -f1 || echo '?'))."
 
-    # Prefix is shared - a blind find would return whichever broker got
-    # installed first. Mark the time, then only accept a terminal64.exe
-    # newer than the marker as belonging to THIS install.
     marker="/tmp/.heysolo-mark-${slug}"
     touch "${marker}"
 
-    # MetaQuotes-based installers accept /auto - try a real silent install first.
     info "Trying the silent install (/auto) for ${exe}..."
     as_wine "${wineprefix}" "cd ~ && wine './${exe}' /auto" >/dev/null 2>&1 || true
     as_wine "${wineprefix}" "wineserver -w" >/dev/null 2>&1 || true
@@ -1041,10 +931,6 @@ install_selected(){
       continue
     fi
 
-    # Two installers pointing at ONE terminal64.exe means the second wizard
-    # was left on the first one's destination folder. MT5 then keeps ONE data
-    # folder for both, so EAs/presets/charts get shared and option 7 can only
-    # ever sync one of them. Say it now, loudly, not three menus later.
     local dup_slug=""
     dup_slug=$(awk -F'|' -v p="${termpath}" -v s="${slug}" '$4==p && $1!=s{print $1; exit}' "${TERMINALS_FILE}" 2>/dev/null || true)
     register_terminal "${slug}" "${exe}" "${wineprefix}" "${termpath}"
@@ -1074,9 +960,6 @@ install_selected(){
   desktop_sync_icons
 }
 
-# ============================================================
-# CREATE ONE SCREEN SESSION PER INSTALLED TERMINAL
-# ============================================================
 start_terminal(){
   local slug="$1" wineprefix="$2" termpath="${3:-}"
   [[ -z "$termpath" ]] && termpath=$(resolve_terminal_exe "${wineprefix}")
@@ -1091,9 +974,7 @@ start_terminal(){
     visible=1
   fi
   if [[ "${visible}" == "0" ]]; then
-    # Background-only terminal: no wine virtual desktop, no taskbar entry,
-    # no desktop icon - it just runs. It still needs a display (Xvfb), it
-    # just isn't part of the switchable "desktop" you look at over VNC.
+
     as_mt5 "screen -dmS ${slug} bash -c '
       export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
       wine \"${termpath}\"'"
@@ -1102,16 +983,7 @@ start_terminal(){
     fi
     return 0
   fi
-  # Each terminal gets its own wine virtual desktop (own isolated top-level
-  # window) instead of running "managed" directly on the shared display.
-  # Two+ terminals each running their own wineserver but sharing one X
-  # display can end up fighting over the pointer/keyboard grab - one wine
-  # window grabs it (e.g. on a chart click) and never cleanly releases it
-  # when you switch to the OTHER terminal, so VNC keeps repainting (prices
-  # still move) but clicks stop reaching anything. /desktop= confines each
-  # terminal's grabs to its own virtual screen so they can no longer collide.
-  # Sized to WORK_RES_WH (screen minus the taskbar), not the full screen, so
-  # it can no longer paint over the panel/wallpaper (see desktop_mt5.sh).
+
   as_mt5 "screen -dmS ${slug} bash -c '
     export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
     wine explorer /desktop=${slug},${WORK_RES_WH:-${SCREEN_RES%x*}} \"${termpath}\"'"
@@ -1137,9 +1009,6 @@ start_all_terminals(){
   done < "${TERMINALS_FILE}"
 }
 
-# ============================================================
-# MANAGE ONE TERMINAL
-# ============================================================
 manage_one_terminal(){
   if [[ ! -s "${TERMINALS_FILE}" ]]; then
     warn "No terminals registered."
@@ -1213,10 +1082,7 @@ toggle_vnc_viewing(){
     1)
       as_mt5 "x11vnc -display :${DISPLAY_NUM} ${VNC_OPTS} -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg"
       ok "VNC turned on."
-      # x11vnc only re-exports the existing X display - it never repairs pcmanfm
-      # (icons), tint2 (taskbar) or autocutsel (clipboard) if any of them died
-      # while VNC was off. Repair the desktop layer every time VNC comes back on,
-      # otherwise a dead icon/taskbar/clipboard stays dead until the next full step.
+
       [[ -s "${TERMINALS_FILE}" ]] && export DESKTOP_ICONS=1 || export DESKTOP_ICONS=0
       guard "desktop layer (post VNC-on repair)" desktop_start
       ;;
@@ -1225,9 +1091,6 @@ toggle_vnc_viewing(){
   press_enter
 }
 
-# ============================================================
-# ADD ONE MORE TERMINAL LATER
-# ============================================================
 add_terminal_later(){
   mkdir -p "${STATE_DIR}"; touch "${TERMINALS_FILE}"
   if ! id "${MT5_USER}" &>/dev/null; then
@@ -1241,14 +1104,6 @@ add_terminal_later(){
   press_enter
 }
 
-# ============================================================
-# DESKTOP ICON HEALTH CHECK
-#   The icons ARE written to ~/Desktop, but nothing renders them unless
-#   `pcmanfm --desktop` is alive. When it is not, the user sees only the
-#   wallpaper and (rightly) assumes the install is broken. Never end the run
-#   claiming "icons ready" without checking, and if it failed, say exactly
-#   which command fixes it.
-# ============================================================
 report_desktop_icon_health(){
   local desk_cmd="${1:-${DESKTOP_MODULE}}"
   local n_icons=0
@@ -1289,9 +1144,6 @@ report_desktop_icon_health(){
   return 0
 }
 
-# ============================================================
-# FINAL GUIDE
-# ============================================================
 show_final_guide(){
   echo
   header
@@ -1357,27 +1209,17 @@ show_final_guide(){
   header
 }
 
-# ============================================================
-# FULL INSTALL
-# ============================================================
-# ============================================================
-# STEP 1 - SERVER + DESKTOP ONLY (no MT5 yet)
-# ============================================================
 step1_prepare_server(){
   show_banner
   require_root
   HEYSOLO_STAGE_WARNINGS=()
-  # Every stage is wrapped: one broken stage can no longer stop the run before
-  # the summary / upload folder / VNC details are printed.
+
   guard "system packages"  install_system_packages
   guard "mt5 user"         setup_mt5_user
   guard "vnc password"     setup_vnc_password
   guard "desktop packages" desktop_install_packages
   guard "upload folder"    ensure_local_mt5_dir
-  # Step 1 desktop = wallpaper + taskbar ONLY, painted with feh.
-  # pcmanfm (the thing that pops "Desktop manager is not active" and waits for
-  # a click) is deliberately NOT started here: there are no terminals yet, so
-  # there is nothing to put an icon on, and you are not expected to open VNC.
+
   export DESKTOP_ICONS=0
   guard "virtual display + VNC" start_display
   if [[ "${SKIP_DESKTOP:-0}" == "1" ]]; then
@@ -1406,9 +1248,6 @@ step1_prepare_server(){
   press_enter
 }
 
-# ============================================================
-# STEP 2 - INSTALL THE MT5 TERMINALS FROM THE LOCAL FOLDER
-# ============================================================
 step2_install_terminals(){
   require_root
   if ! id "${MT5_USER}" &>/dev/null; then
@@ -1425,11 +1264,10 @@ step2_install_terminals(){
   HEYSOLO_STAGE_WARNINGS=()
   guard "install terminals" install_selected
   guard "start terminals"   start_all_terminals
-  # give freshly-started terminals a moment to create their MQL5 folder
-  # before we try to drop files into it
+
   sleep 6
   guard "MQL5 assets"       sync_mql5_assets_all
-  export DESKTOP_ICONS=1          # now there ARE terminals -> real desktop icons
+  export DESKTOP_ICONS=1
   guard "desktop layer"     desktop_setup_all
   if (( ${#HEYSOLO_STAGE_WARNINGS[@]} > 0 )); then
     warn "These stages reported a problem: ${HEYSOLO_STAGE_WARNINGS[*]} (see ${HEYSOLO_LOG})."
@@ -1476,9 +1314,6 @@ uninstall_terminal(){
   press_enter
 }
 
-# ============================================================
-# MAIN MENU
-# ============================================================
 main_menu(){
   while true; do
     clear 2>/dev/null || true

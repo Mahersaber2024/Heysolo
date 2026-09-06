@@ -1,14 +1,7 @@
 #!/usr/bin/env bash
-# =============================================================
-# heysolo_bot - Complete Installer (Updated for Bot Config)
-# Usage:
-# bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main/install.sh)
-# =============================================================
+
 set -euo pipefail
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
 REPO_URL="https://github.com/Mahersaber2024/Heysolo.git"
 SERVICE_NAME="heysolo-bot"
 DEFAULT_INSTALL_DIR="/opt/heysolo-bot"
@@ -16,9 +9,6 @@ SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 STATE_FILE="/etc/${SERVICE_NAME}.install_dir"
 SETTINGS_FILE="heysolo_settings.json"
 
-# ============================================================
-# COLORS - with fallback support
-# ============================================================
 if [[ -t 1 ]]; then
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -40,9 +30,6 @@ header(){ echo -e "${BLUE}${BOLD}═══════════════�
 title(){ echo -e "${MAGENTA}${BOLD}$1${NC}"; }
 press_enter(){ read -rp "Press Enter to continue..." _ || true; }
 
-# ============================================================
-# UTILITY FUNCTIONS
-# ============================================================
 require_root(){
 if [[ $EUID -ne 0 ]]; then
 err "This script must be run with root privileges (using sudo or as root user)."
@@ -70,9 +57,6 @@ exit 1
 fi
 }
 
-# ============================================================
-# BANNER
-# ============================================================
 show_banner(){
 echo
 header
@@ -87,9 +71,6 @@ header
 echo
 }
 
-# ============================================================
-# INSTALL SYSTEM PACKAGES
-# ============================================================
 install_system_packages(){
 info "Installing system dependencies..."
 apt-get update -y 2>/dev/null || true
@@ -101,9 +82,6 @@ iputils-ping htop net-tools \
 ok "System dependencies installed."
 }
 
-# ============================================================
-# BOT CONFIGURATION
-# ============================================================
 collect_bot_config(){
 echo
 header
@@ -117,7 +95,6 @@ echo " • Admin IDs: optional"
 echo " • Other settings can be changed later via the /Admin menu"
 echo
 
-# --- Collect Bot Token ---
 while true; do
     read -rsp "Telegram Bot Token: " BOT_TOKEN
     echo
@@ -129,7 +106,6 @@ while true; do
     fi
 done
 
-# --- Collect Chat ID ---
 while true; do
     read -rp "Telegram Chat ID: " CHAT_ID
 
@@ -178,9 +154,6 @@ fi
 fi
 }
 
-# ============================================================
-# WRITE CONFIG FILE
-# ============================================================
 write_config_files(){
 local target="$1"
 
@@ -220,9 +193,6 @@ chmod 600 "${target}/${SETTINGS_FILE}"
 ok "Bot configuration saved securely."
 }
 
-# ============================================================
-# CLONE OR UPDATE REPO
-# ============================================================
 clone_or_update_repo(){
 if [[ -d "${INSTALL_DIR}/.git" ]]; then
 info "Updating existing installation..."
@@ -249,9 +219,6 @@ fi
 ok "Bot files ready."
 }
 
-# ============================================================
-# SETUP VIRTUAL ENVIRONMENT
-# ============================================================
 setup_venv(){
 info "Setting up Python virtual environment..."
 cd "${INSTALL_DIR}"
@@ -262,16 +229,13 @@ pip install --upgrade pip -q 2>/dev/null || true
 if [[ -f "requirements.txt" ]]; then
 pip install -r requirements.txt -q
 else
-# Fallback if requirements.txt wasn't found in the repo checkout
+
 pip install "python-telegram-bot==20.7" -q
 fi
 deactivate
 ok "Python environment ready."
 }
 
-# ============================================================
-# SYSTEMD SERVICE
-# ============================================================
 create_service(){
     info "Creating systemd service..."
 
@@ -312,10 +276,6 @@ EOF
     fi
 }
 
-
-# ============================================================
-# POST INSTALL GUIDE
-# ============================================================
 show_guide(){
 echo
 header
@@ -344,9 +304,6 @@ echo
 header
 }
 
-# ============================================================
-# MANAGEMENT FUNCTIONS
-# ============================================================
 manage_bot(){
 echo
 header
@@ -413,9 +370,6 @@ rm -f "${STATE_FILE}"
 ok "Uninstallation completed."
 }
 
-# ============================================================
-# FULL INSTALLATION
-# ============================================================
 full_install(){
 show_banner
 require_root
@@ -443,9 +397,6 @@ INSTALL_DIR=${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}
 ok "Directory: ${INSTALL_DIR}"
 }
 
-# ============================================================
-# MAIN MENU
-# ============================================================
 main_menu(){
 while true; do
 clear 2>/dev/null || true

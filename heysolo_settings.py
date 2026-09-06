@@ -18,7 +18,6 @@ DEFAULT_THREADS = {"bias": 2, "trade": 4, "log": 7, "result": 1723}
 DEFAULT_NOTIFY = {"bias": True, "trade": True, "log": False, "result": True}
 DEFAULT_NOTIFY_WINDOW = {"enabled": True, "start": "01:30", "end": "15:30"}
 
-
 def _get_default_settings() -> dict:
     return {
         "bot_token": DEFAULT_BOT_TOKEN,
@@ -32,7 +31,6 @@ def _get_default_settings() -> dict:
         "common_files_dir": "",
         "installed_at": "",
     }
-
 
 def _load() -> dict:
     global _cache
@@ -89,7 +87,6 @@ def _load() -> dict:
             pass
     return data
 
-
 def _save(data: dict):
     global _cache
     for k in _OBSOLETE_KEYS:
@@ -107,32 +104,26 @@ def _save(data: dict):
         logger.error(f"Error saving settings: {e}")
         raise
 
-
 def reload_settings():
     global _cache
     _cache = None
     return _load()
 
-
 def get_bot_token() -> str:
     return _load().get("bot_token", "") or DEFAULT_BOT_TOKEN
-
 
 def set_bot_token(token: str):
     data = _load()
     data["bot_token"] = token.strip()
     _save(data)
 
-
 def get_admin_ids() -> List[int]:
     return _load().get("admin_ids", [])
-
 
 def set_admin_ids(admin_ids: List[int]):
     data = _load()
     data["admin_ids"] = [int(x) for x in admin_ids if x]
     _save(data)
-
 
 def add_admin_id(admin_id: int) -> bool:
     data = _load()
@@ -144,7 +135,6 @@ def add_admin_id(admin_id: int) -> bool:
         return True
     return False
 
-
 def remove_admin_id(admin_id: int) -> bool:
     data = _load()
     admin_ids = data.get("admin_ids", [])
@@ -155,7 +145,6 @@ def remove_admin_id(admin_id: int) -> bool:
         return True
     return False
 
-
 def is_admin(user_id) -> bool:
     admin_ids = get_admin_ids()
     if not admin_ids:
@@ -165,16 +154,13 @@ def is_admin(user_id) -> bool:
     except (TypeError, ValueError):
         return False
 
-
 def get_user_ids() -> List[int]:
     return _load().get("user_ids", [])
-
 
 def set_user_ids(user_ids: List[int]):
     data = _load()
     data["user_ids"] = [int(x) for x in user_ids if x]
     _save(data)
-
 
 def add_user_id(user_id: int) -> bool:
     data = _load()
@@ -187,7 +173,6 @@ def add_user_id(user_id: int) -> bool:
     _save(data)
     return True
 
-
 def remove_user_id(user_id: int) -> bool:
     data = _load()
     user_ids = data.get("user_ids", [])
@@ -199,31 +184,25 @@ def remove_user_id(user_id: int) -> bool:
         return True
     return False
 
-
 def is_user(user_id) -> bool:
     try:
         return int(user_id) in get_user_ids()
     except (TypeError, ValueError):
         return False
 
-
 def is_authorized(user_id) -> bool:
     return is_admin(user_id) or is_user(user_id)
 
-
 def get_chat_id() -> str:
     return _load().get("chat_id", "") or DEFAULT_CHAT_ID
-
 
 def set_chat_id(chat_id):
     data = _load()
     data["chat_id"] = str(chat_id).strip()
     _save(data)
 
-
 def get_threads() -> Dict[str, int]:
     return _load().get("threads", dict(DEFAULT_THREADS))
-
 
 def set_threads(bias: int = None, trade: int = None, log: int = None, result: int = None):
     data = _load()
@@ -238,18 +217,14 @@ def set_threads(bias: int = None, trade: int = None, log: int = None, result: in
         t["result"] = int(result)
     _save(data)
 
-
 NOTIFY_KINDS = ("bias", "trade", "log", "result")
-
 
 def get_notify() -> Dict[str, bool]:
     n = _load().get("notify", {})
     return {k: bool(n.get(k, DEFAULT_NOTIFY[k])) for k in NOTIFY_KINDS}
 
-
 def is_notify_enabled(kind: str) -> bool:
     return get_notify().get(str(kind).lower(), False)
-
 
 def set_notify(kind: str, enabled: bool):
     kind = str(kind).lower()
@@ -259,12 +234,10 @@ def set_notify(kind: str, enabled: bool):
     data.setdefault("notify", {})[kind] = bool(enabled)
     _save(data)
 
-
 def toggle_notify(kind: str) -> bool:
     new_value = not is_notify_enabled(kind)
     set_notify(kind, new_value)
     return new_value
-
 
 def get_notify_window() -> Dict[str, Any]:
     w = _load().get("notify_window", {})
@@ -273,7 +246,6 @@ def get_notify_window() -> Dict[str, Any]:
         "start": str(w.get("start") or DEFAULT_NOTIFY_WINDOW["start"]),
         "end": str(w.get("end") or DEFAULT_NOTIFY_WINDOW["end"]),
     }
-
 
 def set_notify_window(enabled: bool = None, start: str = None, end: str = None):
     data = _load()
@@ -286,46 +258,37 @@ def set_notify_window(enabled: bool = None, start: str = None, end: str = None):
         w["end"] = str(end)
     _save(data)
 
-
 def toggle_notify_window() -> bool:
     new_value = not get_notify_window()["enabled"]
     set_notify_window(enabled=new_value)
     return new_value
 
-
 def get_outbox_poll_seconds() -> int:
     return int(_load().get("outbox_poll_seconds", 3) or 3)
-
 
 def set_outbox_poll_seconds(seconds: int):
     data = _load()
     data["outbox_poll_seconds"] = max(1, int(seconds))
     _save(data)
 
-
 def get_common_files_dir() -> str:
     return _load().get("common_files_dir", "")
-
 
 def set_common_files_dir(path: str):
     data = _load()
     data["common_files_dir"] = path.strip()
     _save(data)
 
-
 def is_first_run() -> bool:
     return not bool(_load().get("installed_at"))
-
 
 def mark_installed():
     data = _load()
     data["installed_at"] = __import__("datetime").datetime.now().isoformat()
     _save(data)
 
-
 def get_config() -> Dict:
     return _load()
-
 
 def update_config(key: str, value: Any):
     data = _load()

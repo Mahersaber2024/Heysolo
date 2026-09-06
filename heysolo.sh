@@ -1,16 +1,5 @@
 #!/usr/bin/env bash
-# =============================================================
-# heysolo.sh - HeySolo control panel (ONE screen, no submenus)
-#
-# Live status on top, every action is a single key below it.
-# No "press 2, then 3, then pick a number, then 7 to go back".
-#
-# Install / update:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main/heysolo.sh)
-# After that:
-#   sudo heysolo          # open the panel
-#   sudo heysolo r1       # or run one action and exit (scriptable)
-# =============================================================
+
 set -uo pipefail
 
 REPO_RAW="https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main"
@@ -33,9 +22,6 @@ pause(){ read -rp "${DIM}Enter to go back...${NC}" _ || true; }
 
 [[ $EUID -eq 0 ]] || { err "Run as root:  sudo heysolo"; exit 1; }
 
-# ------------------------------------------------------------
-# Keep the scripts on disk + install the `heysolo` command once
-# ------------------------------------------------------------
 fetch_one(){
   curl -fsSL "${REPO_RAW}/$1" -o "${SCRIPTS_DIR}/$1.part" 2>/dev/null \
     && [[ -s "${SCRIPTS_DIR}/$1.part" ]] \
@@ -74,22 +60,17 @@ install_cli(){
 ensure_scripts
 install_cli
 
-# ------------------------------------------------------------
-# Load install_mt5.sh AS A LIBRARY: same code, minus its own menu.
-# Everything the old nested menus did is one function call here.
-# ------------------------------------------------------------
 MT5_SCRIPT="${SCRIPTS_DIR}/install_mt5.sh"
-# cached next to the real scripts, so the sourced copy still finds
-# desktop_mt5.sh locally instead of re-downloading it every launch
+
 LIB_CACHE="${SCRIPTS_DIR}/.install_mt5.lib.sh"
 MT5_LIB=0
 if [[ -s "${MT5_SCRIPT}" ]]; then
   if sed '/^case "\${1:-menu}" in/,$d' "${MT5_SCRIPT}" > "${LIB_CACHE}" 2>/dev/null; then
-    # shellcheck source=/dev/null
+
     if source "${LIB_CACHE}" >/dev/null 2>&1; then MT5_LIB=1; fi
   fi
 fi
-trap - ERR EXIT 2>/dev/null || true    # drop the installer's exit handler
+trap - ERR EXIT 2>/dev/null || true
 set +u
 
 MT5_USER="${MT5_USER:-mt5user}"
@@ -98,13 +79,10 @@ VNC_PORT="${VNC_PORT:-5900}"
 SCREEN_RES="${SCREEN_RES:-1920x1080x16}"
 TERMINALS_FILE="${TERMINALS_FILE:-/etc/heysolo-mt5/terminals.list}"
 BOT_SERVICE="heysolo-bot"
-AS_MT5_TIMEOUT="${AS_MT5_TIMEOUT:-15}"   # keep the panel snappy, never hang on su/screen
+AS_MT5_TIMEOUT="${AS_MT5_TIMEOUT:-15}"
 
-run_mt5(){ bash "${MT5_SCRIPT}" "$@"; }   # step1 / step2 / doctor
+run_mt5(){ bash "${MT5_SCRIPT}" "$@"; }
 
-# ------------------------------------------------------------
-# STATUS
-# ------------------------------------------------------------
 dot(){ if [[ "$1" == "1" ]]; then printf '%s' "${GREEN}*${NC}"; else printf '%s' "${RED}o${NC}"; fi; }
 
 bot_state(){
@@ -113,14 +91,7 @@ bot_state(){
   fi
   systemctl is-active "${BOT_SERVICE}" 2>/dev/null || echo "stopped"
 }
-# NOTE: this must be an EXACT process-name match (-x), not -f. The persistent
-# "screen -dmS vnc bash -c '... x11vnc ...; sleep infinity'" wrapper keeps
-# running forever (that's the point of sleep infinity), and its own command
-# line literally contains the text "x11vnc" and "Xvfb :${DISPLAY_NUM}" - so
-# `pgrep -f` matched THAT wrapper, not the real binary, and kept reporting
-# "up" even after `pkill x11vnc` had genuinely killed the real x11vnc process.
-# That's why toggling VNC off then on again always redid "off": vnc_up()
-# never actually flipped to false. -x matches only the real binary's own name.
+
 vnc_up(){    pgrep -u "${MT5_USER}" -x x11vnc >/dev/null 2>&1; }
 screen_up(){ pgrep -u "${MT5_USER}" -x Xvfb >/dev/null 2>&1; }
 my_ip(){ hostname -I 2>/dev/null | awk '{print $1}'; }
@@ -145,9 +116,6 @@ on_desk(){
 }
 idx_ok(){ [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= ${#T_SLUG[@]} )); }
 
-# ------------------------------------------------------------
-# THE ONE SCREEN
-# ------------------------------------------------------------
 panel(){
   clear 2>/dev/null || true
   scan_terminals
@@ -197,9 +165,6 @@ panel(){
   echo
 }
 
-# ------------------------------------------------------------
-# ACTIONS  (verb + optional number, e.g. r2)
-# ------------------------------------------------------------
 t_stop(){
   local i="$1"
   as_mt5 "pkill -f '${T_PATH[$i]}'" 2>/dev/null || true
@@ -217,7 +182,7 @@ do_action(){
   [[ -z "${raw}" ]] && return 0
   verb="${raw//[0-9]/}"; num="${raw//[^0-9]/}"
 
-  if [[ -z "${verb}" && -n "${num}" ]]; then          # bare number = toggle
+  if [[ -z "${verb}" && -n "${num}" ]]; then
     idx_ok "${num}" || { warn "No terminal ${num}."; sleep 1; return 0; }
     i=$((num-1))
     if is_up "${T_SLUG[$i]}" "${T_PREFIX[$i]}" "${T_PATH[$i]}"; then t_stop "$i"; else t_start "$i"; fi

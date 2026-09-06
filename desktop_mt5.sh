@@ -1,26 +1,13 @@
 #!/usr/bin/env bash
-# =============================================================
-# desktop_mt5.sh - HeySolo MT5 DESKTOP MODULE
 
 MT5_USER="${MT5_USER:-mt5user}"
 DISPLAY_NUM="${DISPLAY_NUM:-1}"
-# ------------------------------------------------------------
-# LOW-BANDWIDTH DESKTOP  (quality down, scale untouched)
-#   The desktop GEOMETRY stays exactly what it was - 1920x1080 - so nothing
-#   inside MT5 moves or gets smaller. What goes down is the *picture quality*,
-#   which is what actually costs bandwidth:
-#     COLOR_DEPTH=16     -> 16-bit root window: ~half the bytes per pixel
-#     LOW_BANDWIDTH=1    -> flat colour desktop instead of the 1920x1080 photo,
-#                           fewer VNC frames per second (see VNC_OPTS in
-#                           install_mt5.sh), no wallpaper re-sends
-#   Override per run, e.g.:  COLOR_DEPTH=8 LOW_BANDWIDTH=1 sudo bash ...
-#   or go back to the pretty desktop with LOW_BANDWIDTH=0 COLOR_DEPTH=24.
-# ------------------------------------------------------------
+
 COLOR_DEPTH="${COLOR_DEPTH:-16}"
 SCREEN_GEOMETRY="${SCREEN_GEOMETRY:-1920x1080}"
 LOW_BANDWIDTH="${LOW_BANDWIDTH:-1}"
 SCREEN_RES="${SCREEN_RES:-${SCREEN_GEOMETRY}x${COLOR_DEPTH}}"
-SCREEN_RES_WH="${SCREEN_RES%x*}"     # "1920x1080x16" -> "1920x1080", for wine's /desktop=name,WxH
+SCREEN_RES_WH="${SCREEN_RES%x*}"
 DESKTOP_BG_COLOR="${DESKTOP_BG_COLOR:-#0b1220}"
 if [[ "${LOW_BANDWIDTH}" == "1" ]]; then
   USE_WALLPAPER_IMAGE="${USE_WALLPAPER_IMAGE:-0}"
@@ -28,18 +15,6 @@ else
   USE_WALLPAPER_IMAGE="${USE_WALLPAPER_IMAGE:-1}"
 fi
 
-# ------------------------------------------------------------
-# WORKING AREA (screen minus the taskbar)
-#   Bug: every terminal's wine virtual desktop used to be sized to the FULL
-#   screen (SCREEN_RES_WH), i.e. exactly as tall as the display - including
-#   the 40px strip at the bottom where tint2 lives. With no real EWMH strut
-#   reserved (panel_dock was 0), openbox had no reason to leave that strip
-#   alone, so the terminal's window simply painted over the taskbar AND the
-#   wallpaper underneath it. Fix: give tint2 a real strut (panel_dock=1
-#   below) AND size every terminal's virtual desktop to the area that is
-#   actually left over, so it physically cannot cover the panel even if a
-#   window manager ignores struts for manually-sized windows.
-# ------------------------------------------------------------
 PANEL_HEIGHT="${PANEL_HEIGHT:-40}"
 compute_work_res(){
   local w h
@@ -48,7 +23,7 @@ compute_work_res(){
   [[ "$w" =~ ^[0-9]+$ && "$h" =~ ^[0-9]+$ ]] || { echo "${SCREEN_RES_WH}"; return; }
   echo "${w}x$((h - PANEL_HEIGHT))"
 }
-WORK_RES_WH="${WORK_RES_WH:-$(compute_work_res)}"   # e.g. "1920x1040" for a 1920x1080 screen
+WORK_RES_WH="${WORK_RES_WH:-$(compute_work_res)}"
 REPO_OWNER="${REPO_OWNER:-Mahersaber2024}"
 REPO_NAME="${REPO_NAME:-Heysolo}"
 REPO_RAW="${REPO_RAW:-https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main}"
@@ -56,10 +31,7 @@ BG_SUBDIR="${BG_SUBDIR:-BG}"
 WALLPAPER_NAME="${WALLPAPER_NAME:-heysolo-des.png}"
 STATE_DIR="${STATE_DIR:-/etc/heysolo-mt5}"
 TERMINALS_FILE="${TERMINALS_FILE:-${STATE_DIR}/terminals.list}"
-# Per-terminal "show on the shared VNC desktop" switch - kept in its OWN file
-# (slug=0/1 lines) rather than as a 5th column in terminals.list, so nothing
-# that already does `IFS='|' read -r slug exe wineprefix termpath` on the
-# 4-column file breaks or silently swallows the flag into termpath.
+
 DESKTOP_VISIBLE_FILE="${DESKTOP_VISIBLE_FILE:-${STATE_DIR}/desktop_visible.list}"
 
 MT5_HOME="/home/${MT5_USER}"
@@ -71,9 +43,6 @@ WALLPAPER_PATH="${ASSET_DIR}/wallpaper.png"
 PCMAN_PROFILE="heysolo"
 DESKTOP_ICONS="${DESKTOP_ICONS:-1}"
 
-# ------------------------------------------------------------
-# FALLBACK HELPERS (only defined when not sourced by the installer)
-# ------------------------------------------------------------
 : "${GREEN:=}" ; : "${RED:=}" ; : "${YELLOW:=}" ; : "${CYAN:=}" ; : "${NC:=}" ; : "${BOLD:=}"
 : "${BLUE:=}" ; : "${MAGENTA:=}"
 
@@ -85,7 +54,7 @@ declare -F header  >/dev/null 2>&1 || header(){ echo -e "${BLUE}${BOLD}=========
 declare -F title   >/dev/null 2>&1 || title(){ echo -e "${MAGENTA}${BOLD}$1${NC}"; }
 declare -F press_enter >/dev/null 2>&1 || press_enter(){ read -rp "Press Enter to continue..." _ || true; }
 
-mt5_run(){                       # mt5_run <seconds> <command...>
+mt5_run(){
   local secs="$1"; shift
   if command -v runuser >/dev/null 2>&1; then
     setsid timeout -k 5 "${secs}" runuser -u "${MT5_USER}" -- \
@@ -99,13 +68,9 @@ mt5_run_quiet(){ mt5_run "$1" "${@:2}" >/dev/null 2>&1; }
 
 declare -F as_mt5 >/dev/null 2>&1 || as_mt5(){ mt5_run "${AS_MT5_TIMEOUT:-90}" "$1"; }
 
-# Visible progress so a slow stage never looks like a freeze.
 DESK_STEP=0
 step(){ DESK_STEP=$((DESK_STEP+1)); echo -e "${CYAN}  [desktop ${DESK_STEP}/8] $1${NC}"; }
 
-# ============================================================
-# PACKAGES NEEDED BY THE DESKTOP LAYER
-# ============================================================
 desktop_install_packages(){
   info "Installing desktop packages (wallpaper, icons, taskbar)..."
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
@@ -120,24 +85,17 @@ desktop_install_packages(){
 }
 
 desktop_prepare_dirs(){
-  # plain root mkdir + chown: no su, so this can never block
+
   mkdir -p "${ASSET_DIR}" "${ICON_DIR}" "${BIN_DIR}" "${DESKTOP_DIR}" \
            "${MT5_HOME}/.config/pcmanfm/${PCMAN_PROFILE}" \
            "${MT5_HOME}/.config/tint2" "${MT5_HOME}/.config/openbox" 2>/dev/null || true
   chown -R "${MT5_USER}:${MT5_USER}" "${ASSET_DIR}" "${DESKTOP_DIR}" "${MT5_HOME}/.config" 2>/dev/null || true
 }
 
-# ============================================================
-# X / DESKTOP-MANAGER READINESS
-#   Calling `pcmanfm --set-wallpaper` before `pcmanfm --desktop` is up pops a
-#   modal GTK box on the VNC screen ("Desktop manager is not active.") and the
-#   installer sits there until somebody clicks OK. So: never guess with sleep,
-#   poll - and never let a GUI call block the script.
-# ============================================================
 desktop_wait_for_x(){
   local tries="${1:-30}"
   while (( tries-- > 0 )); do
-    # root can talk to Xvfb directly - no su, no PAM, no hang
+
     if timeout 5 xdpyinfo -display ":${DISPLAY_NUM}" >/dev/null 2>&1; then return 0; fi
     if timeout 5 xset -display ":${DISPLAY_NUM}" q >/dev/null 2>&1; then return 0; fi
     if [[ -e "/tmp/.X11-unix/X${DISPLAY_NUM}" ]] && pgrep -f "Xvfb :${DISPLAY_NUM}" >/dev/null 2>&1; then
@@ -149,9 +107,6 @@ desktop_wait_for_x(){
   return 1
 }
 
-# NOTE: the old version ran pgrep through `su`, so the pattern matched the su
-# command line itself and always returned "active" -> pcmanfm then popped the
-# "Desktop manager is not active" modal and the script sat on it.
 desktop_manager_active(){
   pgrep -u "${MT5_USER}" -f 'pcmanfm[[:space:]]+--desktop' >/dev/null 2>&1
 }
@@ -165,16 +120,11 @@ desktop_wait_for_manager(){
   return 1
 }
 
-# Run a GUI command as mt5user with no stdin and a hard timeout, so a stray
-# dialog can never freeze the installer.
 as_mt5_nogui_block(){
   local secs="${1}"; shift
   mt5_run_quiet "${secs}" "$1" || true
 }
 
-# ============================================================
-# WALLPAPER  (BG/heysolo-des.png from the repo)
-# ============================================================
 desktop_fetch_wallpaper(){
   local url="${REPO_RAW}/${BG_SUBDIR}/${WALLPAPER_NAME}"
   info "Downloading the desktop wallpaper (${BG_SUBDIR}/${WALLPAPER_NAME})..."
@@ -191,8 +141,7 @@ desktop_fetch_wallpaper(){
 
 desktop_write_pcmanfm_conf(){
   local conf="${MT5_HOME}/.config/pcmanfm/${PCMAN_PROFILE}/desktop-items-0.conf"
-  # low-bandwidth mode: "color" instead of a stretched photo. A flat root
-  # window is a couple of hundred bytes over VNC and never needs re-sending.
+
   local wp_mode="stretch" wp="${WALLPAPER_PATH}"
   if [[ "${USE_WALLPAPER_IMAGE}" != "1" ]]; then wp_mode="color"; wp=""; fi
   cat > "${conf}" <<EOF
@@ -213,7 +162,6 @@ EOF
   chown -R "${MT5_USER}:${MT5_USER}" "${MT5_HOME}/.config/pcmanfm"
 }
 
-# Flat colour background - the cheapest possible desktop over VNC.
 desktop_apply_solid_bg(){
   desktop_write_pcmanfm_conf
   desktop_wait_for_x 20 || { warn "Skipping the background for now (no display)."; return 0; }
@@ -238,15 +186,11 @@ desktop_apply_wallpaper(){
   desktop_write_pcmanfm_conf
   desktop_wait_for_x 20 || { warn "Skipping the wallpaper for now (no display)."; return 0; }
 
-  # feh writes the root window directly - no dialogs, no desktop manager needed.
   if command -v feh >/dev/null 2>&1; then
     step "painting the wallpaper with feh (max 15s)"
     as_mt5_nogui_block 15 "feh --no-fehbg --bg-fill '${WALLPAPER_PATH}'"
   fi
 
-  # pcmanfm ONLY when its desktop process is really alive, otherwise it throws
-  # the "Desktop manager is not active." modal on the VNC screen and waits for
-  # a click that nobody can give from SSH.
   if [[ "${DESKTOP_ICONS}" == "1" ]] && command -v pcmanfm >/dev/null 2>&1 \
      && desktop_manager_active; then
     step "handing the wallpaper to pcmanfm (max 15s)"
@@ -257,9 +201,6 @@ desktop_apply_wallpaper(){
   ok "Wallpaper applied to the VNC desktop."
 }
 
-# ============================================================
-# ICON EXTRACTION (real MT5 icon when possible, letter tile otherwise)
-# ============================================================
 desktop_extract_icon(){
   local exe="$1" out="$2" letter="${3:-M}"
   [[ -s "$out" ]] && return 0
@@ -286,9 +227,6 @@ desktop_extract_icon(){
   return 0
 }
 
-# ============================================================
-# PRETTY NAME  combatcapitalmarkets5setup -> Combatcapitalmarkets MT5
-# ============================================================
 desktop_pretty_name(){
   local s="${1:-terminal}"
   s="${s%5setup}"; s="${s%setup}"; s="${s%_setup}"
@@ -297,11 +235,6 @@ desktop_pretty_name(){
   echo "${s} MT5"
 }
 
-# ============================================================
-# ONE LAUNCHER + ONE DESKTOP ICON PER TERMINAL
-#   open  -> starts it inside its own screen session
-#   again -> "Bring to front" or "Close terminal"
-# ============================================================
 desktop_write_launcher(){
   local slug="$1" exe="$2" wineprefix="$3" termpath="${4:-}"
   local launcher="${BIN_DIR}/mt5-${slug}.sh"
@@ -316,18 +249,10 @@ desktop_write_launcher(){
 
   cat > "${launcher}" <<EOF
 #!/usr/bin/env bash
-# Auto-generated by desktop_mt5.sh - launcher for ${slug}
-#
-# Windows-like double-click behaviour, and it can no longer "do nothing":
-#   not running -> start it (own screen session + own wine virtual desktop)
-#   running     -> bring it to the front
-#   everything it does is appended to ~/.heysolo/logs/<slug>.log
-#
-# Extra actions (right-click on the icon, or run the script by hand):
-#   mt5-${slug}.sh close     mt5-${slug}.sh restart
+
 export DISPLAY=":${DISPLAY_NUM}"
 export WINEPREFIX="${wineprefix}"
-# no wine-generated Notepad/WordPad/winecfg launchers on the desktop
+
 export WINEDLLOVERRIDES="winemenubuilder.exe=d"
 SLUG="${slug}"
 TERM_EXE="${termpath}"
@@ -344,9 +269,6 @@ notify(){
   command -v zenity >/dev/null 2>&1 && ( zenity --error --title="\${SLUG}" --text="\$1" >/dev/null 2>&1 & )
 }
 
-# The path baked in at install time goes stale after a broker update or a
-# re-install, and the old launcher then exited silently -> "double-click does
-# nothing". Re-resolve every click: registry first, then the prefix itself.
 resolve_exe(){
   local p=""
   if [[ -n "\${TERM_EXE}" && -f "\${TERM_EXE}" ]]; then echo "\${TERM_EXE}"; return 0; fi
@@ -365,10 +287,6 @@ if [[ -z "\${TERM_EXE}" ]]; then
   exit 1
 fi
 
-# NEVER use pgrep -f on the exe path: it is a REGEX, and a real path like
-# "C:/Program Files (x86)/..." made it match nothing, so "is it running?" always
-# answered "no" (or worse, matched another broker sharing the prefix). Literal
-# grep -F on the process list instead, plus the screen session as the truth.
 running(){
   screen -ls 2>/dev/null | grep -qE "[0-9]+\.\${SLUG}[[:space:]]" && return 0
   ps -u "\$(id -un)" -o args= 2>/dev/null | grep -Fq "\${TERM_EXE}" && return 0
@@ -385,8 +303,7 @@ raise_taskbar(){
 
 find_window(){
   local wid=""
-  # "wine explorer /desktop=<slug>" gives this terminal its OWN top-level
-  # window titled exactly <slug> - that is the one to raise.
+
   if command -v xdotool >/dev/null 2>&1; then
     wid=\$(xdotool search --name "^\${SLUG}\$" 2>/dev/null | head -n1)
     [[ -n "\${wid}" ]] && { echo "\${wid}"; return 0; }
@@ -431,13 +348,10 @@ stop_it(){
 }
 
 start_it(){
-  # a dead session with the same name blocks screen -dmS silently
+
   screen -wipe >/dev/null 2>&1 || true
   screen -S "\${SLUG}" -X quit >/dev/null 2>&1 || true
-  # own wine virtual desktop per terminal - see start_terminal() in
-  # install_mt5.sh for why (stops the "VNC clicks stop working after
-  # switching between terminals" input-grab conflict). Sized to the work
-  # area, so it can never cover the taskbar.
+
   screen -dmS "\${SLUG}" bash -c "export DISPLAY=:${DISPLAY_NUM} WINEDLLOVERRIDES='winemenubuilder.exe=d' WINEPREFIX='\${WINEPREFIX}'; wine explorer /desktop=\${SLUG},\${WORK_RES} \"\${TERM_EXE}\" >> '\${LOG}' 2>&1"
   log "started: \${TERM_EXE} (desktop \${SLUG},\${WORK_RES})"
 }
@@ -454,7 +368,7 @@ if running; then
 fi
 
 start_it
-# wait for the window instead of a blind sleep, then raise it
+
 for i in \$(seq 1 40); do
   if find_window >/dev/null 2>&1; then break; fi
   sleep 1
@@ -492,12 +406,10 @@ EOF
   echo "${termpath}"
 }
 
-# Rebuild every desktop icon from terminals.list
 desktop_purge_foreign_launchers(){
-  # Anything on the desktop that we did not write is wine's own junk
-  # (Notepad, WordPad, winecfg, "Wine Uninstaller" - the notepad+pencil icons).
+
   local d
-  # Same fix as the installer: no pipe, no grep, an empty result is normal.
+
   for d in "${DESKTOP_DIR}" "${MT5_HOME}/.local/share/applications" \
            "${MT5_HOME}/.gnome2/vfolders"; do
     [[ -d "$d" ]] || continue
@@ -524,56 +436,38 @@ desktop_sync_icons(){
       skipped=$((skipped+1)); continue
     fi
     if [[ "$(terminal_desktop_visible "${slug}")" == "0" ]]; then
-      # background-only terminal: no icon, no launcher, nothing to switch to
+
       skipped=$((skipped+1)); continue
     fi
     desktop_write_launcher "$slug" "${exe:-}" "${wineprefix:-}" "${termpath}" >/dev/null || true
     n=$((n+1))
   done < "${TERMINALS_FILE}"
-  # pcmanfm's own folder-watcher does not reliably notice new/removed .desktop
-  # files on every distro (headless boxes often lack a working GVFS/inotify
-  # backend) - that is the "icons need a manual refresh / look cached" symptom.
-  # --reconfigure forces it to re-read the desktop folder right now, with no
-  # click needed from the user.
+
   if desktop_manager_active && command -v pcmanfm >/dev/null 2>&1; then
     mt5_run_quiet 10 "pcmanfm --reconfigure"
   fi
-  # the taskbar carries one launcher button per terminal now, so it has to be
-  # rewritten whenever the terminal list changes
+
   if pgrep -u "${MT5_USER}" -x tint2 >/dev/null 2>&1; then
     desktop_ensure_taskbar
   fi
   ok "${n} desktop icon(s) ready in ${DESKTOP_DIR}${skipped:+ (${skipped} skipped)}."
 }
 
-# ============================================================
-# CLEAN TASKBAR
-#   The "desktop 1" button with the little notepad/pencil icon in the
-#   bottom-left corner is NOT a real window you want: it is
-#     a) tint2's default "desktop name" label  (taskbar_name = 1), and
-#     b) the pcmanfm desktop window leaking into the window list because
-#        some pcmanfm builds do not set _NET_WM_WINDOW_TYPE_DESKTOP.
-#   We kill both: our own tint2rc (no desktop label, no launcher) plus
-#   skip_taskbar/skip_pager forced on the desktop window itself.
-# ============================================================
 TINT2_CONF="${MT5_HOME}/.config/tint2/tint2rc"
 
 desktop_write_tint2_conf(){
   su - "${MT5_USER}" -c "mkdir -p '${MT5_HOME}/.config/tint2'"
   cat > "${TINT2_CONF}" <<'EOF'
-#---- HeySolo taskbar: Windows-like, bottom, no desktop label ----
 rounded = 0
 border_width = 0
 background_color = #101828 100
 border_color = #101828 100
 
-# task button (normal)
 rounded = 2
 border_width = 0
 background_color = #1d2939 100
 border_color = #1d2939 100
 
-# task button (active window)
 rounded = 2
 border_width = 0
 background_color = #2e5aac 100
@@ -592,7 +486,6 @@ disable_transparency = 1
 panel_background_id = 1
 panel_items = LTSC
 
-# --- taskbar: ONE row of real windows, no "desktop 1" label ---
 taskbar_mode = single_desktop
 taskbar_padding = 2 0 4
 taskbar_background_id = 0
@@ -614,7 +507,6 @@ task_font = Sans 9
 task_font_color = #ffffff 100
 urgent_nb_of_blink = 8
 
-# --- systray + clock ---
 systray_padding = 4 2 4
 systray_background_id = 0
 systray_icon_size = 22
@@ -628,18 +520,11 @@ clock_padding = 8 0
 clock_background_id = 0
 
 mouse_middle = none
-# right-click used to CLOSE the terminal - one misclick on the taskbar killed a
-# live MT5. Closing lives on the desktop icon's right-click menu instead.
 mouse_right = none
 mouse_scroll_up = toggle
 mouse_scroll_down = iconify
 EOF
 
-  # --- LAUNCHER BUTTONS: one per terminal, on the left of the taskbar ---
-  # A SINGLE click opens / brings a terminal to the front. This is a second,
-  # independent way to switch between terminals, so a wine window that hangs
-  # on to focus (or a missing window button) can no longer trap you with no
-  # way to reach the other terminals.
   {
     echo ""
     echo "launcher_icon_theme = hicolor"
@@ -660,25 +545,18 @@ EOF
   chown -R "${MT5_USER}:${MT5_USER}" "${MT5_HOME}/.config/tint2"
 }
 
-# Openbox: never list the pcmanfm desktop, keep it behind everything.
 desktop_write_openbox_rules(){
   local dir="${MT5_HOME}/.config/openbox" rc
   rc="${dir}/rc.xml"
   mkdir -p "${dir}" 2>/dev/null || true
-  # The old version bailed out whenever an rc.xml already existed, so every
-  # later fix (including the taskbar margin below) was never applied on a box
-  # that had been installed once. Always regenerate, but keep one backup.
+
   if [[ -s "${rc}" ]] && ! grep -q 'HeySolo openbox rules - rev 2' "${rc}" 2>/dev/null; then
     cp -f "${rc}" "${rc}.heysolo.bak" 2>/dev/null || true
   fi
-  # NOTE: this file REPLACES the distro default (/etc/xdg/openbox/rc.xml).
-  # The old version wrote only <applications>, which silently threw away
-  # openbox's mouse bindings (click-to-focus!), Alt+Tab and the desktop count -
-  # that is a big part of "clicks do nothing" and "I can't switch terminals".
-  # Everything needed is written out explicitly now.
+
   cat > "${rc}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- HeySolo openbox rules - rev 3 (regenerated by desktop_mt5.sh) -->
+
 <openbox_config xmlns="http://openbox.org/3.4/rc">
   <resistance>
     <strength>10</strength>
@@ -699,25 +577,19 @@ desktop_write_openbox_rules(){
   <theme>
     <titleLayout>NLIMC</titleLayout>
     <keepBorder>yes</keepBorder>
-    <!-- no iconify animation: every animated frame is VNC traffic -->
+    
     <animateIconify>no</animateIconify>
     <font place="ActiveWindow"><name>sans</name><size>9</size><weight>bold</weight><slant>normal</slant></font>
     <font place="InactiveWindow"><name>sans</name><size>9</size><weight>normal</weight><slant>normal</slant></font>
   </theme>
-  <!-- EXACTLY ONE desktop. With openbox's default 4, one stray scroll on the
-       background moved you to an empty desktop: the terminals and every
-       taskbar button vanished at once and it looked like the panel had died. -->
+  
   <desktops>
     <number>1</number>
     <firstdesk>1</firstdesk>
     <names><name>MT5</name></names>
     <popupTime>0</popupTime>
   </desktops>
-  <!-- THE taskbar fix: reserve the bottom strip on the screen itself. EWMH
-       struts (panel_dock) are only a request - a wine window sized/placed by
-       hand ignored them and painted straight over tint2, which is why the
-       taskbar "disappeared" the moment a terminal opened. A margin is not a
-       request: openbox will not place or maximize anything into it. -->
+  
   <margins>
     <top>0</top>
     <bottom>${PANEL_HEIGHT}</bottom>
@@ -726,7 +598,7 @@ desktop_write_openbox_rules(){
   </margins>
   <keyboard>
     <chainQuitKey>C-g</chainQuitKey>
-    <!-- keyboard switching between terminals, works even if the panel is busy -->
+    
     <keybind key="A-Tab">
       <action name="NextWindow">
         <finalactions>
@@ -792,19 +664,19 @@ desktop_write_openbox_rules(){
     <context name="Iconify">
       <mousebind button="Left" action="Click"><action name="Iconify"/></mousebind>
     </context>
-    <!-- CLICK TO FOCUS on the window contents - this is what was missing -->
+    
     <context name="Client">
       <mousebind button="Left" action="Press"><action name="Focus"/><action name="Raise"/></mousebind>
       <mousebind button="Middle" action="Press"><action name="Focus"/><action name="Raise"/></mousebind>
       <mousebind button="Right" action="Press"><action name="Focus"/><action name="Raise"/></mousebind>
     </context>
     <context name="Desktop">
-      <!-- deliberately NO desktop switching on scroll: see <desktops> above -->
+      
       <mousebind button="Left" action="Press"><action name="Focus"/></mousebind>
     </context>
   </mouse>
   <applications>
-    <!-- the pcmanfm desktop: no taskbar entry, no pager, always at the back -->
+    
     <application class="Pcmanfm">
       <skip_taskbar>yes</skip_taskbar>
       <skip_pager>yes</skip_pager>
@@ -817,7 +689,7 @@ desktop_write_openbox_rules(){
       <decor>no</decor>
       <layer>below</layer>
     </application>
-    <!-- the taskbar itself: above normal windows, never in the window list -->
+    
     <application class="Tint2">
       <layer>above</layer>
       <decor>no</decor>
@@ -830,18 +702,16 @@ desktop_write_openbox_rules(){
       <skip_taskbar>yes</skip_taskbar>
       <skip_pager>yes</skip_pager>
     </application>
-    <!-- wine's own junk windows (notepad/winecfg/uninstaller) -->
+    
     <application name="notepad.exe*"><skip_taskbar>yes</skip_taskbar></application>
     <application name="winecfg.exe*"><skip_taskbar>yes</skip_taskbar></application>
-    <!-- MT5 terminals: normal, listed - and never fullscreen, or they would
-         legally cover the panel again. -->
+    
     <application class="terminal64.exe*">
       <layer>normal</layer>
       <fullscreen>no</fullscreen>
       <maximized>no</maximized>
     </application>
-    <!-- wine's virtual-desktop frame (wine explorer /desktop=NAME): sized to
-         the work area, pinned to the top-left corner, never fullscreen. -->
+    
     <application class="explorer.exe*">
       <position force="yes"><x>0</x><y>0</y></position>
       <decor>no</decor>
@@ -853,12 +723,10 @@ desktop_write_openbox_rules(){
 </openbox_config>
 EOF
   chown -R "${MT5_USER}:${MT5_USER}" "${dir}" 2>/dev/null || true
-  # openbox never re-reads rc.xml by itself: without this the rules only took
-  # effect after a reboot, which is why "the fix did nothing" until now.
+
   mt5_run_quiet 10 "openbox --reconfigure" || true
 }
 
-# Force skip_taskbar/skip_pager on the desktop window right now.
 desktop_hide_desktop_window(){
   command -v wmctrl >/dev/null 2>&1 || apt-get install -y wmctrl >/dev/null 2>&1 || true
   command -v wmctrl >/dev/null 2>&1 || return 0
@@ -873,24 +741,12 @@ desktop_hide_desktop_window(){
   return 0
 }
 
-# ============================================================
-# SHORT TASKBAR TITLES
-#   MT5's window title is "<account> - <broker>: <Demo/Real> Account - ...",
-#   which tint2 shows truncated and unreadable when several terminals are
-#   open ("440622 - FusionMarkets-Demo: Demo Acco..."). The task ICON
-#   already shows the broker logo (extracted per terminal in
-#   desktop_extract_icon), so the visible TEXT only needs the account
-#   number. This renames the window's EWMH visible-name (what tint2 reads)
-#   to just the leading digits - the real WM_NAME MT5 relies on internally
-#   is untouched, so nothing inside the terminal is affected.
-# ============================================================
 desktop_write_title_watcher(){
   local script="${BIN_DIR}/title-watch.sh"
   mkdir -p "${BIN_DIR}"
   cat > "${script}" <<'EOF'
 #!/usr/bin/env bash
-# Trims MT5 taskbar titles down to just the account number.
-# "440622 - FusionMarkets-Demo: Demo Account - Hedge - ..." -> "440622"
+
 while true; do
   wmctrl -l 2>/dev/null | while IFS= read -r line; do
     wid=$(awk '{print $1}' <<< "$line")
@@ -910,32 +766,22 @@ EOF
 desktop_ensure_title_watcher(){
   command -v wmctrl >/dev/null 2>&1 || return 0
   local script; script=$(desktop_write_title_watcher)
-  # already running -> nothing to do
+
   as_mt5 "screen -ls" 2>/dev/null | grep -q '\.titlewatch\b' && return 0
   as_mt5 "screen -dmS titlewatch bash -c 'export DISPLAY=:${DISPLAY_NUM}; ${script}'"
 }
 
-# ============================================================
-# PER-TERMINAL DESKTOP VISIBILITY
-#   Not every broker terminal needs to be something you switch to over VNC -
-#   some just need to sit in the background running an EA. "Desktop: ON"
-#   terminals get the usual wine virtual desktop, a taskbar entry and a
-#   desktop icon. "Desktop: OFF" terminals still run (same screen session,
-#   same wineprefix), they just never get wrapped into the shared virtual
-#   desktop, so they cannot fight over taskbar slots or grabs with the ones
-#   you actually watch.
-# ============================================================
-terminal_desktop_visible(){        # terminal_desktop_visible <slug>  -> prints 1 or 0
+terminal_desktop_visible(){
   local slug="$1" v
   if [[ -f "${DESKTOP_VISIBLE_FILE}" ]]; then
     v=$(grep "^${slug}=" "${DESKTOP_VISIBLE_FILE}" 2>/dev/null | tail -n1 | cut -d= -f2)
   fi
-  # default: visible, so existing installs keep behaving exactly as before
+
   [[ "${v}" == "0" || "${v}" == "1" ]] || v=1
   echo "${v}"
 }
 
-set_terminal_desktop_visible(){    # set_terminal_desktop_visible <slug> <0|1>
+set_terminal_desktop_visible(){
   local slug="$1" val="$2"
   mkdir -p "$(dirname "${DESKTOP_VISIBLE_FILE}")" 2>/dev/null || true
   touch "${DESKTOP_VISIBLE_FILE}"
@@ -944,17 +790,14 @@ set_terminal_desktop_visible(){    # set_terminal_desktop_visible <slug> <0|1>
   echo "${slug}=${val}" >> "${DESKTOP_VISIBLE_FILE}"
 }
 
-remove_terminal_desktop_visible(){ # called when a terminal is uninstalled
+remove_terminal_desktop_visible(){
   local slug="$1"
   [[ -f "${DESKTOP_VISIBLE_FILE}" ]] || return 0
   grep -v "^${slug}=" "${DESKTOP_VISIBLE_FILE}" > "${DESKTOP_VISIBLE_FILE}.tmp" 2>/dev/null || true
   mv "${DESKTOP_VISIBLE_FILE}.tmp" "${DESKTOP_VISIBLE_FILE}" 2>/dev/null || true
 }
 
-# A "Desktop: OFF" terminal still opens a normal top-level window on :1 (MT5
-# needs a display to run at all) - we just don't want it visible or fighting
-# for a taskbar slot. Wait for its window by PID and hide it immediately.
-desktop_hide_background_terminal(){   # desktop_hide_background_terminal <termpath>
+desktop_hide_background_terminal(){
   local termpath="$1" tries=15 pid wid
   command -v xdotool >/dev/null 2>&1 || return 0
   command -v wmctrl  >/dev/null 2>&1 || return 0
@@ -974,13 +817,6 @@ desktop_hide_background_terminal(){   # desktop_hide_background_terminal <termpa
   as_mt5 "wmctrl -ir ${wid} -b add,skip_taskbar,skip_pager,hidden" 2>/dev/null || true
 }
 
-# ============================================================
-# TASKBAR WATCHDOG
-#   Symptom this kills: you open a terminal and the taskbar is simply gone -
-#   either tint2 died (it does, on X errors from wine) or a window ended up
-#   above it - and with no panel there is no way left to switch terminals.
-#   The watchdog restarts tint2 within ~8s and keeps it raised.
-# ============================================================
 desktop_write_panel_watchdog(){
   local script="${BIN_DIR}/panel-watch.sh"
   mkdir -p "${BIN_DIR}"
@@ -1011,9 +847,6 @@ desktop_ensure_panel_watchdog(){
   as_mt5 "screen -dmS panelwatch bash -c 'export DISPLAY=:${DISPLAY_NUM}; ${script}'"
 }
 
-# ============================================================
-# TASKBAR (tint2)
-# ============================================================
 desktop_ensure_taskbar(){
   step "starting the clean taskbar (tint2)"
   if ! command -v tint2 >/dev/null 2>&1; then
@@ -1025,8 +858,6 @@ desktop_ensure_taskbar(){
 
   desktop_write_tint2_conf
 
-  # Always restart tint2 so a changed config is actually picked up
-  # (this is what removes the old "desktop 1" label).
   pkill -u "${MT5_USER}" -x tint2 >/dev/null 2>&1 || true
   sleep 1
   mt5_run_quiet 10 "setsid tint2 -c '${TINT2_CONF}' >/dev/null 2>&1 &" || true
@@ -1040,11 +871,6 @@ desktop_ensure_taskbar(){
   fi
 }
 
-# ============================================================
-# DESKTOP MANAGER (pcmanfm) - must run under a D-Bus session
-#   Without dbus, pcmanfm --desktop exits immediately on a headless server:
-#   the wallpaper (feh) still shows, but NO desktop icons are ever rendered.
-# ============================================================
 desktop_launch_manager(){
   command -v dbus-launch >/dev/null 2>&1 || {
     info "Installing dbus-x11 (needed by pcmanfm --desktop)..."
@@ -1067,15 +893,6 @@ desktop_launch_manager(){
   return 0
 }
 
-# ============================================================
-# CLIPBOARD (VNC copy/paste)
-#   Symptom without this: you copy something once, and every later paste keeps
-#   returning that FIRST text forever. On a bare Xvfb there is no clipboard
-#   manager, so when the app that owned the selection exits (or wine drops it)
-#   the X CLIPBOARD keeps the last cached value and never updates again.
-#   autocutsel owns both selections permanently and keeps CLIPBOARD <-> PRIMARY
-#   in sync, which is what makes copy/paste behave like a normal desktop.
-# ============================================================
 desktop_ensure_clipboard(){
   step "starting the clipboard keeper (autocutsel)"
   if ! command -v autocutsel >/dev/null 2>&1; then
@@ -1085,7 +902,7 @@ desktop_ensure_clipboard(){
       return 0
     }
   fi
-  # restart cleanly so a wedged instance cannot keep serving a stale value
+
   pkill -u "${MT5_USER}" -x autocutsel >/dev/null 2>&1 || true
   sleep 1
   mt5_run_quiet 10 "setsid autocutsel -selection CLIPBOARD -fork >/dev/null 2>&1"
@@ -1099,9 +916,6 @@ desktop_ensure_clipboard(){
   desktop_ensure_clipboard_watchdog
 }
 
-# autocutsel can still die silently under load (heavy wine clipboard traffic,
-# a terminal closing mid-copy). A watchdog restarts it within ~30s instead of
-# copy/paste staying broken until the next full desktop_start.
 desktop_write_clipboard_watchdog(){
   local script="${BIN_DIR}/clipboard-watch.sh"
   mkdir -p "${BIN_DIR}"
@@ -1126,9 +940,6 @@ desktop_ensure_clipboard_watchdog(){
   as_mt5 "screen -dmS clipwatch bash -c 'export DISPLAY=:${DISPLAY_NUM}; ${script}'"
 }
 
-# ============================================================
-# START / REFRESH THE WHOLE DESKTOP LAYER (call after Xvfb+openbox)
-# ============================================================
 desktop_start(){
   DESK_STEP=0
   step "creating folders / configs"
@@ -1156,7 +967,6 @@ desktop_start(){
   desktop_hide_desktop_window
 }
 
-# Same shortcut purge as the installer, available standalone too.
 purge_wine_shortcuts_local(){
   if declare -F purge_wine_shortcuts >/dev/null 2>&1; then
     purge_wine_shortcuts
@@ -1168,9 +978,6 @@ purge_wine_shortcuts_local(){
   rm -rf "${MT5_HOME}/.local/share/applications/wine" 2>/dev/null || true
 }
 
-# ============================================================
-# FULL DESKTOP SETUP (called once by the installer)
-# ============================================================
 desktop_setup_all(){
   desktop_install_packages
   desktop_prepare_dirs
@@ -1188,9 +995,6 @@ desktop_setup_all(){
   fi
 }
 
-# ============================================================
-# CLI: find / restore a minimized window (no VNC needed)
-# ============================================================
 desktop_restore_window(){
   if ! as_mt5 "command -v wmctrl" >/dev/null 2>&1; then
     info "wmctrl is not installed yet - installing it..."
@@ -1231,9 +1035,6 @@ desktop_restore_window(){
   press_enter
 }
 
-# ============================================================
-# DOCTOR - "is it hung, or is it working?"
-# ============================================================
 desktop_doctor(){
   header; title "DESKTOP DOCTOR"; header
   echo "  Xvfb        : $(pgrep -af 'Xvfb :'${DISPLAY_NUM} 2>/dev/null | head -n1 || echo 'NOT RUNNING')"
@@ -1257,9 +1058,6 @@ desktop_doctor(){
   header
 }
 
-# ============================================================
-# STANDALONE ENTRY POINT
-# ============================================================
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   set -euo pipefail
   [[ $EUID -eq 0 ]] || { err "Run as root (sudo)."; exit 1; }
