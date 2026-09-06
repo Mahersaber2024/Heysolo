@@ -2214,6 +2214,32 @@ start_terminal(){
   fi
 }
 
+graceful_stop_terminal(){
+  local slug="$1" termpath="$2" timeout="${3:-20}" wid waited=0
+
+  # Force-killing terminal64.exe (pkill) never gives MT5 a chance to flush
+  # its open charts / attached EAs to Profiles/Default, so the NEXT start
+  # silently reverts to whatever was last saved on a clean exit. Ask the
+  # window to close normally first (WM_DELETE_WINDOW via wmctrl), wait for
+  # MT5 to actually exit and save, and only pkill as a last resort if it
+  # refuses to close in time.
+  wid=$(as_mt5 "wmctrl -lx 2>/dev/null | awk 'tolower(\$3) ~ /terminal64\\.exe/ {print \$1; exit}'")
+  if [[ -n "${wid}" ]]; then
+    as_mt5 "wmctrl -ic ${wid}" 2>/dev/null || true
+    while as_mt5 "pgrep -f '${termpath}'" >/dev/null 2>&1 && (( waited < timeout )); do
+      sleep 1; ((waited++))
+    done
+  fi
+
+  if as_mt5 "pgrep -f '${termpath}'" >/dev/null 2>&1; then
+    if (( waited > 0 )); then
+      warn "${slug}: did not close on its own after ${timeout}s - forcing it closed (state since its last clean exit may be lost)."
+    fi
+    as_mt5 "pkill -f '${termpath}'" 2>/dev/null || true
+  fi
+  as_mt5 "screen -S ${slug} -X quit" 2>/dev/null || true
+}
+
 start_all_terminals(){
   if [[ ! -s "${TERMINALS_FILE}" ]]; then
     warn "No terminals registered."
@@ -2270,11 +2296,9 @@ manage_one_terminal(){
   read -rp "Choice: " ACT || ACT=""
   case "$ACT" in
     1) start_terminal "$slug" "$wineprefix" "$termpath" && ok "${slug} started." ;;
-    2) as_mt5 "pkill -f '${termpath}'" 2>/dev/null || true
-       as_mt5 "screen -S ${slug} -X quit" 2>/dev/null || true
+    2) graceful_stop_terminal "$slug" "$termpath"
        ok "${slug} stopped." ;;
-    3) as_mt5 "pkill -f '${termpath}'" 2>/dev/null || true
-       as_mt5 "screen -S ${slug} -X quit" 2>/dev/null || true
+    3) graceful_stop_terminal "$slug" "$termpath"
        sleep 3
        start_terminal "$slug" "$wineprefix" "$termpath" && ok "${slug} restarted." ;;
     4) as_mt5 "screen -ls" || true ;;
@@ -2415,7 +2439,9 @@ show_final_guide(){
   echo " Stop/restart ONE terminal (all brokers share one wineprefix now -"
   echo " never run a bare 'wineserver -k', it kills every broker's terminal):"
   echo "    su - ${MT5_USER}"
-  echo "    pkill -f '<path to that broker's terminal64.exe>'; screen -S <slug> -X quit"
+  echo "    (prefer menu option 3 -> Stop/Restart, which closes the window normally"
+  echo "     first so open charts/EAs get saved; a bare pkill skips that and can"
+  echo "     revert the terminal to its last cleanly-saved state)"
   echo
   echo " Add a new terminal later:"
   echo "    SFTP the new .exe into ${MT5_LOCAL_DIR}"
@@ -2524,8 +2550,7 @@ uninstall_terminal(){
   local slug="${SLUGS[$((TIDX-1))]}"
   local wineprefix="${PREFIXES[$((TIDX-1))]}"
   local termpath="${PATHS[$((TIDX-1))]}"
-  as_mt5 "pkill -f '${termpath}'" 2>/dev/null || true
-  as_mt5 "screen -S ${slug} -X quit" 2>/dev/null || true
+  graceful_stop_terminal "$slug" "$termpath"
   if [[ -n "${termpath}" ]]; then
     local install_dir mql5_dir
     install_dir=$(dirname "${termpath}")
