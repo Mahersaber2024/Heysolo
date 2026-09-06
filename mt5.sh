@@ -284,14 +284,36 @@ declare -F as_mt5 >/dev/null 2>&1 || as_mt5(){ mt5_run "${AS_MT5_TIMEOUT:-90}" "
 DESK_STEP=0
 step(){ DESK_STEP=$((DESK_STEP+1)); echo -e "${CYAN}  [desktop ${DESK_STEP}/8] $1${NC}"; }
 
+wait_for_dpkg_lock(){
+  # Right before this runs, step1 has usually just finished several other
+  # apt-get calls (base packages, i386, wine, user creation) - the dpkg lock
+  # can still be held by a trailing dpkg/needrestart hook for a few seconds.
+  # Installing straight into that lock makes apt-get exit non-zero, and since
+  # every desktop apt-get call is intentionally `|| true` (so one missing
+  # package never aborts the whole desktop setup), that failure was silent -
+  # pcmanfm/tint2 would just come back "missing" with no visible error.
+  local tries="${1:-30}"
+  while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1; do
+    (( tries-- <= 0 )) && break
+    sleep 1
+  done
+}
+
 desktop_install_packages(){
   info "Installing desktop packages (wallpaper, icons, taskbar)..."
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
+  wait_for_dpkg_lock
   apt-get update -y >/dev/null 2>&1 || true
   apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
     pcmanfm feh tint2 wmctrl xdotool zenity dbus-x11 autocutsel \
     icoutils imagemagick x11-utils xprop x11-xserver-utils \
     >/dev/null 2>&1 || true
+  if ! command -v tint2 >/dev/null 2>&1 || ! command -v pcmanfm >/dev/null 2>&1; then
+    # One retry, in case the first attempt lost a lock race rather than the
+    # packages genuinely being unavailable.
+    wait_for_dpkg_lock
+    apt-get install -y pcmanfm feh tint2 icoutils imagemagick >/dev/null 2>&1 || true
+  fi
   command -v tint2   >/dev/null 2>&1 || warn "tint2 missing (taskbar will be unavailable)."
   command -v pcmanfm >/dev/null 2>&1 || warn "pcmanfm missing (falling back to feh wallpaper, no desktop icons)."
   ok "Desktop packages ready."
@@ -1080,6 +1102,7 @@ desktop_ensure_taskbar(){
   step "starting the clean taskbar (tint2)"
   if ! command -v tint2 >/dev/null 2>&1; then
     info "tint2 is not installed yet - installing it..."
+    wait_for_dpkg_lock
     apt-get update -y >/dev/null 2>&1 || true
     apt-get install -y tint2 wmctrl xdotool x11-utils >/dev/null 2>&1 || true
     command -v tint2 >/dev/null 2>&1 || { warn "Could not install tint2, skipping taskbar."; return 0; }
@@ -1101,6 +1124,7 @@ desktop_ensure_taskbar(){
 desktop_launch_manager(){
   command -v dbus-launch >/dev/null 2>&1 || {
     info "Installing dbus-x11 (needed by pcmanfm --desktop)..."
+    wait_for_dpkg_lock
     apt-get install -y dbus-x11 >/dev/null 2>&1 || true
   }
   desktop_write_pcmanfm_conf
@@ -1123,6 +1147,7 @@ desktop_launch_manager(){
 desktop_ensure_clipboard(){
   step "starting the clipboard keeper (autocutsel)"
   if ! command -v autocutsel >/dev/null 2>&1; then
+    wait_for_dpkg_lock
     apt-get install -y autocutsel >/dev/null 2>&1 || true
     command -v autocutsel >/dev/null 2>&1 || {
       warn "autocutsel missing - VNC copy/paste may keep pasting the same old text."
@@ -1167,6 +1192,14 @@ desktop_ensure_clipboard_watchdog(){
   as_mt5 "screen -dmS clipwatch bash -c 'export DISPLAY=:${DISPLAY_NUM}; ${script}'"
 }
 
+desktop_ensure_pcmanfm(){
+  info "pcmanfm is not installed yet - installing it..."
+  wait_for_dpkg_lock
+  apt-get update -y >/dev/null 2>&1 || true
+  apt-get install -y pcmanfm feh icoutils imagemagick >/dev/null 2>&1 || true
+  command -v pcmanfm >/dev/null 2>&1 || { warn "Could not install pcmanfm, skipping desktop icons (wallpaper/taskbar still work)."; return 1; }
+}
+
 desktop_start(){
   DESK_STEP=0
   step "creating folders / configs"
@@ -1178,12 +1211,17 @@ desktop_start(){
   if as_mt5 "command -v xsetroot" >/dev/null 2>&1; then
     as_mt5_nogui_block 5 "xsetroot -solid '${DESKTOP_BG_COLOR}'"
   fi
-  if [[ "${DESKTOP_ICONS}" == "1" ]] && command -v pcmanfm >/dev/null 2>&1; then
-    if ! desktop_manager_active; then
-      step "starting the desktop manager (pcmanfm, max 10s)"
-      desktop_launch_manager
+  if [[ "${DESKTOP_ICONS}" == "1" ]]; then
+    command -v pcmanfm >/dev/null 2>&1 || desktop_ensure_pcmanfm
+    if command -v pcmanfm >/dev/null 2>&1; then
+      if ! desktop_manager_active; then
+        step "starting the desktop manager (pcmanfm, max 10s)"
+        desktop_launch_manager
+      else
+        step "desktop manager already running"
+      fi
     else
-      step "desktop manager already running"
+      step "pcmanfm unavailable - wallpaper/taskbar only, no icons"
     fi
   else
     step "icons not needed yet (DESKTOP_ICONS=0) - pcmanfm not started"
