@@ -174,8 +174,16 @@ panel(){
 
 t_stop(){
   local i="$1"
-  as_mt5 "pkill -f '${T_PATH[$i]}'" 2>/dev/null || true
-  as_mt5 "screen -S ${T_SLUG[$i]} -X quit" 2>/dev/null || true
+  if declare -F graceful_stop_terminal >/dev/null 2>&1; then
+    # Closes the terminal window normally first so MT5 gets to save its open
+    # charts/attached EAs before anything is force-killed - a bare pkill
+    # never gives it that chance, which is what was reverting the terminal
+    # to its last cleanly-saved state on every stop/restart.
+    graceful_stop_terminal "${T_SLUG[$i]}" "${T_PATH[$i]}"
+  else
+    as_mt5 "pkill -f '${T_PATH[$i]}'" 2>/dev/null || true
+    as_mt5 "screen -S ${T_SLUG[$i]} -X quit" 2>/dev/null || true
+  fi
   ok "$(pretty "${T_SLUG[$i]}") stopped."
 }
 t_start(){
