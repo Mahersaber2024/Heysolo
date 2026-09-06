@@ -55,7 +55,12 @@ else
 fi
 VNC_OPTS="${VNC_BASE_OPTS} ${VNC_TUNE_OPTS}"
 
-WINEPREFIX_SHARED="/home/${MT5_USER}/mt5-terminals"
+WINEPREFIX_BASE="/home/${MT5_USER}/mt5-terminals"
+# Every terminal gets its OWN, fully isolated wineprefix under here
+# (${WINEPREFIX_BASE}/<slug>) - no two brokers ever share a C: drive,
+# registry, or data-folder lock again. wineprefix_for_slug() is the only
+# place that decides the path, so it can't drift out of sync with itself.
+wineprefix_for_slug(){ echo "${WINEPREFIX_BASE}/${1}"; }
 
 MT5_LOCAL_DIR="/opt/heysolo/mt5"
 MQL5_LOCAL_DIR="/opt/heysolo/mt5-mql5"
@@ -465,7 +470,7 @@ desktop_write_launcher(){
   local pretty; pretty="$(desktop_pretty_name "$slug")"
 
   if [[ -z "$termpath" ]]; then
-    warn "${slug}: no terminal64.exe on record - the prefix is shared by every broker now, so it can't be guessed. Re-run Step 2 for this broker."
+    warn "${slug}: no terminal64.exe on record for this terminal. Re-run Step 2 for this broker."
     return 1
   fi
 
@@ -1316,7 +1321,8 @@ desktop_restore_window(){
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     wid=$(awk '{print $1}' <<< "$line")
-    title_part=$(cut -d' ' -f5- <<< "$line")
+    title_part=$(awk '{for(i=1;i<=3;i++)$i=""; sub(/^ +/,"")}1' <<< "$line")
+    [[ -z "$title_part" ]] && title_part="(no title)"
     WIDS+=("$wid")
     printf "  %2d) %s\n" "$i" "$title_part"
     i=$((i+1))
@@ -1857,6 +1863,32 @@ resolve_mql5_dir(){
   return 1
 }
 
+remove_terminal_files(){
+  local slug="$1" wineprefix="$2" termpath="${3:-}"
+  local other_owner=""
+  [[ -n "${wineprefix}" ]] && other_owner=$(awk -F'|' -v w="${wineprefix}" -v s="${slug}" \
+    '$3==w && $1!=s{print $1; exit}' "${TERMINALS_FILE}" 2>/dev/null || true)
+
+  if [[ -n "${wineprefix}" && -z "${other_owner}" ]]; then
+    # Nobody else uses this prefix - it was created just for this terminal,
+    # so wipe the whole thing (registry, temp files, everything), not only
+    # the install folder.
+    su - "${MT5_USER}" -c "rm -rf '${wineprefix}'" 2>/dev/null || true
+    return 0
+  fi
+
+  # Legacy terminal installed before per-broker prefixes existed - this
+  # wineprefix is still shared with another terminal, so only remove this
+  # terminal's own install + MQL5 folders and leave the shared prefix alone.
+  if [[ -n "${termpath}" ]]; then
+    local install_dir mql5_dir
+    install_dir=$(dirname "${termpath}")
+    mql5_dir=$(resolve_mql5_dir "${wineprefix}" "${install_dir}") || mql5_dir=""
+    [[ -n "${mql5_dir}" ]] && su - "${MT5_USER}" -c "rm -rf '$(dirname "${mql5_dir}")'" 2>/dev/null || true
+    su - "${MT5_USER}" -c "rm -rf '${install_dir}'" 2>/dev/null || true
+  fi
+}
+
 declare -A MQL5_DIR_OWNER=()
 
 sync_mql5_assets(){
@@ -2091,12 +2123,10 @@ install_selected(){
   start_display
   print_vnc_access
 
-  local wineprefix="${WINEPREFIX_SHARED}"
-  init_prefix "${wineprefix}"
-
-  local exe slug src dest_path termpath marker
+  local exe slug src dest_path termpath marker wineprefix
   for exe in "${SELECTED_EXES[@]}"; do
     slug=$(slugify "$exe")
+    wineprefix="$(wineprefix_for_slug "${slug}")"
     src="${MT5_LOCAL_DIR}/${exe}"
 
     echo
@@ -2120,6 +2150,15 @@ install_selected(){
       continue
     fi
     ok "Ready: ${dest_path} ($(du -h "${dest_path}" 2>/dev/null | cut -f1 || echo '?'))."
+
+    # Its own prefix, never shared with any other broker - so a `find` inside
+    # it can never land on someone else's terminal64.exe, and removing this
+    # terminal later can safely wipe the whole prefix without touching anyone
+    # else's install.
+    if [[ ! -d "${wineprefix}" ]]; then
+      info "Creating an isolated wine prefix for ${exe} at ${wineprefix} ..."
+      init_prefix "${wineprefix}"
+    fi
 
     marker="/tmp/.heysolo-mark-${slug}"
     touch "${marker}"
@@ -2150,16 +2189,8 @@ install_selected(){
       continue
     fi
 
-    local dup_slug=""
-    dup_slug=$(awk -F'|' -v p="${termpath}" -v s="${slug}" '$4==p && $1!=s{print $1; exit}' "${TERMINALS_FILE}" 2>/dev/null || true)
     register_terminal "${slug}" "${exe}" "${wineprefix}" "${termpath}"
-    ok "${exe} really is installed -> ${termpath} (screen name: ${slug})."
-    if [[ -n "${dup_slug}" ]]; then
-      warn "${exe} installed into the SAME folder as '${dup_slug}':"
-      warn "        ${termpath}"
-      warn "They will share one MT5 data folder (same EAs, presets, charts, one login list)."
-      warn "Want them separate? Remove this one (menu 5) and rerun the wizard, changing the destination folder."
-    fi
+    ok "${exe} really is installed -> ${termpath} (screen name: ${slug}, own prefix: ${wineprefix})."
 
     if declare -F set_terminal_desktop_visible >/dev/null 2>&1; then
       if [[ "${NONINTERACTIVE}" == "1" ]]; then
@@ -2436,8 +2467,10 @@ show_final_guide(){
   echo "    su - ${MT5_USER} -c \"x11vnc -display :${DISPLAY_NUM} ${VNC_OPTS} -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg\""
   echo "    su - ${MT5_USER} -c 'pkill x11vnc'"
   echo
-  echo " Stop/restart ONE terminal (all brokers share one wineprefix now -"
-  echo " never run a bare 'wineserver -k', it kills every broker's terminal):"
+  echo " Stop/restart ONE terminal (each one now gets its own wine prefix, so"
+  echo " 'wineserver -k' with that terminal's own WINEPREFIX only touches it -"
+  echo " but if it was installed before this isolation fix, it may still share"
+  echo " a prefix with other terminals; check its wineprefix in terminals.list):"
   echo "    su - ${MT5_USER}"
   echo "    (prefer menu option 3 -> Stop/Restart, which closes the window normally"
   echo "     first so open charts/EAs get saved; a bare pkill skips that and can"
@@ -2551,13 +2584,7 @@ uninstall_terminal(){
   local wineprefix="${PREFIXES[$((TIDX-1))]}"
   local termpath="${PATHS[$((TIDX-1))]}"
   graceful_stop_terminal "$slug" "$termpath"
-  if [[ -n "${termpath}" ]]; then
-    local install_dir mql5_dir
-    install_dir=$(dirname "${termpath}")
-    mql5_dir=$(resolve_mql5_dir "${wineprefix}" "${install_dir}")
-    [[ -n "${mql5_dir}" ]] && su - "${MT5_USER}" -c "rm -rf '$(dirname "${mql5_dir}")'"
-    su - "${MT5_USER}" -c "rm -rf '${install_dir}'"
-  fi
+  remove_terminal_files "${slug}" "${wineprefix}" "${termpath}"
   grep -v "^${slug}|" "${TERMINALS_FILE}" > "${TERMINALS_FILE}.tmp" 2>/dev/null || true
   mv "${TERMINALS_FILE}.tmp" "${TERMINALS_FILE}" 2>/dev/null || true
   rm -f "/home/${MT5_USER}/Desktop/mt5-${slug}.desktop" "/home/${MT5_USER}/.heysolo/bin/mt5-${slug}.sh" 2>/dev/null || true
