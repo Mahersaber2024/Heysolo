@@ -3,6 +3,13 @@
 MT5_USER="${MT5_USER:-mt5user}"
 DISPLAY_NUM="${DISPLAY_NUM:-1}"
 
+# Same settings file install_mt5.sh writes/reads - guarantees this script gives
+# the SAME wallpaper/colour-depth result whether it's called from step1, step2,
+# the heysolo panel, the boot-recovery service, or run by hand on its own.
+STATE_DIR="${STATE_DIR:-/etc/heysolo-mt5}"
+DESKTOP_ENV_FILE="${DESKTOP_ENV_FILE:-${STATE_DIR}/desktop.env}"
+[[ -f "${DESKTOP_ENV_FILE}" ]] && source "${DESKTOP_ENV_FILE}" 2>/dev/null || true
+
 COLOR_DEPTH="${COLOR_DEPTH:-16}"
 SCREEN_GEOMETRY="${SCREEN_GEOMETRY:-1920x1080}"
 LOW_BANDWIDTH="${LOW_BANDWIDTH:-1}"
@@ -265,8 +272,9 @@ log(){ echo "\$(date '+%F %T') \$*" >> "\${LOG}" 2>/dev/null; }
 exec 2>> "\${LOG}"
 
 notify(){
-  log "ERROR: \$1"
-  command -v zenity >/dev/null 2>&1 && ( zenity --error --title="\${SLUG}" --text="\$1" >/dev/null 2>&1 & )
+  local msg="\${1:-\${SLUG}: unknown error}"
+  log "ERROR: \${msg}"
+  command -v zenity >/dev/null 2>&1 && ( zenity --error --title="\${SLUG}" --text="\${msg}" --timeout=15 >/dev/null 2>&1 & )
 }
 
 resolve_exe(){
@@ -454,6 +462,7 @@ desktop_sync_icons(){
 }
 
 TINT2_CONF="${MT5_HOME}/.config/tint2/tint2rc"
+TINT2_LOCK="${ASSET_DIR}/tint2.lock"
 
 desktop_write_tint2_conf(){
   su - "${MT5_USER}" -c "mkdir -p '${MT5_HOME}/.config/tint2'"
@@ -510,6 +519,13 @@ urgent_nb_of_blink = 8
 systray_padding = 4 2 4
 systray_background_id = 0
 systray_icon_size = 22
+
+tooltip_show_timeout = 0.4
+tooltip_hide_timeout = 3
+tooltip_padding = 4 4
+tooltip_background_id = 2
+tooltip_font = Sans 8
+tooltip_font_color = #ffffff 100
 
 time1_format = %H:%M
 time1_font = Sans 9
@@ -705,6 +721,12 @@ desktop_write_openbox_rules(){
     
     <application name="notepad.exe*"><skip_taskbar>yes</skip_taskbar></application>
     <application name="winecfg.exe*"><skip_taskbar>yes</skip_taskbar></application>
+
+    <application name="zenity*">
+      <skip_taskbar>yes</skip_taskbar>
+      <skip_pager>yes</skip_pager>
+      <placement><policy>Smart</policy><center>yes</center></placement>
+    </application>
     
     <application class="terminal64.exe*">
       <layer>normal</layer>
@@ -823,9 +845,10 @@ desktop_write_panel_watchdog(){
   cat > "${script}" <<EOF
 #!/usr/bin/env bash
 CONF="${TINT2_CONF}"
+LOCK="${TINT2_LOCK}"
 while true; do
   if ! pgrep -x tint2 >/dev/null 2>&1; then
-    setsid tint2 -c "\${CONF}" >/dev/null 2>&1 &
+    flock -w 5 "\${LOCK}" -c 'pgrep -x tint2 >/dev/null 2>&1 || setsid tint2 -c "'"\${CONF}"'" >/dev/null 2>&1 &'
     sleep 2
   fi
   if command -v xdotool >/dev/null 2>&1; then
@@ -858,9 +881,7 @@ desktop_ensure_taskbar(){
 
   desktop_write_tint2_conf
 
-  pkill -u "${MT5_USER}" -x tint2 >/dev/null 2>&1 || true
-  sleep 1
-  mt5_run_quiet 10 "setsid tint2 -c '${TINT2_CONF}' >/dev/null 2>&1 &" || true
+  mt5_run_quiet 15 "flock -w 5 '${TINT2_LOCK}' -c 'pkill -x tint2 >/dev/null 2>&1; sleep 1; setsid tint2 -c \"${TINT2_CONF}\" >/dev/null 2>&1 &'" || true
   sleep 2
   desktop_hide_desktop_window
   desktop_ensure_panel_watchdog
@@ -947,6 +968,10 @@ desktop_start(){
   desktop_write_openbox_rules
   step "waiting for the virtual display :${DISPLAY_NUM}"
   desktop_wait_for_x 30 || { warn "Desktop layer skipped - display :${DISPLAY_NUM} is not up."; return 0; }
+  step "painting a safety background immediately (no white/default flash)"
+  if as_mt5 "command -v xsetroot" >/dev/null 2>&1; then
+    as_mt5_nogui_block 5 "xsetroot -solid '${DESKTOP_BG_COLOR}'"
+  fi
   if [[ "${DESKTOP_ICONS}" == "1" ]] && command -v pcmanfm >/dev/null 2>&1; then
     if ! desktop_manager_active; then
       step "starting the desktop manager (pcmanfm, max 10s)"

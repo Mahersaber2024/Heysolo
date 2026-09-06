@@ -21,11 +21,31 @@ MT5_USER="mt5user"
 DISPLAY_NUM="1"
 VNC_PORT=5900
 
+STATE_DIR="/etc/heysolo-mt5"
+DESKTOP_ENV_FILE="${STATE_DIR}/desktop.env"
+
+# Any value already set on the command line (e.g. LOW_BANDWIDTH=0 sudo bash ...)
+# wins. Otherwise, whatever was chosen the LAST time step 1 ran wins - not the
+# hard-coded fallback. This is what makes the desktop look the SAME every time
+# it is (re)started, instead of a different one each time these scripts are
+# invoked fresh (menu, step2, VNC toggle, reboot...).
+[[ -f "${DESKTOP_ENV_FILE}" ]] && source "${DESKTOP_ENV_FILE}" 2>/dev/null || true
+
 COLOR_DEPTH="${COLOR_DEPTH:-16}"
 SCREEN_GEOMETRY="${SCREEN_GEOMETRY:-1920x1080}"
 LOW_BANDWIDTH="${LOW_BANDWIDTH:-1}"
 SCREEN_RES="${SCREEN_RES:-${SCREEN_GEOMETRY}x${COLOR_DEPTH}}"
 export COLOR_DEPTH SCREEN_GEOMETRY LOW_BANDWIDTH SCREEN_RES
+
+persist_desktop_settings(){
+  mkdir -p "${STATE_DIR}" 2>/dev/null || true
+  cat > "${DESKTOP_ENV_FILE}" <<EOF
+: "\${COLOR_DEPTH:=${COLOR_DEPTH}}"
+: "\${SCREEN_GEOMETRY:=${SCREEN_GEOMETRY}}"
+: "\${LOW_BANDWIDTH:=${LOW_BANDWIDTH}}"
+EOF
+}
+persist_desktop_settings
 
 VNC_BASE_OPTS="-forever -shared -noprimary -nosetprimary"
 if [[ "${LOW_BANDWIDTH}" == "1" ]]; then
@@ -40,7 +60,6 @@ WINEPREFIX_SHARED="/home/${MT5_USER}/mt5-terminals"
 MT5_LOCAL_DIR="/opt/heysolo/mt5"
 MQL5_LOCAL_DIR="/opt/heysolo/mt5-mql5"
 
-STATE_DIR="/etc/heysolo-mt5"
 TERMINALS_FILE="${STATE_DIR}/terminals.list"
 VNC_PASS_FILE="/home/${MT5_USER}/.vnc/passwd"
 
@@ -212,6 +231,60 @@ load_desktop_module(){
   fi
 }
 load_desktop_module
+
+HEYSOLO_SCRIPTS_DIR="/opt/heysolo/scripts"
+HEYSOLO_SELF_PATH="${HEYSOLO_SCRIPTS_DIR}/install_mt5.sh"
+BOOT_SERVICE_NAME="heysolo-mt5-desktop"
+BOOT_SERVICE_FILE="/etc/systemd/system/${BOOT_SERVICE_NAME}.service"
+
+persist_self_copy(){
+  local src
+  src=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)
+  src="${src:+${src}/$(basename "${BASH_SOURCE[0]:-$0}")}"
+  mkdir -p "${HEYSOLO_SCRIPTS_DIR}" 2>/dev/null || true
+  if [[ -n "${src}" && -f "${src}" && "${src}" != "${HEYSOLO_SELF_PATH}" ]]; then
+    cp -f "${src}" "${HEYSOLO_SELF_PATH}" 2>/dev/null || true
+  fi
+  [[ -f "${HEYSOLO_SELF_PATH}" ]] || cp -f "${BASH_SOURCE[0]:-$0}" "${HEYSOLO_SELF_PATH}" 2>/dev/null || true
+  chmod +x "${HEYSOLO_SELF_PATH}" 2>/dev/null || true
+}
+
+install_boot_service(){
+  persist_self_copy
+  [[ -f "${HEYSOLO_SELF_PATH}" ]] || { warn "Could not save a stable copy of this script - boot recovery skipped."; return 1; }
+  cat > "${BOOT_SERVICE_FILE}" <<EOF
+[Unit]
+Description=HeySolo MT5 desktop recovery (Xvfb, VNC, wine terminals, taskbar) after reboot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=300
+ExecStart=/usr/bin/env bash ${HEYSOLO_SELF_PATH} boot
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable "${BOOT_SERVICE_NAME}" >/dev/null 2>&1
+  ok "Boot recovery service installed (${BOOT_SERVICE_NAME}) - the desktop and terminals now come back by themselves after a server reboot, using the exact same settings."
+}
+
+boot_recover(){
+  require_root
+  HEYSOLO_STAGE_WARNINGS=()
+  guard "virtual display + desktop" start_display
+  if [[ -s "${TERMINALS_FILE}" ]]; then
+    sleep 3
+    guard "start terminals" start_all_terminals
+    sleep 4
+    export DESKTOP_ICONS=1
+    guard "desktop icons" desktop_sync_icons
+  fi
+  log_line "boot recovery finished"
+}
 
 show_banner(){
   echo
@@ -1229,6 +1302,7 @@ step1_prepare_server(){
 
   export DESKTOP_ICONS=0
   guard "virtual display + VNC" start_display
+  guard "boot recovery service" install_boot_service
   if [[ "${SKIP_DESKTOP:-0}" == "1" ]]; then
     warn "SKIP_DESKTOP=1 - skipping wallpaper/taskbar."
   fi
@@ -1248,6 +1322,7 @@ step1_prepare_server(){
     warn "Details are in ${HEYSOLO_LOG}. Re-running Step 1 is safe and repeats only what is missing."
   else
     ok "Step 1 finished: server, wine, VNC and the desktop background are ready."
+    ok "The desktop now survives a server reboot on its own, with the same look every time (service: ${BOOT_SERVICE_NAME})."
   fi
   info "Desktop icons are created in Step 2, once terminals actually exist."
   print_vnc_access
@@ -1380,12 +1455,13 @@ case "${1:-menu}" in
   step1)  require_root; NONINTERACTIVE=1 step1_prepare_server; HEYSOLO_CLEAN_EXIT=1 ;;
   step2)  require_root; step2_install_terminals;               HEYSOLO_CLEAN_EXIT=1 ;;
   guide)  require_root; show_final_guide;                      HEYSOLO_CLEAN_EXIT=1 ;;
+  boot)   require_root; NONINTERACTIVE=1 boot_recover;          HEYSOLO_CLEAN_EXIT=1 ;;
   doctor) require_root
           if declare -F desktop_doctor >/dev/null 2>&1; then desktop_doctor; fi
           as_mt5 "screen -ls" || true
           HEYSOLO_CLEAN_EXIT=1 ;;
   menu|"") main_menu ;;
   *)      err "Unknown argument: $1"
-          echo "Usage: bash $0 [menu|step1|step2|guide|doctor]"
+          echo "Usage: bash $0 [menu|step1|step2|guide|doctor|boot]"
           HEYSOLO_CLEAN_EXIT=1; exit 2 ;;
 esac
