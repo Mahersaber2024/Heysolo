@@ -35,10 +35,7 @@ COLOR_DEPTH="${COLOR_DEPTH:-16}"
 SCREEN_GEOMETRY="${SCREEN_GEOMETRY:-1920x1080}"
 LOW_BANDWIDTH="${LOW_BANDWIDTH:-1}"
 SCREEN_RES="${SCREEN_RES:-${SCREEN_GEOMETRY}x${COLOR_DEPTH}}"
-# Custom tint2 panel/clock overlay. Default on - lets you switch between
-# running MT5 terminals from the taskbar's window list.
-DESKTOP_TASKBAR="${DESKTOP_TASKBAR:-1}"
-export COLOR_DEPTH SCREEN_GEOMETRY LOW_BANDWIDTH SCREEN_RES DESKTOP_TASKBAR
+export COLOR_DEPTH SCREEN_GEOMETRY LOW_BANDWIDTH SCREEN_RES
 
 persist_desktop_settings(){
   mkdir -p "${STATE_DIR}" 2>/dev/null || true
@@ -46,7 +43,6 @@ persist_desktop_settings(){
 : "\${COLOR_DEPTH:=${COLOR_DEPTH}}"
 : "\${SCREEN_GEOMETRY:=${SCREEN_GEOMETRY}}"
 : "\${LOW_BANDWIDTH:=${LOW_BANDWIDTH}}"
-: "\${DESKTOP_TASKBAR:=${DESKTOP_TASKBAR}}"
 EOF
 }
 persist_desktop_settings
@@ -1117,13 +1113,6 @@ desktop_ensure_taskbar(){
   fi
 }
 
-desktop_disable_taskbar(){
-  step "keeping the desktop plain (no tint2 panel/clock)"
-  as_mt5 "screen -S panelwatch -X quit" >/dev/null 2>&1 || true
-  as_mt5 "pkill -x tint2" >/dev/null 2>&1 || true
-  ok "Plain desktop - no custom taskbar, no clock overlay."
-}
-
 desktop_launch_manager(){
   command -v dbus-launch >/dev/null 2>&1 || {
     info "Installing dbus-x11 (needed by pcmanfm --desktop)..."
@@ -1230,11 +1219,7 @@ desktop_start(){
     step "icons not needed yet (DESKTOP_ICONS=0) - pcmanfm not started"
   fi
   desktop_apply_wallpaper
-  if [[ "${DESKTOP_TASKBAR}" == "1" ]]; then
-    desktop_ensure_taskbar
-  else
-    desktop_disable_taskbar
-  fi
+  desktop_ensure_taskbar
   desktop_ensure_title_watcher
   desktop_ensure_clipboard
   step "removing wine's junk launchers"
@@ -2589,33 +2574,20 @@ case "${1:-menu}" in
       packages)  desktop_install_packages ;;
       wallpaper) desktop_prepare_dirs; desktop_fetch_wallpaper; desktop_apply_wallpaper ;;
       icons)     desktop_sync_icons ;;
-      taskbar)
-        case "${2:-on}" in
-          off) DESKTOP_TASKBAR=0; persist_desktop_settings; desktop_disable_taskbar
-               ok "Taskbar turned off and remembered - plain desktop from now on." ;;
-          on)  DESKTOP_TASKBAR=1; persist_desktop_settings
-               desktop_write_openbox_rules; desktop_write_tint2_conf; desktop_ensure_taskbar
-               ok "Taskbar turned on and remembered." ;;
-          *) echo "Usage: sudo bash $0 desktop taskbar <on|off>"; exit 1 ;;
-        esac ;;
+      taskbar)   desktop_write_openbox_rules; desktop_write_tint2_conf; desktop_ensure_taskbar ;;
       titles)    desktop_ensure_title_watcher ;;
       clipboard) desktop_ensure_clipboard ;;
       doctor)    desktop_doctor ;;
-      clean)     desktop_write_openbox_rules
-                 if [[ "${DESKTOP_TASKBAR}" == "1" ]]; then
-                   desktop_write_tint2_conf; desktop_ensure_taskbar
-                 else
-                   desktop_disable_taskbar
-                 fi
-                 purge_wine_shortcuts_local
+      clean)     desktop_write_openbox_rules; desktop_write_tint2_conf
+                 desktop_ensure_taskbar; purge_wine_shortcuts_local
                  desktop_hide_desktop_window
-                 ok "Desktop cleaned." ;;
+                 ok "Taskbar cleaned - the 'desktop 1' button is gone." ;;
       start)     desktop_start ;;
       restore)   desktop_restore_window ;;
       visible)   [[ -n "${2:-}" && -n "${3:-}" ]] || { echo "Usage: sudo bash $0 desktop visible <slug> <0|1>"; exit 1; }
                  set_terminal_desktop_visible "$2" "$3"
                  ok "${2}: desktop visibility set to ${3}." ;;
-      *) echo "Usage: sudo bash $0 desktop [all|packages|wallpaper|icons|taskbar <on|off>|titles|clipboard|clean|start|restore|visible <slug> <0|1>|doctor]"; exit 1 ;;
+      *) echo "Usage: sudo bash $0 desktop [all|packages|wallpaper|icons|taskbar|titles|clipboard|clean|start|restore|visible <slug> <0|1>|doctor]"; exit 1 ;;
     esac
     HEYSOLO_CLEAN_EXIT=1 ;;
   menu|"") main_menu ;;
