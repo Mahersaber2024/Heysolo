@@ -743,10 +743,13 @@ read_origin(){                    # read_origin <origin.txt> -> lowercased path
 resolve_mql5_dir(){
   local wineprefix="$1" install_dir="$2"
   # Portable mode (the common case under Wine): data folder IS the install
-  # folder. Requires the terminal's own config folder next to it too -
-  # otherwise we would happily copy into a freshly unpacked install dir that
-  # MT5 has never actually run from yet.
-  if [[ -d "${install_dir}/MQL5" && -d "${install_dir}/config" ]]; then
+  # folder. We used to also require a "config" folder next to it before
+  # trusting this, to avoid copying into a freshly unpacked install MT5 had
+  # never run from - but "config" can take longer than our post-start sleep
+  # to appear, so that extra check was causing real portable installs to be
+  # missed and silently falling back to the (wrong, or stale) AppData lookup
+  # below. MQL5/ existing next to terminal64.exe is enough on its own.
+  if [[ -d "${install_dir}/MQL5" ]]; then
     echo "${install_dir}/MQL5"
     return 0
   fi
