@@ -27,7 +27,7 @@ for _noisy in ("httpx", "httpcore", "telegram", "telegram.ext", "telegram.bot", 
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 import heysolo_settings as settings
-import heysolo_db
+from db import database as heysolo_db
 
 BOT_TOKEN = settings.get_bot_token()
 CHAT_ID = settings.get_chat_id()

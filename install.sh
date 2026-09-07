@@ -272,15 +272,35 @@ if [[ -f "requirements.txt" ]]; then
 pip install -r requirements.txt -q
 else
 
-pip install "python-telegram-bot==20.7" -q
+pip install "python-telegram-bot==20.7" "psycopg2-binary==2.9.9" -q
 fi
 deactivate
 ok "Python environment ready."
 }
 
+run_db_setup_script(){
+    # db/setup_db.py reads HEYSOLO_DB_* from db.env (via db.database.db_params()),
+    # so this must run after setup_database() has written db.env and after
+    # setup_venv() has installed psycopg2. It inserts the repo root onto
+    # sys.path itself (see its own docstring), so running it as
+    # "python3 db/setup_db.py" from the repo root works fine.
+    if [[ -f "${INSTALL_DIR}/db/setup_db.py" ]]; then
+        info "Creating/verifying database tables..."
+        cd "${INSTALL_DIR}"
+        source venv/bin/activate
+        python3 db/setup_db.py --auto || warn "Automatic table creation failed; the bot will retry on its own next start. You can also run 'python3 db/setup_db.py' manually later."
+        deactivate
+    else
+        warn "db/setup_db.py not found; tables will only be created when the bot itself first connects."
+    fi
+}
+
 create_service(){
     info "Creating systemd service..."
 
+    if [[ ! -f "${INSTALL_DIR}/db/database.py" ]]; then
+        warn "db/database.py is missing - the bot will fall back to a local JSON store."
+    fi
     if [[ ! -f "${INSTALL_DIR}/heysolo_bot.py" ]]; then
         err "Entry point not found: ${INSTALL_DIR}/heysolo_bot.py"
         exit 1
@@ -382,7 +402,9 @@ read -rp "Installation path: " INSTALL_DIR
 fi
 detect_python
 clone_or_update_repo
+setup_database "${INSTALL_DIR}"
 setup_venv
+run_db_setup_script
 systemctl restart "${SERVICE_NAME}" 2>/dev/null
 save_install_dir
 ok "Update completed."
@@ -421,7 +443,9 @@ install_system_packages
 collect_bot_config
 clone_or_update_repo
 write_config_files "${INSTALL_DIR}"
+setup_database "${INSTALL_DIR}"
 setup_venv
+run_db_setup_script
 create_service
 save_install_dir
 show_guide
