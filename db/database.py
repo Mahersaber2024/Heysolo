@@ -9,10 +9,11 @@ Everything that used to live in ``heysolo_settings.json`` and needs to be
   user_accounts  which users may see which accounts
   user_topics    per-user Telegram topic (thread) routing overrides
 
-Connection details come from ``db.env`` (written by install.sh) or from
-HEYSOLO_DB_* environment variables. If PostgreSQL can't be reached the module
-degrades to a local JSON store so the bot still boots, and retries Postgres
-every minute.
+Connection details (db_host/db_port/db_name/db_user/db_password) come from
+heysolo_settings.json itself - written there by install.sh's
+setup_database() step - via heysolo_settings.get_db_config(). If PostgreSQL
+can't be reached the module degrades to a local JSON store so the bot still
+boots, and retries Postgres every minute.
 """
 
 import json
@@ -22,13 +23,14 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
+import heysolo_settings
+
 logger = logging.getLogger(__name__)
 
-# This module now lives in the db/ subpackage, but db.env and the JSON
-# fallback store are written next to the bot's own files (one level up),
-# so resolve BASE_DIR to the parent (bot install) directory.
+# This module now lives in the db/ subpackage, but the JSON fallback store
+# is written next to the bot's own files (one level up), so resolve
+# BASE_DIR to the parent (bot install) directory.
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_ENV_FILE = os.path.join(BASE_DIR, "db.env")
 JSON_STORE_FILE = os.path.join(BASE_DIR, "heysolo_db.json")
 
 NOTIFY_KINDS = ("bias", "trade", "log", "result")
@@ -103,47 +105,14 @@ CREATE INDEX IF NOT EXISTS user_accounts_login_idx ON user_accounts (login);
 # --------------------------------------------------------------------------
 # connection settings
 # --------------------------------------------------------------------------
-def _install_dir() -> str:
-    """Where the bot was installed - db.env lives next to the bot files."""
-    try:
-        with open("/etc/heysolo-bot.install_dir", "r", encoding="utf-8") as fh:
-            path = fh.read().strip()
-        if path and os.path.isdir(path):
-            return path
-    except OSError:
-        pass
-    return BASE_DIR
-
-
-def _load_db_env() -> None:
-    """Read db.env (HEYSOLO_DB_*) without clobbering real env vars."""
-    for candidate in (DB_ENV_FILE, os.path.join(_install_dir(), "db.env")):
-        if not os.path.isfile(candidate):
-            continue
-        try:
-            with open(candidate, "r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    key, _, value = line.partition("=")
-                    key, value = key.strip(), value.strip().strip('"').strip("'")
-                    if key and key not in os.environ:
-                        os.environ[key] = value
-        except OSError as exc:
-            logger.warning("Could not read %s: %s", candidate, exc)
-        else:
-            return
-
-
 def db_params() -> Dict[str, Any]:
-    _load_db_env()
+    cfg = heysolo_settings.get_db_config()
     return {
-        "host": os.environ.get("HEYSOLO_DB_HOST", "127.0.0.1"),
-        "port": int(os.environ.get("HEYSOLO_DB_PORT", "5432") or 5432),
-        "dbname": os.environ.get("HEYSOLO_DB_NAME", "heysolo"),
-        "user": os.environ.get("HEYSOLO_DB_USER", "heysolo"),
-        "password": os.environ.get("HEYSOLO_DB_PASSWORD", ""),
+        "host": cfg["db_host"],
+        "port": int(cfg["db_port"]),
+        "dbname": cfg["db_name"],
+        "user": cfg["db_user"],
+        "password": cfg["db_password"],
         "connect_timeout": 5,
     }
 

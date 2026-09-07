@@ -5,8 +5,9 @@ Explicitly (re)creates every table heysolo_bot needs (experts, accounts,
 bot_users, user_accounts, user_topics) by running the same SCHEMA that
 db.database.PgDatabase normally runs the first time the bot connects.
 
-install.sh calls this right after db.env is written and the venv (with
-psycopg2) is ready, so a fresh install gets a fully migrated schema before
+install.sh calls this right after setup_database() saves the connection
+info into heysolo_settings.json and the venv (with psycopg2) is ready, so a
+fresh install gets a fully migrated schema before
 the systemd service ever starts - instead of relying on the bot's own lazy
 migration on first connection. Safe to re-run any time (every statement in
 SCHEMA is CREATE TABLE/INDEX IF NOT EXISTS).
@@ -37,7 +38,7 @@ def test_connection() -> bool:
         print(f"❌ Connection failed: {e}")
         print("\n📌 Please check:")
         print("  1. Is PostgreSQL installed and running?")
-        print("  2. Are the HEYSOLO_DB_* values in db.env correct?")
+        print("  2. Are the db_host/db_port/db_name/db_user/db_password values in heysolo_settings.json correct?")
         print("  3. Has the database/role already been created (e.g. by install.sh)?")
         return False
 
@@ -118,7 +119,7 @@ def main():
 
     print("\n🔌 Testing connection...")
     if not test_connection():
-        print("\n❌ Cannot connect to database with the credentials from db.env.")
+        print("\n❌ Cannot connect to database with the credentials from heysolo_settings.json.")
         sys.exit(1)
 
     if not create_tables():

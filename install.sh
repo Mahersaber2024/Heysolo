@@ -85,44 +85,108 @@ ok "System dependencies installed."
 
 DB_NAME="heysolo"
 DB_USER="heysolo"
-DB_ENV_FILE="db.env"
 
 setup_database(){
+local target="$1"
 info "Setting up the PostgreSQL database (${DB_NAME})..."
+
 systemctl enable postgresql >/dev/null 2>&1 || true
-systemctl start postgresql 2>/dev/null || true
-
-# Reuse the password from a previous install (db.env) so re-running the
-# installer never orphans an existing database.
-if [[ -f "${1}/${DB_ENV_FILE}" ]]; then
-    DB_PASSWORD=$(grep -m1 '^HEYSOLO_DB_PASSWORD=' "${1}/${DB_ENV_FILE}" | cut -d= -f2-)
+if ! systemctl is-active --quiet postgresql; then
+    systemctl start postgresql || true
+    sleep 2
 fi
-if [[ -z "${DB_PASSWORD:-}" ]]; then
-    DB_PASSWORD=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24)
+if ! systemctl is-active --quiet postgresql; then
+    err "PostgreSQL service is not running. Check: systemctl status postgresql"
+    return 1
 fi
-
-sudo -u postgres psql -v ON_ERROR_STOP=0 -tAc \
-    "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='${DB_USER}') THEN
-        CREATE ROLE ${DB_USER} LOGIN PASSWORD '${DB_PASSWORD}';
-     ELSE
-        ALTER ROLE ${DB_USER} PASSWORD '${DB_PASSWORD}';
-     END IF; END \$\$;" >/dev/null 2>&1
-
-if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" 2>/dev/null | grep -q 1; then
-    sudo -u postgres createdb -O "${DB_USER}" "${DB_NAME}" >/dev/null 2>&1
+if ! command -v psql &>/dev/null; then
+    err "psql not found - postgresql-contrib may not have installed correctly."
+    return 1
 fi
 
-mkdir -p "$1"
-cat > "${1}/${DB_ENV_FILE}" <<EOF
-HEYSOLO_DB_HOST=127.0.0.1
-HEYSOLO_DB_PORT=5432
-HEYSOLO_DB_NAME=${DB_NAME}
-HEYSOLO_DB_USER=${DB_USER}
-HEYSOLO_DB_PASSWORD=${DB_PASSWORD}
-EOF
-chmod 600 "${1}/${DB_ENV_FILE}"
-ok "Database '${DB_NAME}' and role '${DB_USER}' ready."
+# 2>&1 (not 2>/dev/null) on purpose: if the connection itself is broken,
+# the real psql error ends up in these variables instead of being hidden,
+# so the CREATE ROLE below (which is not silenced) surfaces the real cause
+# rather than the installer just dying with no explanation.
+ROLE_EXISTS=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" 2>&1 | tr -d '[:space:]')
+DB_EXISTS=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" 2>&1 | tr -d '[:space:]')
+
+DB_PASSWORD=""
+
+if [[ "${ROLE_EXISTS}" == "1" || "${DB_EXISTS}" == "1" ]]; then
+    warn "Role '${DB_USER}' or database '${DB_NAME}' already exists on this server."
+    echo " 1) Keep the existing role/database - just enter its current password (saved into heysolo_settings.json)"
+    echo " 2) Reset the password for the existing role"
+    read -rp "Your choice [1]: " DB_EXIST_CHOICE
+    DB_EXIST_CHOICE=${DB_EXIST_CHOICE:-1}
+
+    if [[ "${DB_EXIST_CHOICE}" == "2" ]]; then
+        while [[ -z "${DB_PASSWORD}" ]]; do
+            read -rsp "New password for role '${DB_USER}': " DB_PASSWORD
+            echo
+        done
+        if ! sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER ROLE ${DB_USER} WITH PASSWORD '${DB_PASSWORD}';"; then
+            err "Could not update the password for role '${DB_USER}'. See the psql error above."
+            return 1
+        fi
+        if [[ "${DB_EXISTS}" != "1" ]]; then
+            if ! sudo -u postgres createdb -O "${DB_USER}" "${DB_NAME}"; then
+                err "Could not create database '${DB_NAME}'. See the error above."
+                return 1
+            fi
+        fi
+        ok "Password updated."
+    else
+        while [[ -z "${DB_PASSWORD}" ]]; do
+            read -rsp "Current password for role '${DB_USER}' (only stored in heysolo_settings.json, nothing changes in PostgreSQL): " DB_PASSWORD
+            echo
+        done
+        ok "Using the existing role/database; password was not changed in PostgreSQL."
+    fi
+else
+    while [[ -z "${DB_PASSWORD}" ]]; do
+        read -rsp "Choose a password for the new '${DB_USER}' PostgreSQL role: " DB_PASSWORD
+        echo
+    done
+    info "Creating role and database in PostgreSQL..."
+    if ! sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE ROLE ${DB_USER} LOGIN PASSWORD '${DB_PASSWORD}';"; then
+        err "Could not create role '${DB_USER}'. See the psql error above."
+        return 1
+    fi
+    if ! sudo -u postgres createdb -O "${DB_USER}" "${DB_NAME}"; then
+        err "Could not create database '${DB_NAME}'. See the error above."
+        return 1
+    fi
+    sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};" >/dev/null
+    ok "Database '${DB_NAME}' and role '${DB_USER}' created."
+fi
+
+mkdir -p "${target}"
+if [[ ! -f "${target}/${SETTINGS_FILE}" ]]; then
+    err "${target}/${SETTINGS_FILE} not found - run collect_bot_config/write_config_files first."
+    return 1
+fi
+if ! python3 - "${target}/${SETTINGS_FILE}" "${DB_NAME}" "${DB_USER}" "${DB_PASSWORD}" <<'PYEOF'
+import json, os, sys
+path, name, user, password = sys.argv[1:5]
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+data["db_host"] = "127.0.0.1"
+data["db_port"] = 5432
+data["db_name"] = name
+data["db_user"] = user
+data["db_password"] = password
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+os.chmod(path, 0o600)
+PYEOF
+then
+    err "Could not save database credentials into ${target}/${SETTINGS_FILE}."
+    return 1
+fi
+ok "Database credentials saved to ${target}/${SETTINGS_FILE}"
 }
+
 
 collect_bot_config(){
 echo
@@ -226,6 +290,11 @@ cat > "${target}/${SETTINGS_FILE}" <<EOF
   },
   "outbox_poll_seconds": 3,
   "common_files_dir": $(printf '%s' "$COMMON_FILES_DIR" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),
+  "db_host": "127.0.0.1",
+  "db_port": 5432,
+  "db_name": "${DB_NAME}",
+  "db_user": "${DB_USER}",
+  "db_password": "",
   "installed_at": ""
 }
 EOF
@@ -279,11 +348,13 @@ ok "Python environment ready."
 }
 
 run_db_setup_script(){
-    # db/setup_db.py reads HEYSOLO_DB_* from db.env (via db.database.db_params()),
-    # so this must run after setup_database() has written db.env and after
-    # setup_venv() has installed psycopg2. It inserts the repo root onto
-    # sys.path itself (see its own docstring), so running it as
-    # "python3 db/setup_db.py" from the repo root works fine.
+    # db/setup_db.py reads db_host/db_port/db_name/db_user/db_password from
+    # heysolo_settings.json (via db.database.db_params() / heysolo_settings.
+    # get_db_config()), so this must run after setup_database() has saved
+    # those into heysolo_settings.json and after setup_venv() has installed
+    # psycopg2. It inserts the repo root onto sys.path itself (see its own
+    # docstring), so running it as "python3 db/setup_db.py" from the repo
+    # root works fine.
     if [[ -f "${INSTALL_DIR}/db/setup_db.py" ]]; then
         info "Creating/verifying database tables..."
         cd "${INSTALL_DIR}"
@@ -402,7 +473,7 @@ read -rp "Installation path: " INSTALL_DIR
 fi
 detect_python
 clone_or_update_repo
-setup_database "${INSTALL_DIR}"
+setup_database "${INSTALL_DIR}" || { err "Database setup failed - see the error above."; return 1; }
 setup_venv
 run_db_setup_script
 systemctl restart "${SERVICE_NAME}" 2>/dev/null
@@ -443,7 +514,7 @@ install_system_packages
 collect_bot_config
 clone_or_update_repo
 write_config_files "${INSTALL_DIR}"
-setup_database "${INSTALL_DIR}"
+setup_database "${INSTALL_DIR}" || { err "Database setup failed - see the error above."; press_enter; exit 1; }
 setup_venv
 run_db_setup_script
 create_service

@@ -18,6 +18,15 @@ DEFAULT_THREADS = {"bias": 2, "trade": 4, "log": 7, "result": 1723}
 DEFAULT_NOTIFY = {"bias": True, "trade": True, "log": False, "result": True}
 DEFAULT_NOTIFY_WINDOW = {"enabled": True, "start": "01:30", "end": "15:30"}
 
+# PostgreSQL connection, previously kept in a separate db.env file. Now
+# lives right here in heysolo_settings.json (db_host/db_port/db_name/
+# db_user/db_password), written by install.sh's setup_database() step.
+DEFAULT_DB_HOST = "127.0.0.1"
+DEFAULT_DB_PORT = 5432
+DEFAULT_DB_NAME = "heysolo"
+DEFAULT_DB_USER = "heysolo"
+DEFAULT_DB_PASSWORD = ""
+
 def _get_default_settings() -> dict:
     return {
         "bot_token": DEFAULT_BOT_TOKEN,
@@ -29,6 +38,11 @@ def _get_default_settings() -> dict:
         "notify_window": dict(DEFAULT_NOTIFY_WINDOW),
         "outbox_poll_seconds": 3,
         "common_files_dir": "",
+        "db_host": DEFAULT_DB_HOST,
+        "db_port": DEFAULT_DB_PORT,
+        "db_name": DEFAULT_DB_NAME,
+        "db_user": DEFAULT_DB_USER,
+        "db_password": DEFAULT_DB_PASSWORD,
         "installed_at": "",
     }
 
@@ -277,6 +291,33 @@ def get_common_files_dir() -> str:
 def set_common_files_dir(path: str):
     data = _load()
     data["common_files_dir"] = path.strip()
+    _save(data)
+
+def get_db_config() -> Dict[str, Any]:
+    """PostgreSQL connection info, as stored directly in
+    heysolo_settings.json (db_host/db_port/db_name/db_user/db_password)."""
+    data = _load()
+    return {
+        "db_host": data.get("db_host") or DEFAULT_DB_HOST,
+        "db_port": int(data.get("db_port") or DEFAULT_DB_PORT),
+        "db_name": data.get("db_name") or DEFAULT_DB_NAME,
+        "db_user": data.get("db_user") or DEFAULT_DB_USER,
+        "db_password": data.get("db_password") or DEFAULT_DB_PASSWORD,
+    }
+
+def set_db_config(host: str = None, port: int = None, name: str = None,
+                   user: str = None, password: str = None):
+    data = _load()
+    if host is not None:
+        data["db_host"] = str(host).strip()
+    if port is not None:
+        data["db_port"] = int(port)
+    if name is not None:
+        data["db_name"] = str(name).strip()
+    if user is not None:
+        data["db_user"] = str(user).strip()
+    if password is not None:
+        data["db_password"] = password
     _save(data)
 
 def is_first_run() -> bool:
