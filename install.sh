@@ -78,8 +78,50 @@ apt-get install -y \
 python3 python3-venv python3-pip python3-dev \
 git curl wget build-essential \
 iputils-ping htop net-tools \
+postgresql postgresql-contrib libpq-dev \
 2>/dev/null || true
 ok "System dependencies installed."
+}
+
+DB_NAME="heysolo"
+DB_USER="heysolo"
+DB_ENV_FILE="db.env"
+
+setup_database(){
+info "Setting up the PostgreSQL database (${DB_NAME})..."
+systemctl enable postgresql >/dev/null 2>&1 || true
+systemctl start postgresql 2>/dev/null || true
+
+# Reuse the password from a previous install (db.env) so re-running the
+# installer never orphans an existing database.
+if [[ -f "${1}/${DB_ENV_FILE}" ]]; then
+    DB_PASSWORD=$(grep -m1 '^HEYSOLO_DB_PASSWORD=' "${1}/${DB_ENV_FILE}" | cut -d= -f2-)
+fi
+if [[ -z "${DB_PASSWORD:-}" ]]; then
+    DB_PASSWORD=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24)
+fi
+
+sudo -u postgres psql -v ON_ERROR_STOP=0 -tAc \
+    "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='${DB_USER}') THEN
+        CREATE ROLE ${DB_USER} LOGIN PASSWORD '${DB_PASSWORD}';
+     ELSE
+        ALTER ROLE ${DB_USER} PASSWORD '${DB_PASSWORD}';
+     END IF; END \$\$;" >/dev/null 2>&1
+
+if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" 2>/dev/null | grep -q 1; then
+    sudo -u postgres createdb -O "${DB_USER}" "${DB_NAME}" >/dev/null 2>&1
+fi
+
+mkdir -p "$1"
+cat > "${1}/${DB_ENV_FILE}" <<EOF
+HEYSOLO_DB_HOST=127.0.0.1
+HEYSOLO_DB_PORT=5432
+HEYSOLO_DB_NAME=${DB_NAME}
+HEYSOLO_DB_USER=${DB_USER}
+HEYSOLO_DB_PASSWORD=${DB_PASSWORD}
+EOF
+chmod 600 "${1}/${DB_ENV_FILE}"
+ok "Database '${DB_NAME}' and role '${DB_USER}' ready."
 }
 
 collect_bot_config(){
