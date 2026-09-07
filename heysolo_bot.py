@@ -27,6 +27,7 @@ for _noisy in ("httpx", "httpcore", "telegram", "telegram.ext", "telegram.bot", 
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 import heysolo_settings as settings
+import heysolo_db
 
 BOT_TOKEN = settings.get_bot_token()
 CHAT_ID = settings.get_chat_id()
@@ -132,6 +133,8 @@ G_BULL = "🟢"
 G_BEAR = "🔴"
 G_FLAT = "○"
 G_ROW = "▸"
+G_SETTINGS = "🛠"
+G_EXPERT = "🧩"
 RULE = "─" * 27
 
 def _read_account_file(path: Path) -> dict:
@@ -330,6 +333,10 @@ def list_accounts() -> list[dict]:
             "file": ", ".join(files),
             "source": d.get("source", ""),
         })
+        try:
+            heysolo_db.get_db().ensure_account(login)
+        except Exception as e:
+            log.warning("Could not register account %s in the database: %s", login, e)
     return accounts
 
 def read_dashboard(login: str) -> dict | None:
@@ -470,16 +477,64 @@ def write_control(login: str):
     tmp.write_text("\n".join(lines) + "\n", encoding="ascii")
     tmp.replace(path)
 
-def resolve_login(user_id: int) -> str | None:
+_LEGACY_CAPS = {
+    "code": None, "display_name": None,
+    "has_bias": True, "has_mode": True, "has_trading": True,
+    "notify_kinds": ["bias", "trade", "log", "result"],
+}
+
+def get_login_expert(login: str | None) -> dict | None:
+    if not login:
+        return None
+    try:
+        return heysolo_db.get_db().get_expert_for_login(login)
+    except Exception as e:
+        log.warning("Could not read expert for %s: %s", login, e)
+        return None
+
+def expert_caps(login: str | None) -> dict:
+    """What buttons/features apply to this account. Falls back to the old
+    all-features-on behaviour when no admin has assigned an EA yet, so a
+    single-EA install keeps working unchanged before anyone touches
+    Admin > Accounts."""
+    return get_login_expert(login) or _LEGACY_CAPS
+
+def visible_accounts(user_id: int | None = None) -> list[dict]:
+    """Every reporting account, or - for a non-admin user who has been
+    explicitly scoped to specific accounts - only theirs. A user with no
+    explicit assignment yet sees everything (legacy behaviour)."""
     accounts = list_accounts()
+    if user_id is None or heysolo_db.is_admin(user_id):
+        return accounts
+    try:
+        allowed = set(heysolo_db.get_db().get_user_logins(user_id))
+    except Exception as e:
+        log.warning("Could not read account assignments for %s: %s", user_id, e)
+        return accounts
+    if not allowed:
+        return accounts
+    return [a for a in accounts if a["login"] in allowed]
+
+def resolve_login(user_id: int) -> str | None:
+    accounts = visible_accounts(user_id)
     if not accounts:
         return None
     if len(accounts) == 1:
         return accounts[0]["login"]
-    return _active_login.get(user_id, accounts[0]["login"])
+    logins = {a["login"] for a in accounts}
+    active = _active_login.get(user_id)
+    if active not in logins:
+        try:
+            active = heysolo_db.get_db().get_active_login(user_id)
+        except Exception:
+            active = None
+    if active not in logins:
+        active = accounts[0]["login"]
+    _active_login[user_id] = active
+    return active
 
 def is_allowed(user_id) -> bool:
-    return settings.is_authorized(user_id)
+    return heysolo_db.is_authorized(user_id)
 
 _EVENT_TYPE_TO_THREAD = {
     "BIAS": THREAD_BIAS,
@@ -536,6 +591,29 @@ def parse_event(path: Path) -> tuple[str, int, str, str, str]:
             account = ln.split("=", 1)[1].strip()
     return event_type, thread_id, photo, account, body
 
+def relay_targets(login: str, kind: str, fallback_thread: int | None) -> set:
+    """Distinct thread ids this event should land in.
+
+    Each destination user's own topic choice (Settings > per-kind topic)
+    wins; the group's default thread for that kind is the fallback for
+    anyone who hasn't set one. If nobody has been explicitly granted this
+    account yet (fresh/legacy single-account setups, or admin hasn't used
+    Admin > Accounts), everyone still sees it on the one global thread -
+    existing installs keep working unchanged."""
+    try:
+        db = heysolo_db.get_db()
+        assigned = set(db.get_account_users(login)) if login else set()
+        if not assigned:
+            return {fallback_thread}
+        targets = set()
+        for uid in assigned | set(heysolo_db.get_admin_ids()):
+            t = db.get_user_topic(uid, kind)
+            targets.add(t if t is not None else fallback_thread)
+        return targets or {fallback_thread}
+    except Exception as e:
+        log.warning("relay_targets failed for %s/%s: %s", login, kind, e)
+        return {fallback_thread}
+
 async def watch_outbox(app: Application):
     bot = app.bot
     while True:
@@ -556,34 +634,50 @@ async def watch_outbox(app: Application):
                     if account and len(list_accounts()) > 1:
                         text = f"[{account}]\n{text}"
 
+                    targets = relay_targets(account, event_type.lower(), thread_id) if account else {thread_id}
+
+                    photo_bytes = None
                     if photo_path and photo_path.exists():
                         try:
-                            with open(photo_path, "rb") as f:
-                                await bot.send_photo(
+                            photo_bytes = photo_path.read_bytes()
+                        except OSError as e:
+                            log.warning("Could not read %s: %s", photo_path, e)
+
+                    for target_thread in targets:
+                        try:
+                            if photo_bytes is not None:
+                                try:
+                                    await bot.send_photo(
+                                        chat_id=CHAT_ID,
+                                        message_thread_id=target_thread or None,
+                                        photo=photo_bytes,
+                                        caption=text[:1024],
+                                    )
+                                except Exception as photo_err:
+                                    # Telegram refuses some formats (e.g. a .bmp the EA fell
+                                    # back to on Wine). Send it as a file instead of losing
+                                    # the event.
+                                    log.warning("send_photo failed (%s) - sending as document",
+                                                photo_err)
+                                    await bot.send_document(
+                                        chat_id=CHAT_ID,
+                                        message_thread_id=target_thread or None,
+                                        document=photo_bytes,
+                                        filename=photo_name or "attachment",
+                                        caption=text[:1024],
+                                    )
+                            else:
+                                await bot.send_message(
                                     chat_id=CHAT_ID,
-                                    message_thread_id=thread_id or None,
-                                    photo=f,
-                                    caption=text[:1024],
+                                    message_thread_id=target_thread or None,
+                                    text=text,
                                 )
-                        except Exception as photo_err:
-                            # Telegram refuses some formats (e.g. a .bmp the EA fell back to
-                            # on Wine). Send it as a file instead of losing the event.
-                            log.warning("send_photo failed for %s (%s) - sending as document",
-                                        photo_path.name, photo_err)
-                            with open(photo_path, "rb") as f:
-                                await bot.send_document(
-                                    chat_id=CHAT_ID,
-                                    message_thread_id=thread_id or None,
-                                    document=f,
-                                    caption=text[:1024],
-                                )
+                        except Exception as send_err:
+                            log.warning("Failed to deliver %s to thread %s: %s",
+                                        evt.name, target_thread, send_err)
+
+                    if photo_path:
                         photo_path.unlink(missing_ok=True)
-                    else:
-                        await bot.send_message(
-                            chat_id=CHAT_ID,
-                            message_thread_id=thread_id or None,
-                            text=text,
-                        )
                     evt.unlink(missing_ok=True)
                 except Exception as e:
                     log.warning("Failed to relay %s: %s (will retry)", evt.name, e)
@@ -594,6 +688,7 @@ async def watch_outbox(app: Application):
 BTN_BIAS = f"{G_BIAS} Bias"
 BTN_ACCOUNT = f"{G_ACCOUNT} Account"
 BTN_ADMIN = f"{G_ADMIN} Admin"
+BTN_SETTINGS = f"{G_SETTINGS} Settings"
 
 def mode_button(st: "AccountState") -> str:
     manual = (st.mode == "MANUAL")
@@ -608,13 +703,26 @@ def toggle_kind(text: str) -> str | None:
     m = _TOGGLE_RE.match(text)
     return m.group(1) if m else None
 
-def build_main_keyboard(user_id: int, st: "AccountState | None" = None) -> ReplyKeyboardMarkup:
+def build_main_keyboard(user_id: int, st: "AccountState | None" = None,
+                         login: str | None = None) -> ReplyKeyboardMarkup:
+    """The reply keyboard is shaped by the EA assigned to `login`: an
+    account without Bias/Manual-Auto/remote Trading support (e.g. an EA
+    that isn't ACHCMBias) simply doesn't get those buttons."""
     st = st or AccountState()
-    rows = [
-        [BTN_BIAS, BTN_ACCOUNT],
-        [mode_button(st), trading_button(st)],
-    ]
-    if settings.is_admin(user_id):
+    caps = expert_caps(login)
+    top_row = [BTN_ACCOUNT]
+    if caps["has_bias"]:
+        top_row.insert(0, BTN_BIAS)
+    rows = [top_row]
+    toggles = []
+    if caps["has_mode"]:
+        toggles.append(mode_button(st))
+    if caps["has_trading"]:
+        toggles.append(trading_button(st))
+    if toggles:
+        rows.append(toggles)
+    rows.append([BTN_SETTINGS])
+    if heysolo_db.is_admin(user_id):
         rows.append([BTN_ADMIN])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
 
@@ -654,7 +762,7 @@ def bias_header(login: str, st: "AccountState") -> str:
     )
 
 def accounts_list_view(user_id: int) -> dict:
-    accounts = list_accounts()
+    accounts = visible_accounts(user_id)
     active = resolve_login(user_id)
     rows = []
     for a in accounts:
@@ -679,6 +787,36 @@ def account_detail_view(user_id: int, login: str) -> dict:
     kb_rows.append([InlineKeyboardButton(f"{G_BACK} All accounts", callback_data="ACC_LIST")])
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
+TOPIC_KIND_LABELS = {"bias": "Bias", "trade": "Trades", "log": "Logs", "result": "Results"}
+
+def user_settings_view(user_id: int, login: str | None) -> dict:
+    """Per-user topic routing: which thread each event kind should land in
+    for *this* user, overriding the group default set under Admin >
+    Reporting Group. Only the kinds this user's active account's EA
+    actually produces are offered."""
+    caps = expert_caps(login)
+    kinds = [k for k in ("bias", "trade", "log", "result") if k in caps.get("notify_kinds", [])]
+    current = heysolo_db.get_db().list_user_topics(user_id)
+    defaults = settings.get_threads()
+    rows = []
+    for k in kinds:
+        val = current.get(k)
+        shown = str(val) if val is not None else f"default ({defaults.get(k) or '-'})"
+        rows.append([InlineKeyboardButton(f"{TOPIC_KIND_LABELS[k]}: {shown}", callback_data=f"SET_TOPIC_{k}")])
+    rows.append([InlineKeyboardButton(f"{G_BACK} Close", callback_data="SET_CLOSE")])
+    text = (
+        f"{G_SETTINGS} <b>My Settings</b>\n"
+        f"{G_ROW} Account: <code>{login or '-'}</code>\n"
+        "Choose which Telegram topic each event type should be delivered to for you.\n"
+        "Tap one, then send a numeric thread id - or <code>reset</code> to go back to the group default."
+    )
+    if not kinds:
+        text = (
+            f"{G_SETTINGS} <b>My Settings</b>\n"
+            f"{G_NEUTRAL} This account's EA doesn't produce any events to route yet."
+        )
+    return {"text": text, "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
+
 async def guard(update: Update) -> bool:
     if not is_allowed(update.effective_user.id):
         await update.effective_message.reply_text(f"{G_BAD} Not authorized.")
@@ -697,26 +835,29 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{G_ROW} Trading: <b>{'On' if st.trading else 'Off'}</b>"
     )
 
-    if not settings.get_admin_ids():
+    if not heysolo_db.get_admin_ids():
         text += f"\n\n{G_ADMIN} No admin set yet. Claim ownership below."
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"{G_OK} Claim Bot", callback_data="ADM_CLAIM")]])
         await update.effective_message.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
 
     await update.effective_message.reply_text(
-        text, reply_markup=build_main_keyboard(uid, st), parse_mode=ParseMode.HTML
+        text, reply_markup=build_main_keyboard(uid, st, login), parse_mode=ParseMode.HTML
     )
 
 _pending: dict[int, str] = {}
 CANCEL_WORDS = {"cancel", "/cancel", "لغو"}
 
 def admin_panel_view() -> dict:
+    # Three-per-row grid - a compact, professional-looking control room
+    # instead of one long stack of buttons.
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"{G_USER} Users", callback_data="ADM_USERS")],
-        [InlineKeyboardButton(f"{G_ADMIN} Admins", callback_data="ADM_LIST")],
-        [InlineKeyboardButton("▣ Reporting Group", callback_data="ADM_SETCHAT")],
-        [InlineKeyboardButton("◇ Notifications", callback_data="ADM_NOTIF")],
-        [InlineKeyboardButton("🗂 Common Files Folder", callback_data="ADM_COMMON")],
+        [InlineKeyboardButton(f"{G_USER} Users", callback_data="ADM_USERS"),
+         InlineKeyboardButton(f"{G_ADMIN} Admins", callback_data="ADM_LIST"),
+         InlineKeyboardButton(f"{G_EXPERT} Accounts", callback_data="ADM_ACCOUNTS")],
+        [InlineKeyboardButton("▣ Group", callback_data="ADM_SETCHAT"),
+         InlineKeyboardButton("◇ Notify", callback_data="ADM_NOTIF"),
+         InlineKeyboardButton("🗂 Files", callback_data="ADM_COMMON")],
         [InlineKeyboardButton(f"{G_ACCOUNT} Status", callback_data="ADM_STATUS")],
     ])
     return {
@@ -725,8 +866,67 @@ def admin_panel_view() -> dict:
         "parse_mode": ParseMode.HTML,
     }
 
+def accounts_admin_view() -> dict:
+    """Every reporting account with its assigned EA (if any). This is
+    where an admin decides which EA an account runs and which users can
+    see it - the account's EA then decides which buttons those users get."""
+    accounts = list_accounts()
+    db_rows = {a["login"]: a for a in heysolo_db.get_db().list_accounts_db()}
+    rows = []
+    for a in accounts:
+        login = a["login"]
+        d = db_rows.get(login) or {}
+        expert_label = d.get("expert_name") or f"{G_WAIT} unassigned"
+        rows.append([InlineKeyboardButton(f"{login} \u00b7 {expert_label}", callback_data=f"ADM_ACC_{login}")])
+    rows.append([InlineKeyboardButton(f"{G_BACK} Back", callback_data="ADM_PANEL")])
+    text = (
+        f"{G_EXPERT} <b>Accounts</b>\nTap an account to assign its EA and manage which users can see it."
+        if accounts else
+        f"{G_EXPERT} <b>Accounts</b>\nNo account has reported yet."
+    )
+    return {"text": text, "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
+
+def account_admin_detail_view(login: str) -> dict:
+    db = heysolo_db.get_db()
+    db.ensure_account(login)
+    acc = db.get_account(login) or {}
+    cur_expert_id = acc.get("expert_id")
+
+    exp_rows, row = [], []
+    for e in db.list_experts():
+        mark = f"{G_OK} " if cur_expert_id == e["id"] else ""
+        row.append(InlineKeyboardButton(f"{mark}{e['display_name']}", callback_data=f"ADM_ACCEXP_{login}_{e['id']}"))
+        if len(row) == 3:
+            exp_rows.append(row); row = []
+    if row:
+        exp_rows.append(row)
+
+    assigned = set(db.get_account_users(login))
+    user_ids = heysolo_db.get_user_ids()
+    usr_rows, row = [], []
+    for u in user_ids:
+        mark = G_OK if u in assigned else G_NEUTRAL
+        row.append(InlineKeyboardButton(f"{mark} {u}", callback_data=f"ADM_ACCUSR_{login}_{u}"))
+        if len(row) == 3:
+            usr_rows.append(row); row = []
+    if row:
+        usr_rows.append(row)
+
+    cur_expert = db.get_expert(cur_expert_id) if cur_expert_id else None
+    lines = [
+        f"{G_EXPERT} <b>Account {login}</b>",
+        f"{G_ROW} EA: <b>{cur_expert['display_name'] if cur_expert else 'unassigned'}</b>",
+        "Tap an EA to assign it to this account - it decides which buttons its users get.",
+    ]
+    if user_ids:
+        lines.append(f"{G_ROW} Tap a user id below to grant/revoke access to this account.")
+    else:
+        lines.append(f"{G_NEUTRAL} No users added yet - add them from Users first.")
+    kb_rows = exp_rows + usr_rows + [[InlineKeyboardButton(f"{G_BACK} Accounts", callback_data="ADM_ACCOUNTS")]]
+    return {"text": "\n".join(lines), "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
+
 def admins_list_view() -> dict:
-    ids = settings.get_admin_ids()
+    ids = heysolo_db.get_admin_ids()
     rows = [[InlineKeyboardButton(f"{G_DEL} {i}", callback_data=f"ADM_DELADMIN_{i}")] for i in ids]
     rows.append([InlineKeyboardButton(f"{G_USER} Users", callback_data="ADM_USERS")])
     rows.append([InlineKeyboardButton(f"{G_BACK} Back", callback_data="ADM_PANEL")])
@@ -739,7 +939,7 @@ def admins_list_view() -> dict:
     return {"text": text, "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
 
 def users_list_view() -> dict:
-    ids = settings.get_user_ids()
+    ids = heysolo_db.get_user_ids()
     rows = [[InlineKeyboardButton(f"{G_DEL} {i}", callback_data=f"ADM_DELUSER_{i}")] for i in ids]
     rows.append([InlineKeyboardButton(f"{G_ADD} Add User", callback_data="ADM_ADDUSER")])
     rows.append([InlineKeyboardButton(f"{G_BACK} Back", callback_data="ADM_PANEL")])
@@ -748,7 +948,10 @@ def users_list_view() -> dict:
         if ids else
         f"{G_USER} <b>Users</b>\nNo users added yet."
     )
-    text += f"\n<i>Users get Bias, Account, Mode and Trading. No Admin panel.</i>"
+    text += (
+        f"\n<i>Buttons a user sees (Bias/Mode/Trading) depend on the EA of the "
+        f"account(s) they're granted - see {G_EXPERT} Accounts to assign those.</i>"
+    )
     return {"text": text, "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
 
 NOTIFY_LABELS = [("bias", "Bias signals"), ("trade", "Trades"),
@@ -787,8 +990,8 @@ def status_panel_view() -> dict:
         f"{G_ACCOUNT} <b>Status</b>\n"
         f"{G_ROW} Group: <code>{settings.get_chat_id() or 'not set'}</code>\n"
         f"{G_ROW} Topics: {G_OK + ' ready' if topics_ok else G_WAIT + ' not created'}\n"
-        f"{G_ROW} Admins: <code>{', '.join(str(i) for i in settings.get_admin_ids()) or 'none'}</code>\n"
-        f"{G_ROW} Users: <code>{', '.join(str(i) for i in settings.get_user_ids()) or 'none'}</code>\n"
+        f"{G_ROW} Admins: <code>{', '.join(str(i) for i in heysolo_db.get_admin_ids()) or 'none'}</code>\n"
+        f"{G_ROW} Users: <code>{', '.join(str(i) for i in heysolo_db.get_user_ids()) or 'none'}</code>\n"
         f"{G_ROW} Accounts ({len(accounts)}): <code>{accounts_line}</code>\n"
         f"{G_ROW} Symbols (from EA): <code>{', '.join(syms) or 'waiting for EA'}</code>\n"
         f"{G_ROW} Notify: <code>{', '.join(k for k, v in settings.get_notify().items() if v) or 'all off'}</code>\n"
@@ -892,15 +1095,15 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
     uid = update.effective_user.id
 
     if data == "ADM_CLAIM":
-        if settings.get_admin_ids():
+        if heysolo_db.get_admin_ids():
             await q.answer("An admin is already set.", show_alert=True)
             return
-        settings.add_admin_id(uid)
+        heysolo_db.add_admin_id(uid)
         await q.answer("You are the bot admin now")
         await q.edit_message_text(f"{G_OK} You are the bot owner. Send /start for the menu.")
         return
 
-    if not settings.is_admin(uid):
+    if not heysolo_db.is_admin(uid):
         await q.answer("Admins only.", show_alert=True)
         return
 
@@ -916,11 +1119,11 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif data.startswith("ADM_DELADMIN_"):
         target = int(data.rsplit("_", 1)[1])
-        admins = settings.get_admin_ids()
+        admins = heysolo_db.get_admin_ids()
         if target == uid and len(admins) == 1:
             await q.answer("You cannot remove the last admin.", show_alert=True)
             return
-        settings.remove_admin_id(target)
+        heysolo_db.remove_admin_id(target)
         await q.answer("Removed")
         v = admins_list_view()
         await q.edit_message_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
@@ -931,7 +1134,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await q.edit_message_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
 
     elif data.startswith("ADM_DELUSER_"):
-        settings.remove_user_id(int(data.rsplit("_", 1)[1]))
+        heysolo_db.remove_user_id(int(data.rsplit("_", 1)[1]))
         await q.answer("Removed")
         v = users_list_view()
         await q.edit_message_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
@@ -941,10 +1144,42 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await q.answer()
         await q.edit_message_text(
             f"{G_ADD} Send the new user's numeric ID (they get it from @userinfobot).\n"
-            "They will see everything except the Admin panel.\n"
+            "Then grant them accounts from " + f"{G_EXPERT} Accounts.\n"
             "Send <code>cancel</code> to abort.",
             parse_mode=ParseMode.HTML,
         )
+
+    elif data == "ADM_ACCOUNTS":
+        await q.answer()
+        v = accounts_admin_view()
+        await q.edit_message_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+
+    elif data.startswith("ADM_ACCEXP_"):
+        rest = data[len("ADM_ACCEXP_"):]
+        login, expert_id_s = rest.rsplit("_", 1)
+        heysolo_db.get_db().set_account_expert(login, int(expert_id_s))
+        await q.answer("EA assigned")
+        v = account_admin_detail_view(login)
+        await q.edit_message_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+
+    elif data.startswith("ADM_ACCUSR_"):
+        rest = data[len("ADM_ACCUSR_"):]
+        login, target_uid_s = rest.rsplit("_", 1)
+        target_uid = int(target_uid_s)
+        if heysolo_db.get_db().is_account_assigned(target_uid, login):
+            heysolo_db.get_db().unassign_account(target_uid, login)
+            await q.answer("Access revoked")
+        else:
+            heysolo_db.get_db().assign_account(target_uid, login)
+            await q.answer("Access granted")
+        v = account_admin_detail_view(login)
+        await q.edit_message_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+
+    elif data.startswith("ADM_ACC_"):
+        login = data[len("ADM_ACC_"):]
+        await q.answer()
+        v = account_admin_detail_view(login)
+        await q.edit_message_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
 
     elif data == "ADM_SETCHAT":
         _pending[uid] = "set_chat"
@@ -1060,10 +1295,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 _pending[uid] = action
                 return
             target = int(text)
-            if settings.is_admin(target) and settings.get_admin_ids():
+            if heysolo_db.is_admin(target) and heysolo_db.get_admin_ids():
                 await msg.reply_text(f"{G_NEUTRAL} That ID is already an admin.")
             else:
-                added = settings.add_user_id(target)
+                added = heysolo_db.add_user_id(target)
                 await msg.reply_text(f"{G_OK} User added." if added else f"{G_NEUTRAL} Already a user.")
             await send_admin_panel(update)
         elif action == "set_window":
@@ -1106,13 +1341,37 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(f"{G_OK} Common Files Folder set to:\n<code>{p}</code>", parse_mode=ParseMode.HTML)
             v = common_dir_view()
             await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        elif action.startswith("set_topic:"):
+            kind = action.split(":", 1)[1]
+            if text.lower() == "reset":
+                heysolo_db.get_db().clear_user_topic(uid, kind)
+                await msg.reply_text(f"{G_OK} {kind.capitalize()} reset to the group default.")
+            elif text.lstrip("-").isdigit():
+                heysolo_db.get_db().set_user_topic(uid, kind, int(text))
+                await msg.reply_text(
+                    f"{G_OK} Your {kind} events will now go to thread <code>{text}</code>.",
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                await msg.reply_text(
+                    f"{G_BAD} Send a numeric thread id, <code>reset</code>, or <code>cancel</code>.",
+                    parse_mode=ParseMode.HTML)
+                _pending[uid] = action
+                return
+            v = user_settings_view(uid, resolve_login(uid))
+            await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         return
 
     if text == BTN_ADMIN:
-        if not settings.is_admin(uid):
+        if not heysolo_db.is_admin(uid):
             await msg.reply_text(f"{G_BAD} Admins only.")
             return
         await send_admin_panel(update)
+        return
+
+    if text == BTN_SETTINGS:
+        v = user_settings_view(uid, resolve_login(uid))
+        await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         return
 
     login = resolve_login(uid)
@@ -1125,14 +1384,21 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     st = get_state(login)
+    caps = expert_caps(login)
 
     if text == BTN_BIAS:
+        if not caps["has_bias"]:
+            await msg.reply_text(f"{G_BAD} This account's EA doesn't use a bias.")
+            return
         kb = bias_keyboard(login, st)
         if kb is None:
             await msg.reply_text(NO_SYMBOLS_TEXT, parse_mode=ParseMode.HTML)
             return
         await msg.reply_text(bias_header(login, st), reply_markup=kb, parse_mode=ParseMode.HTML)
     elif toggle_kind(text) == "Mode":
+        if not caps["has_mode"]:
+            await msg.reply_text(f"{G_BAD} This account's EA doesn't support a Manual/Auto mode.")
+            return
         prev = "Manual" if st.mode == "MANUAL" else "Auto"
         st.mode = "AUTO" if st.mode == "MANUAL" else "MANUAL"
         write_control(login)
@@ -1145,9 +1411,12 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{glyph} Mode switched from <b>{prev}</b> to <b>{'Manual' if manual else 'Auto'}</b>\n"
             f"{G_ROW} Account: <code>{login}</code>\n"
             f"<i>{detail}</i>",
-            parse_mode=ParseMode.HTML, reply_markup=build_main_keyboard(uid, st),
+            parse_mode=ParseMode.HTML, reply_markup=build_main_keyboard(uid, st, login),
         )
     elif toggle_kind(text) == "Trading":
+        if not caps["has_trading"]:
+            await msg.reply_text(f"{G_BAD} This account's EA doesn't support remote Trading on/off.")
+            return
         prev = "On" if st.trading else "Off"
         st.trading = not st.trading
         write_control(login)
@@ -1159,10 +1428,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{glyph} Trading switched from <b>{prev}</b> to <b>{'On' if st.trading else 'Off'}</b>\n"
             f"{G_ROW} Account: <code>{login}</code>\n"
             f"<i>{detail}</i>",
-            parse_mode=ParseMode.HTML, reply_markup=build_main_keyboard(uid, st),
+            parse_mode=ParseMode.HTML, reply_markup=build_main_keyboard(uid, st, login),
         )
     elif text == BTN_ACCOUNT:
-        if len(list_accounts()) > 1:
+        if len(visible_accounts(uid)) > 1:
             v = accounts_list_view(uid)
             await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         else:
@@ -1187,29 +1456,53 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("ACC_VIEW_"):
-        await q.answer()
         target_login = data[len("ACC_VIEW_"):]
+        if target_login not in {a["login"] for a in visible_accounts(uid)}:
+            await q.answer("Not your account.", show_alert=True)
+            return
+        await q.answer()
         v = account_detail_view(uid, target_login)
         await q.edit_message_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         return
 
     if data.startswith("ACC_SET_"):
         target_login = data[len("ACC_SET_"):]
-        if target_login not in {a["login"] for a in list_accounts()}:
-            await q.answer("That account is no longer reporting.", show_alert=True)
+        if target_login not in {a["login"] for a in visible_accounts(uid)}:
+            await q.answer("That account is no longer reporting, or isn't yours.", show_alert=True)
             return
         _active_login[uid] = target_login
+        try:
+            heysolo_db.get_db().set_active_login(uid, target_login)
+        except Exception as e:
+            log.warning("Could not persist active login for %s: %s", uid, e)
         await q.answer(f"Active account: {target_login}")
         st = get_state(target_login)
         v = account_detail_view(uid, target_login)
         await q.edit_message_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"{G_OK} Switched to account <code>{target_login}</code>. "
-                 "Bias, Mode and Trading now act on it.",
-            reply_markup=build_main_keyboard(uid, st),
+            text=f"{G_OK} Switched to account <code>{target_login}</code>.",
+            reply_markup=build_main_keyboard(uid, st, target_login),
             parse_mode=ParseMode.HTML,
         )
+        return
+
+    if data.startswith("SET_TOPIC_"):
+        kind = data[len("SET_TOPIC_"):]
+        _pending[uid] = f"set_topic:{kind}"
+        await q.answer()
+        await q.edit_message_text(
+            f"{G_SETTINGS} <b>{TOPIC_KIND_LABELS.get(kind, kind)}</b>\n"
+            "Send the numeric Telegram thread id this should go to, "
+            "or <code>reset</code> to use the group default.\n"
+            "Send <code>cancel</code> to abort.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if data == "SET_CLOSE":
+        await q.answer()
+        await q.edit_message_text(f"{G_OK} Settings closed. Use {BTN_SETTINGS} to reopen.")
         return
 
     await q.answer()
