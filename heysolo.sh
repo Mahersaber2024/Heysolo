@@ -169,6 +169,7 @@ panel(){
   say "  ${CYAN}BOT${NC}        [${BOLD}T${NC}] bot setup        [${BOLD}B${NC}] restart bot            [${BOLD}L${NC}] bot logs"
   echo
   say "  ${CYAN}SYSTEM${NC}     [${BOLD}?${NC}] doctor           [${BOLD}U${NC}] update scripts         [${BOLD}X${NC}] uninstall   [${BOLD}Q${NC}] quit"
+  say "             [${BOLD}G${NC}] fix screenshots  ${DIM}display colour depth + gdiplus (EA screenshots)${NC}"
   echo
 }
 
@@ -279,6 +280,7 @@ do_action(){
     t)  bash "${SCRIPTS_DIR}/install.sh"; pause ;;
     b)  if systemctl restart "${BOT_SERVICE}" 2>/dev/null; then ok "bot restarted."; else err "could not restart ${BOT_SERVICE}"; fi; sleep 1 ;;
     l)  say "${DIM}Ctrl+C to come back${NC}"; journalctl -u "${BOT_SERVICE}" -n 50 -f || true ;;
+    g)  run_mt5 screenshots; pause ;;
     "?") run_mt5 doctor; pause ;;
     u)  update_scripts; pause ;;
     x)  bash "${SCRIPTS_DIR}/uninstall.sh"; pause ;;

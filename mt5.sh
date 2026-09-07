@@ -31,11 +31,27 @@ DESKTOP_ENV_FILE="${STATE_DIR}/desktop.env"
 # invoked fresh (menu, step2, VNC toggle, reboot...).
 [[ -f "${DESKTOP_ENV_FILE}" ]] && source "${DESKTOP_ENV_FILE}" 2>/dev/null || true
 
-COLOR_DEPTH="${COLOR_DEPTH:-16}"
+# Colour depth is NOT just cosmetic: MT5's ChartScreenShot() goes through
+# Wine's GDI/GDI+, and on a 16-bit X display that path cannot build the 32-bit
+# DIB it needs - so screenshots come back false/black/empty even though the
+# very same EA works on Windows. 24-bit is the minimum that works; this used
+# to default to 16 to save VNC bandwidth, which silently broke every EA
+# screenshot on the server. Bandwidth is handled by LOW_BANDWIDTH/x11vnc
+# instead, never by dropping the depth below 24.
+COLOR_DEPTH_MIN=24
+COLOR_DEPTH="${COLOR_DEPTH:-24}"
+if [[ ! "${COLOR_DEPTH}" =~ ^[0-9]+$ ]] || (( COLOR_DEPTH < COLOR_DEPTH_MIN )); then
+  COLOR_DEPTH="${COLOR_DEPTH_MIN}"
+  COLOR_DEPTH_UPGRADED=1
+fi
 SCREEN_GEOMETRY="${SCREEN_GEOMETRY:-1920x1080}"
 LOW_BANDWIDTH="${LOW_BANDWIDTH:-1}"
+# A SCREEN_RES inherited from an older install can still carry the old depth.
 SCREEN_RES="${SCREEN_RES:-${SCREEN_GEOMETRY}x${COLOR_DEPTH}}"
-export COLOR_DEPTH SCREEN_GEOMETRY LOW_BANDWIDTH SCREEN_RES
+if [[ "${SCREEN_RES}" != *"x${COLOR_DEPTH}" ]]; then
+  SCREEN_RES="${SCREEN_GEOMETRY}x${COLOR_DEPTH}"
+fi
+export COLOR_DEPTH COLOR_DEPTH_MIN SCREEN_GEOMETRY LOW_BANDWIDTH SCREEN_RES
 
 persist_desktop_settings(){
   mkdir -p "${STATE_DIR}" 2>/dev/null || true
@@ -46,6 +62,11 @@ persist_desktop_settings(){
 EOF
 }
 persist_desktop_settings
+if [[ "${COLOR_DEPTH_UPGRADED:-0}" == "1" ]]; then
+  # Existing installs have COLOR_DEPTH=16 saved in desktop.env; rewrite it so
+  # the display restarts at 24-bit and EA screenshots start working.
+  echo "Raised the display colour depth to ${COLOR_DEPTH}-bit (16-bit breaks EA screenshots under Wine)." >&2
+fi
 
 VNC_BASE_OPTS="-forever -shared -noprimary -nosetprimary"
 if [[ "${LOW_BANDWIDTH}" == "1" ]]; then
@@ -256,6 +277,98 @@ init_prefix(){
     err "The wine prefix at ${wineprefix} was not actually initialized (no drive_c folder) - wineboot failed."
     return 1
   fi
+
+  ensure_screenshot_support "${wineprefix}"
+}
+
+# ---------------------------------------------------------------------------
+# ChartScreenShot() support inside a prefix.
+#
+# MT5 encodes chart screenshots through GDI+ (gdiplus.dll). Wine's builtin
+# gdiplus is a reimplementation and, depending on how wine was packaged, can
+# be missing the PNG encoder entirely - the EA then just gets `false` back
+# from ChartScreenShot with nothing written, on a server where the identical
+# EA screenshots fine on Windows. Dropping the real gdiplus in fixes it for
+# EVERY EA in that prefix, with zero EA-side changes.
+# ---------------------------------------------------------------------------
+ensure_screenshot_support(){
+  local wineprefix="$1"
+  local logfile="/var/log/heysolo-gdiplus-$(basename "${wineprefix}").log"
+
+  if compgen -G "${wineprefix}/drive_c/windows/*/gdiplus.dll" >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! command -v winetricks >/dev/null 2>&1; then
+    apt-get install -y winetricks cabextract >/dev/null 2>&1 || true
+  fi
+  if ! command -v winetricks >/dev/null 2>&1; then
+    warn "winetricks is not available - skipping the gdiplus step (EA screenshots may fail)."
+    return 0
+  fi
+
+  info "Installing gdiplus into the prefix (this is what EA screenshots encode with)..."
+  AS_WINE_TIMEOUT=300 as_wine_logged "${wineprefix}" \
+    "winetricks -q --unattended gdiplus; wineserver -w" "${logfile}" || true
+
+  if compgen -G "${wineprefix}/drive_c/windows/*/gdiplus.dll" >/dev/null 2>&1; then
+    ok "gdiplus is in place - ChartScreenShot() can encode images."
+  else
+    warn "gdiplus did not install (see ${logfile}) - wine's builtin will be used; screenshots may still fail."
+  fi
+}
+
+# Re-run the screenshot fixes on every terminal that already exists, without
+# reinstalling anything. Safe to run repeatedly.
+repair_screenshots(){
+  header; title "SCREENSHOT REPAIR"; header
+  echo "  Display depth must be >= ${COLOR_DEPTH_MIN}-bit and every prefix needs gdiplus."
+  echo
+
+  local depth restarted=0
+  depth=$(timeout 5 xdpyinfo -display ":${DISPLAY_NUM}" 2>/dev/null \
+          | awk '/depth of root window/ {print $5}')
+
+  if [[ -z "${depth}" ]]; then
+    warn "Could not read the display depth - starting the display at ${COLOR_DEPTH}-bit."
+    start_display
+    restarted=1
+  elif (( depth < COLOR_DEPTH_MIN )); then
+    warn "Display :${DISPLAY_NUM} is running at ${depth}-bit - that is why screenshots fail."
+    info "Restarting it at ${COLOR_DEPTH}-bit (terminals are closed cleanly first, then reopened)."
+    local slug exe wineprefix termpath
+    while IFS='|' read -r slug exe wineprefix termpath; do
+      [[ -n "${slug}" ]] || continue
+      graceful_stop_terminal "${slug}" "${termpath}"
+    done < "${TERMINALS_FILE}" 2>/dev/null || true
+
+    as_mt5 "screen -S vnc -X quit" >/dev/null 2>&1 || true
+    pkill -u "${MT5_USER}" -f "Xvfb :${DISPLAY_NUM}" >/dev/null 2>&1 || true
+    sleep 1
+    rm -f "/tmp/.X${DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${DISPLAY_NUM}" 2>/dev/null || true
+    start_display
+    restarted=1
+  else
+    ok "Display :${DISPLAY_NUM} is at ${depth}-bit - deep enough for screenshots."
+  fi
+
+  local slug exe wineprefix termpath
+  while IFS='|' read -r slug exe wineprefix termpath; do
+    [[ -n "${slug}" ]] || continue
+    [[ -n "${wineprefix}" ]] || wineprefix="$(wineprefix_for_slug "${slug}")"
+    [[ -d "${wineprefix}/drive_c" ]] || continue
+    echo "  - ${slug}"
+    ensure_screenshot_support "${wineprefix}"
+  done < "${TERMINALS_FILE}" 2>/dev/null || true
+
+  if (( restarted == 1 )); then
+    info "Reopening the terminals..."
+    start_all_terminals
+  fi
+
+  header
+  ok "Done. EA screenshots should work now - no EA changes needed."
+  echo "  If one still fails, check the Experts tab: a chart has to be open for it."
+  header
 }
 
 # ---------------------------------------------------------------------------
@@ -279,10 +392,12 @@ STATE_DIR="${STATE_DIR:-/etc/heysolo-mt5}"
 DESKTOP_ENV_FILE="${DESKTOP_ENV_FILE:-${STATE_DIR}/desktop.env}"
 [[ -f "${DESKTOP_ENV_FILE}" ]] && source "${DESKTOP_ENV_FILE}" 2>/dev/null || true
 
-COLOR_DEPTH="${COLOR_DEPTH:-16}"
+COLOR_DEPTH="${COLOR_DEPTH:-24}"
+if [[ ! "${COLOR_DEPTH}" =~ ^[0-9]+$ ]] || (( COLOR_DEPTH < 24 )); then COLOR_DEPTH=24; fi  # <24bpp = no EA screenshots
 SCREEN_GEOMETRY="${SCREEN_GEOMETRY:-1920x1080}"
 LOW_BANDWIDTH="${LOW_BANDWIDTH:-1}"
 SCREEN_RES="${SCREEN_RES:-${SCREEN_GEOMETRY}x${COLOR_DEPTH}}"
+if [[ "${SCREEN_RES}" != *"x${COLOR_DEPTH}" ]]; then SCREEN_RES="${SCREEN_GEOMETRY}x${COLOR_DEPTH}"; fi
 SCREEN_RES_WH="${SCREEN_RES%x*}"
 DESKTOP_BG_COLOR="${DESKTOP_BG_COLOR:-#0b1220}"
 USE_WALLPAPER_IMAGE="${USE_WALLPAPER_IMAGE:-0}"
@@ -1409,6 +1524,27 @@ desktop_doctor(){
   echo "  title-watch : $(as_mt5 "screen -ls" 2>/dev/null | grep -q '\.titlewatch\b' && echo running || echo 'NOT RUNNING')"
   echo "  panel-watch : $(as_mt5 "screen -ls" 2>/dev/null | grep -q '\.panelwatch\b' && echo running || echo 'NOT RUNNING')"
   echo "  resolution  : ${SCREEN_RES} (geometry ${SCREEN_RES_WH}, work area ${WORK_RES_WH}, low-bandwidth=${LOW_BANDWIDTH})"
+  local _depth
+  _depth=$(timeout 5 xdpyinfo -display ":${DISPLAY_NUM}" 2>/dev/null | awk '/depth of root window/ {print $5}')
+  if [[ -z "${_depth}" ]]; then
+    echo "  colour depth: UNKNOWN (display not readable)"
+  elif (( _depth < ${COLOR_DEPTH_MIN:-24} )); then
+    echo "  colour depth: ${_depth}-bit  <-- TOO LOW, EA screenshots will fail (need >= ${COLOR_DEPTH_MIN:-24})"
+  else
+    echo "  colour depth: ${_depth}-bit OK (EA screenshots supported)"
+  fi
+  echo "  gdiplus     :"
+  local _pfx _slug
+  while read -r _slug _; do
+    [[ -n "${_slug}" ]] || continue
+    _pfx="$(wineprefix_for_slug "${_slug}")"
+    [[ -d "${_pfx}/drive_c" ]] || continue
+    if compgen -G "${_pfx}/drive_c/windows/*/gdiplus.dll" >/dev/null 2>&1; then
+      echo "     ${_slug}: present"
+    else
+      echo "     ${_slug}: MISSING (screenshots may fail - run the screenshot repair)"
+    fi
+  done < <(cat "${TERMINALS_FILE}" 2>/dev/null || true)
   echo "  wallpaper   : $([[ -s ${WALLPAPER_PATH} ]] && du -h ${WALLPAPER_PATH} | cut -f1 || echo MISSING)"
   echo "  windows     :"
   DISPLAY=":${DISPLAY_NUM}" timeout 8 wmctrl -lx 2>/dev/null | sed 's/^/     /' || echo "     (wmctrl unavailable)"
@@ -1515,7 +1651,11 @@ install_system_packages(){
     xvfb x11vnc screen wget curl openbox \
     software-properties-common ca-certificates gnupg \
     x11-utils jq python3 \
+    winetricks cabextract \
     || true
+  # winetricks/cabextract are what let us drop a real gdiplus into each prefix -
+  # that is the DLL MT5 uses to encode ChartScreenShot() images.
+  apt-get install "${APT_Q[@]}" winetricks cabextract >/dev/null 2>&1 || true
   ok "Base packages ready."
 
   info "Enabling the 32-bit architecture (i386) - wine needs it..."
@@ -2549,7 +2689,7 @@ show_final_guide(){
   echo -e " ${BOLD}Bandwidth / quality${NC} (geometry stays ${SCREEN_GEOMETRY} - nothing gets smaller):"
   echo "   * colour depth ${COLOR_DEPTH}-bit, flat colour background, VNC tuned for a slow link"
   echo "   * even lighter:   COLOR_DEPTH=8 sudo bash ${0##*/}"
-  echo "   * pretty again:   LOW_BANDWIDTH=0 COLOR_DEPTH=24 sudo bash ${0##*/}"
+  echo "   * pretty again:   LOW_BANDWIDTH=0 COLOR_DEPTH=32 sudo bash ${0##*/}"
   echo "   * in RealVNC Viewer also set Picture Quality -> Low (that is client-side)"
   echo
   echo " List everything (VNC + terminals):"
@@ -2709,6 +2849,7 @@ main_menu(){
     echo -e "   ${BOLD}5)${NC} Remove a terminal"
     echo -e "   ${BOLD}6)${NC} Uploaded installers    - list what's in ${MT5_LOCAL_DIR}"
     echo -e "   ${BOLD}7)${NC} Sync MQL5 assets       - push Experts/Include/Indicators/set/Templates"
+    echo -e "   ${BOLD}8)${NC} Fix EA screenshots     - display colour depth + gdiplus in every prefix"
     echo
     echo -e "  ${BOLD}0)${NC} Exit"
     echo
@@ -2745,6 +2886,7 @@ main_menu(){
          header
          sync_mql5_assets_all
          press_enter ;;
+      8) require_root; repair_screenshots; press_enter ;;
       0) echo "Goodbye!"; HEYSOLO_CLEAN_EXIT=1; exit 0 ;;
       *) warn "Invalid."; sleep 1 ;;
     esac
@@ -2755,6 +2897,8 @@ case "${1:-menu}" in
   step2)  require_root; step2_install_terminals;               HEYSOLO_CLEAN_EXIT=1 ;;
   guide)  require_root; show_final_guide;                      HEYSOLO_CLEAN_EXIT=1 ;;
   boot)   require_root; NONINTERACTIVE=1 boot_recover;          HEYSOLO_CLEAN_EXIT=1 ;;
+  screenshots|fix-screenshots)
+          require_root; repair_screenshots; HEYSOLO_CLEAN_EXIT=1 ;;
   doctor) require_root
           if declare -F desktop_doctor >/dev/null 2>&1; then desktop_doctor; fi
           as_mt5 "screen -ls" || true
@@ -2788,6 +2932,6 @@ case "${1:-menu}" in
     HEYSOLO_CLEAN_EXIT=1 ;;
   menu|"") main_menu ;;
   *)      err "Unknown argument: $1"
-          echo "Usage: bash $0 [menu|step1|step2|guide|doctor|boot|desktop]"
+          echo "Usage: bash $0 [menu|step1|step2|guide|doctor|screenshots|boot|desktop]"
           HEYSOLO_CLEAN_EXIT=1; exit 2 ;;
 esac

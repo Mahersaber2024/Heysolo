@@ -84,7 +84,7 @@ def resolve_common_files_dir() -> tuple[Path, str]:
     return Path("./MT5_Common_Files"), "fallback"
 
 def apply_common_files_dir(new_dir: Path, source: str):
-    global COMMON_DIR, COMMON_DIR_SOURCE, BRIDGE_DIR, OUTBOX_DIR, PHOTOS_DIR, CONTROL_DIR, ACCOUNT_DIR
+    global COMMON_DIR, COMMON_DIR_SOURCE, BRIDGE_DIR, OUTBOX_DIR, PHOTOS_DIR, CONTROL_DIR, ACCOUNT_DIR, DASHBOARD_DIR
     COMMON_DIR = new_dir
     COMMON_DIR_SOURCE = source
     BRIDGE_DIR = COMMON_DIR / "TelegramBridge"
@@ -92,7 +92,8 @@ def apply_common_files_dir(new_dir: Path, source: str):
     PHOTOS_DIR = BRIDGE_DIR / "Photos"
     CONTROL_DIR = BRIDGE_DIR / "Control"
     ACCOUNT_DIR = COMMON_DIR / "AccountStatus"
-    for d in (OUTBOX_DIR, PHOTOS_DIR, CONTROL_DIR, ACCOUNT_DIR):
+    DASHBOARD_DIR = COMMON_DIR / "PropDashboard"
+    for d in (OUTBOX_DIR, PHOTOS_DIR, CONTROL_DIR, ACCOUNT_DIR, DASHBOARD_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 COMMON_DIR, COMMON_DIR_SOURCE = resolve_common_files_dir()
@@ -101,14 +102,16 @@ OUTBOX_DIR = BRIDGE_DIR / "Outbox"
 PHOTOS_DIR = BRIDGE_DIR / "Photos"
 CONTROL_DIR = BRIDGE_DIR / "Control"
 ACCOUNT_DIR = COMMON_DIR / "AccountStatus"
+DASHBOARD_DIR = COMMON_DIR / "PropDashboard"
 
 if not BOT_TOKEN:
     raise SystemExit("bot_token is empty - run install.sh or set it in heysolo_settings.json")
 
-for d in (OUTBOX_DIR, PHOTOS_DIR, CONTROL_DIR, ACCOUNT_DIR):
+for d in (OUTBOX_DIR, PHOTOS_DIR, CONTROL_DIR, ACCOUNT_DIR, DASHBOARD_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 log.info("Common\\Files folder (%s): %s", COMMON_DIR_SOURCE, COMMON_DIR)
+log.info("Account sources: %s (account_*.txt) + %s (data_*.txt)", ACCOUNT_DIR, DASHBOARD_DIR)
 
 G_ACCOUNT = "▤"
 G_BIAS = "◈"
@@ -139,21 +142,6 @@ def _read_account_file(path: Path) -> dict:
             out[key.strip()] = value.strip()
     return out
 
-def list_accounts() -> list[dict]:
-    accounts = []
-    for path in sorted(ACCOUNT_DIR.glob("account_*.txt")):
-        try:
-            raw = _read_account_file(path)
-        except OSError:
-            continue
-        accounts.append({
-            "login": raw.get("login") or path.stem.replace("account_", ""),
-            "broker": raw.get("broker", ""),
-            "currency": raw.get("currency", ""),
-            "file": path.name,
-        })
-    return accounts
-
 def _f(raw: dict, key: str, default: float = 0.0) -> float:
     try:
         return float(raw[key])
@@ -166,11 +154,61 @@ def _i(raw: dict, key: str, default: int = 0) -> int:
     except (KeyError, TypeError, ValueError):
         return default
 
-def read_dashboard(login: str) -> dict | None:
-    path = ACCOUNT_DIR / f"account_{login}.txt"
+# --------------------------------------------------------------------------
+# Two EAs, two folders. Both are first-class sources:
+#   AccountStatus/account_<login>.txt  -> flat key=value card
+#   PropDashboard/data_<login>.txt     -> window.PROP_DATA = { ... } (JS-ish)
+# An account shows up if EITHER file exists; when both exist the fresher file
+# wins and the other one only fills in fields it left empty.
+# --------------------------------------------------------------------------
+
+def _prop_block(text: str, key: str) -> str:
+    """Body of a `key: { ... }` block, brace-matched. '' if absent."""
+    m = re.search(r"\b" + re.escape(key) + r"\s*:\s*\{", text)
+    if not m:
+        return ""
+    start = m.end() - 1
+    depth = 0
+    for i in range(start, len(text)):
+        c = text[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1:i]
+    return ""
+
+def _pstr(body: str, key: str, default: str = "") -> str:
+    m = re.search(r"\b" + re.escape(key) + r'\s*:\s*"([^"]*)"', body)
+    return m.group(1) if m else default
+
+def _pnum(body: str, key: str, default: float = 0.0) -> float:
+    m = re.search(r"\b" + re.escape(key) + r"\s*:\s*(-?\d+(?:\.\d+)?)", body)
+    try:
+        return float(m.group(1)) if m else default
+    except ValueError:
+        return default
+
+def _pbool(body: str, key: str) -> bool:
+    m = re.search(r"\b" + re.escape(key) + r"\s*:\s*(true|false)", body, re.I)
+    return bool(m) and m.group(1).lower() == "true"
+
+def card_path(login: str) -> Path:
+    return ACCOUNT_DIR / f"account_{login}.txt"
+
+def data_path(login: str) -> Path:
+    return DASHBOARD_DIR / f"data_{login}.txt"
+
+def read_card(login: str) -> dict | None:
+    """AccountStatus/account_<login>.txt"""
+    path = card_path(login)
     if not path.exists():
         return None
-    raw = _read_account_file(path)
+    try:
+        raw = _read_account_file(path)
+    except OSError:
+        return None
     return {
         "broker": raw.get("broker", ""),
         "currency": raw.get("currency", ""),
@@ -197,7 +235,112 @@ def read_dashboard(login: str) -> dict | None:
         "updated": raw.get("updated", ""),
         "account_failed": raw.get("accountFailed", "").lower() == "true",
         "challenge_passed": raw.get("challengePassed", "").lower() == "true",
+        "source": "AccountStatus",
     }
+
+def read_prop_data(login: str) -> dict | None:
+    """PropDashboard/data_<login>.txt"""
+    path = data_path(login)
+    if not path.exists():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    meta = _prop_block(text, "meta")
+    status = _prop_block(text, "status")
+    general = _prop_block(text, "general")
+    today = _prop_block(general, "today")
+    target = _prop_block(text, "targetProfit")
+    loss = _prop_block(text, "totalLoss")
+    daily = _prop_block(text, "dailyLoss")
+    days = _prop_block(text, "tradingDaysReq")
+    if not (meta or general):
+        return None
+    return {
+        "broker": _pstr(meta, "broker"),
+        "currency": _pstr(meta, "currency"),
+        "mode": _pstr(meta, "accountMode"),
+        "symbols": "",
+        "ea_mode": "",
+        "ea_trading": "",
+        "balance": _pnum(general, "currentBalance"),
+        "equity": _pnum(general, "currentEquity"),
+        "open_positions": int(_pnum(general, "openPositions")),
+        "today_pct": _pnum(today, "pct"),
+        "today_usd": _pnum(today, "usd"),
+        "target_min_pct": _pnum(target, "minPercent"),
+        "target_pct": _pnum(target, "currentPercent"),
+        "target_status": _pstr(target, "status"),
+        "loss_max_pct": _pnum(loss, "maxPercent"),
+        "loss_pct": _pnum(loss, "currentPercent"),
+        "loss_status": _pstr(loss, "status"),
+        "daily_max_pct": _pnum(daily, "maxPercent"),
+        "daily_pct": _pnum(daily, "currentPercent"),
+        "daily_status": _pstr(daily, "status"),
+        "trading_days": int(_pnum(days, "currentDays")),
+        "trading_days_min": int(_pnum(days, "minDays")),
+        "updated": _pstr(meta, "lastUpdate"),
+        "account_failed": _pbool(status, "accountFailed"),
+        "challenge_passed": _pbool(status, "challengePassed"),
+        "source": "PropDashboard",
+    }
+
+def _mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+def _merge_dashboards(primary: dict, secondary: dict) -> dict:
+    """primary = fresher file. secondary only fills blanks it left behind."""
+    out = dict(primary)
+    for k, v in secondary.items():
+        if k == "source":
+            continue
+        if isinstance(v, str) and v and not out.get(k):
+            out[k] = v
+    out["source"] = f"{primary['source']}+{secondary['source']}"
+    return out
+
+def known_logins() -> list[str]:
+    """Every login that reported through EITHER folder."""
+    logins: set[str] = set()
+    for path in ACCOUNT_DIR.glob("account_*.txt"):
+        logins.add(path.stem[len("account_"):])
+    for path in DASHBOARD_DIR.glob("data_*.txt"):
+        logins.add(path.stem[len("data_"):])
+    return sorted(l for l in logins if l)
+
+def list_accounts() -> list[dict]:
+    accounts = []
+    for login in known_logins():
+        d = read_dashboard(login)
+        if d is None:
+            continue
+        files = []
+        if card_path(login).exists():
+            files.append(card_path(login).name)
+        if data_path(login).exists():
+            files.append(data_path(login).name)
+        accounts.append({
+            "login": login,
+            "broker": d.get("broker", ""),
+            "currency": d.get("currency", ""),
+            "file": ", ".join(files),
+            "source": d.get("source", ""),
+        })
+    return accounts
+
+def read_dashboard(login: str) -> dict | None:
+    """Read an account from whichever folder(s) the EAs wrote it to."""
+    card = read_card(login)
+    data = read_prop_data(login)
+    if card and data:
+        if _mtime(data_path(login)) >= _mtime(card_path(login)):
+            return _merge_dashboards(data, card)
+        return _merge_dashboards(card, data)
+    return card or data
 
 _STATUS_GLYPH = {
     "Completed": G_OK, "Allowed": G_OK, "Active": G_OK,
@@ -414,13 +557,26 @@ async def watch_outbox(app: Application):
                         text = f"[{account}]\n{text}"
 
                     if photo_path and photo_path.exists():
-                        with open(photo_path, "rb") as f:
-                            await bot.send_photo(
-                                chat_id=CHAT_ID,
-                                message_thread_id=thread_id or None,
-                                photo=f,
-                                caption=text[:1024],
-                            )
+                        try:
+                            with open(photo_path, "rb") as f:
+                                await bot.send_photo(
+                                    chat_id=CHAT_ID,
+                                    message_thread_id=thread_id or None,
+                                    photo=f,
+                                    caption=text[:1024],
+                                )
+                        except Exception as photo_err:
+                            # Telegram refuses some formats (e.g. a .bmp the EA fell back to
+                            # on Wine). Send it as a file instead of losing the event.
+                            log.warning("send_photo failed for %s (%s) - sending as document",
+                                        photo_path.name, photo_err)
+                            with open(photo_path, "rb") as f:
+                                await bot.send_document(
+                                    chat_id=CHAT_ID,
+                                    message_thread_id=thread_id or None,
+                                    document=f,
+                                    caption=text[:1024],
+                                )
                         photo_path.unlink(missing_ok=True)
                     else:
                         await bot.send_message(
@@ -638,10 +794,18 @@ def status_panel_view() -> dict:
         f"{G_ROW} Notify: <code>{', '.join(k for k, v in settings.get_notify().items() if v) or 'all off'}</code>\n"
         f"{G_ROW} Window: <code>{window_line}</code>\n"
         f"{G_ROW} Bridge: <code>{BRIDGE_DIR}</code>\n"
-        f"{G_ROW} Common dir: <code>{COMMON_DIR}</code> ({COMMON_DIR_SOURCE})"
+        f"{G_ROW} Common dir: <code>{COMMON_DIR}</code> ({COMMON_DIR_SOURCE})\n"
+        f"{G_ROW} AccountStatus: {_dir_mark(ACCOUNT_DIR, 'account_*.txt')}\n"
+        f"{G_ROW} PropDashboard: {_dir_mark(DASHBOARD_DIR, 'data_*.txt')}"
     )
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"{G_BACK} Back", callback_data="ADM_PANEL")]])
     return {"text": text, "reply_markup": kb, "parse_mode": ParseMode.HTML}
+
+def _dir_mark(path: Path, pattern: str) -> str:
+    if not path.exists():
+        return f"{G_BAD} missing"
+    n = len(list(path.glob(pattern)))
+    return f"{G_OK if n else G_WAIT} {n} file(s)"
 
 def common_dir_view() -> dict:
     exists = COMMON_DIR.exists()
@@ -658,7 +822,9 @@ def common_dir_view() -> dict:
         f"the bot reads/writes here. Set it once and future EAs need no extra setup.\n\n"
         f"{G_ROW} Path: <code>{COMMON_DIR}</code>\n"
         f"{G_ROW} Source: {source_label}\n"
-        f"{G_ROW} On disk: {exists_label}"
+        f"{G_ROW} On disk: {exists_label}\n"
+        f"{G_ROW} <code>AccountStatus\\account_*.txt</code>: {_dir_mark(ACCOUNT_DIR, 'account_*.txt')}\n"
+        f"{G_ROW} <code>PropDashboard\\data_*.txt</code>: {_dir_mark(DASHBOARD_DIR, 'data_*.txt')}"
     )
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{G_AUTO} Auto-detect now", callback_data="ADM_COMMON_AUTO")],
@@ -951,7 +1117,12 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     login = resolve_login(uid)
     if login is None:
-        await msg.reply_text(f"{G_WAIT} No account has reported yet (waiting for the EA's first export).")
+        await msg.reply_text(
+            f"{G_WAIT} No account has reported yet (waiting for the EA's first export).\n"
+            f"{G_ROW} <code>{ACCOUNT_DIR}</code>\n"
+            f"{G_ROW} <code>{DASHBOARD_DIR}</code>",
+            parse_mode=ParseMode.HTML,
+        )
         return
     st = get_state(login)
 
