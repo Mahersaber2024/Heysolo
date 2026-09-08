@@ -432,7 +432,7 @@ desktop_install_packages(){
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
   wait_for_dpkg_lock
   apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
-    pcmanfm feh tint2 wmctrl xdotool zenity dbus-x11 autocutsel \
+    pcmanfm feh tint2 wmctrl xdotool zenity dbus-x11 \
     icoutils imagemagick x11-utils xprop x11-xserver-utils \
     >/dev/null 2>&1 || true
   if ! command -v tint2 >/dev/null 2>&1 || ! command -v pcmanfm >/dev/null 2>&1; then
@@ -1399,54 +1399,6 @@ desktop_launch_manager(){
   return 0
 }
 
-desktop_ensure_clipboard(){
-  step "starting the clipboard keeper (autocutsel)"
-  if ! command -v autocutsel >/dev/null 2>&1; then
-    wait_for_dpkg_lock
-    apt-get install -y autocutsel >/dev/null 2>&1 || true
-    command -v autocutsel >/dev/null 2>&1 || {
-      warn "autocutsel missing - VNC copy/paste may keep pasting the same old text."
-      return 0
-    }
-  fi
-
-  pkill -u "${MT5_USER}" -x autocutsel >/dev/null 2>&1 || true
-  sleep 1
-  mt5_run_quiet 10 "setsid autocutsel -selection CLIPBOARD -fork >/dev/null 2>&1"
-  mt5_run_quiet 10 "setsid autocutsel -selection PRIMARY   -fork >/dev/null 2>&1"
-  sleep 1
-  if pgrep -u "${MT5_USER}" -x autocutsel >/dev/null 2>&1; then
-    ok "Clipboard keeper running - copy/paste over VNC now updates properly."
-  else
-    warn "autocutsel did not stay up - copy/paste may be stuck on old text."
-  fi
-  desktop_ensure_clipboard_watchdog
-}
-
-desktop_write_clipboard_watchdog(){
-  local script="${BIN_DIR}/clipboard-watch.sh"
-  mkdir -p "${BIN_DIR}"
-  cat > "${script}" <<'EOF'
-#!/usr/bin/env bash
-while true; do
-  pgrep -x autocutsel >/dev/null 2>&1 || {
-    setsid autocutsel -selection CLIPBOARD -fork >/dev/null 2>&1
-    setsid autocutsel -selection PRIMARY   -fork >/dev/null 2>&1
-  }
-  sleep 30
-done
-EOF
-  chmod +x "${script}"
-  chown "${MT5_USER}:${MT5_USER}" "${script}" 2>/dev/null || true
-  echo "${script}"
-}
-
-desktop_ensure_clipboard_watchdog(){
-  local script; script=$(desktop_write_clipboard_watchdog)
-  as_mt5 "screen -ls" 2>/dev/null | grep -q '\.clipwatch\b' && return 0
-  as_mt5 "screen -dmS clipwatch bash -c 'export DISPLAY=:${DISPLAY_NUM}; ${script}'"
-}
-
 desktop_ensure_pcmanfm(){
   info "pcmanfm is not installed yet - installing it..."
   wait_for_dpkg_lock
@@ -1484,7 +1436,6 @@ desktop_start(){
   desktop_apply_wallpaper
   desktop_ensure_taskbar
   desktop_ensure_title_watcher
-  desktop_ensure_clipboard
   step "removing wine's junk launchers"
   purge_wine_shortcuts_local
   step "desktop layer done"
@@ -1569,7 +1520,6 @@ desktop_doctor(){
   echo "  x11vnc      : $(pgrep -u ${MT5_USER} -x x11vnc >/dev/null 2>&1 && echo running || echo 'NOT RUNNING')"
   echo "  pcmanfm     : $(desktop_manager_active && echo running || echo 'NOT RUNNING')"
   echo "  tint2       : $(pgrep -u ${MT5_USER} -x tint2 >/dev/null 2>&1 && echo running || echo 'NOT RUNNING')"
-  echo "  autocutsel  : $(pgrep -u ${MT5_USER} -x autocutsel >/dev/null 2>&1 && echo running || echo 'NOT RUNNING')"
   echo "  title-watch : $(as_mt5 "screen -ls" 2>/dev/null | grep -q '\.titlewatch\b' && echo running || echo 'NOT RUNNING')"
   echo "  panel-watch : $(as_mt5 "screen -ls" 2>/dev/null | grep -q '\.panelwatch\b' && echo running || echo 'NOT RUNNING')"
   echo "  window-guard: $(as_mt5 "screen -ls" 2>/dev/null | grep -q '\.windowguard\b' && echo running || echo 'NOT RUNNING')"
@@ -2939,7 +2889,6 @@ case "${1:-menu}" in
       icons)     desktop_sync_icons ;;
       taskbar)   desktop_write_openbox_rules; desktop_write_tint2_conf; desktop_ensure_taskbar; desktop_ensure_window_guard ;;
       titles)    desktop_ensure_title_watcher ;;
-      clipboard) desktop_ensure_clipboard ;;
       doctor)    desktop_doctor ;;
       clean)     desktop_write_openbox_rules; desktop_write_tint2_conf
                  desktop_ensure_taskbar; desktop_ensure_window_guard; purge_wine_shortcuts_local
@@ -2950,7 +2899,7 @@ case "${1:-menu}" in
       visible)   [[ -n "${2:-}" && -n "${3:-}" ]] || { echo "Usage: sudo bash $0 desktop visible <slug> <0|1>"; exit 1; }
                  set_terminal_desktop_visible "$2" "$3"
                  ok "${2}: desktop visibility set to ${3}." ;;
-      *) echo "Usage: sudo bash $0 desktop [all|packages|wallpaper|icons|taskbar|titles|clipboard|clean|start|restore|visible <slug> <0|1>|doctor]"; exit 1 ;;
+      *) echo "Usage: sudo bash $0 desktop [all|packages|wallpaper|icons|taskbar|titles|clean|start|restore|visible <slug> <0|1>|doctor]"; exit 1 ;;
     esac
     HEYSOLO_CLEAN_EXIT=1 ;;
   menu|"") main_menu ;;
