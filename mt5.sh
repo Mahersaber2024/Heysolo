@@ -876,7 +876,7 @@ autohide_show_timeout = 0
 autohide_hide_timeout = 0
 disable_transparency = 1
 panel_background_id = 2
-panel_items = LTSC
+panel_items = TSC
 
 taskbar_mode = single_desktop
 taskbar_padding = 2 0 4
@@ -923,23 +923,6 @@ mouse_right = none
 mouse_scroll_up = toggle
 mouse_scroll_down = iconify
 EOF
-
-  {
-    echo ""
-    echo "launcher_icon_theme = hicolor"
-    echo "launcher_padding = 6 2 8"
-    echo "launcher_background_id = 0"
-    echo "launcher_icon_size = 26"
-    echo "launcher_tooltip = 1"
-    if [[ -s "${TERMINALS_FILE}" ]]; then
-      local l_slug l_rest
-      while IFS='|' read -r l_slug l_rest; do
-        [[ -z "${l_slug:-}" ]] && continue
-        [[ -f "${DESKTOP_DIR}/mt5-${l_slug}.desktop" ]] || continue
-        echo "launcher_item_app = ${DESKTOP_DIR}/mt5-${l_slug}.desktop"
-      done < "${TERMINALS_FILE}"
-    fi
-  } >> "${TINT2_CONF}"
 
   chown -R "${MT5_USER}:${MT5_USER}" "${MT5_HOME}/.config/tint2"
 }
@@ -1538,44 +1521,6 @@ desktop_setup_all(){
   else
     ok "Desktop background + taskbar are ready (icons come in Step 2)."
   fi
-}
-
-desktop_reset_all(){
-  local answer="${1:-}"
-  if [[ "${answer}" != "--yes" ]]; then
-    read -rp "Reset only the MT5 desktop configs and rebuild them? type RESET: " answer || answer=""
-    [[ "${answer}" == "RESET" ]] || { warn "Reset cancelled."; return 0; }
-  fi
-
-  info "Stopping the desktop layer without stopping MT5 terminals..."
-  as_mt5 "screen -S titlewatch -X quit"
-  as_mt5 "screen -S clipwatch -X quit"
-  as_mt5 "screen -S panelwatch -X quit"
-  as_mt5 "screen -S windowguard -X quit"
-  as_mt5 "pkill -x tint2"
-  as_mt5 "pkill -f 'pcmanfm --desktop'"
-
-  info "Removing old desktop configs, icons, wallpaper and caches..."
-  rm -rf "${ASSET_DIR}"
-  rm -f "${DESKTOP_DIR}"/mt5-*.desktop 2>/dev/null || true
-  rm -rf "${MT5_HOME}/.config/pcmanfm/${PCMAN_PROFILE}" \
-         "${MT5_HOME}/.cache/pcmanfm" \
-         "${MT5_HOME}/.cache/tint2" 2>/dev/null || true
-  rm -f "${MT5_HOME}/.config/tint2/tint2rc" \
-        "${MT5_HOME}/.fehbg" \
-        "${MT5_HOME}/.config/openbox/rc.xml" \
-        "${MT5_HOME}/.config/openbox/rc.xml.heysolo.bak" \
-        "${DESKTOP_VISIBLE_FILE}" \
-        "${DESKTOP_ENV_FILE}" 2>/dev/null || true
-  rm -rf "${MT5_HOME}/.local/share/applications/wine" 2>/dev/null || true
-  rm -f "${MT5_HOME}/.config/menus/applications-merged/"*wine* 2>/dev/null || true
-  find "${MT5_HOME}/.local/share/desktop-directories" -name '*wine*' -delete 2>/dev/null || true
-  find "${MT5_HOME}/.local/share/icons" -path '*hicolor*' -name '*wine*' -delete 2>/dev/null || true
-  rm -f /tmp/pcmanfm-desktop.log /tmp/pcmanfm*.log 2>/dev/null || true
-
-  ok "Old desktop state removed. Rebuilding a clean desktop..."
-  desktop_setup_all
-  ok "Desktop reset complete. Terminal registrations, Wine prefixes, MQL5 files and the Telegram bot were left untouched."
 }
 
 desktop_restore_window(){
@@ -3000,7 +2945,6 @@ case "${1:-menu}" in
       titles)    desktop_ensure_title_watcher ;;
       clipboard) desktop_ensure_clipboard ;;
       doctor)    desktop_doctor ;;
-      reset)     desktop_reset_all --yes ;;
       clean)     desktop_write_openbox_rules; desktop_write_tint2_conf
                  desktop_ensure_taskbar; desktop_ensure_window_guard; purge_wine_shortcuts_local
                  desktop_hide_desktop_window
@@ -3010,7 +2954,7 @@ case "${1:-menu}" in
       visible)   [[ -n "${2:-}" && -n "${3:-}" ]] || { echo "Usage: sudo bash $0 desktop visible <slug> <0|1>"; exit 1; }
                  set_terminal_desktop_visible "$2" "$3"
                  ok "${2}: desktop visibility set to ${3}." ;;
-      *) echo "Usage: sudo bash $0 desktop [all|packages|wallpaper|icons|taskbar|titles|clipboard|reset|clean|start|restore|visible <slug> <0|1>|doctor]"; exit 1 ;;
+      *) echo "Usage: sudo bash $0 desktop [all|packages|wallpaper|icons|taskbar|titles|clipboard|clean|start|restore|visible <slug> <0|1>|doctor]"; exit 1 ;;
     esac
     HEYSOLO_CLEAN_EXIT=1 ;;
   menu|"") main_menu ;;
