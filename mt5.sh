@@ -1311,9 +1311,6 @@ desktop_write_window_guard(){
     echo "PANEL_H=${PANEL_HEIGHT}"
   } > "${script}"
   cat >> "${script}" <<'GUARDEOF'
-WORK_H=$(( SCREEN_H - PANEL_H ))
-(( WORK_H > 200 )) || WORK_H=${SCREEN_H}
-
 raise_panel(){
   local t
   if command -v wmctrl >/dev/null 2>&1; then
@@ -1328,41 +1325,7 @@ raise_panel(){
   fi
 }
 
-is_really_maximized(){
-  local id="$1" st
-  st=$(xprop -id "${id}" _NET_WM_STATE 2>/dev/null)
-  [[ "${st}" == *_NET_WM_STATE_MAXIMIZED_VERT* && "${st}" == *_NET_WM_STATE_MAXIMIZED_HORZ* ]]
-}
-
-covers_whole_screen(){
-  local w="$1" h="$2" y="$3"
-  (( w * 100 >= SCREEN_W * 97 && y + h >= SCREEN_H - 10 ))
-}
-
-keep_panel_visible(){
-  local id desk x y w h cls low
-  while read -r id desk x y w h cls _; do
-    [[ -n "${id}" ]] || continue
-    low="${cls,,}"
-    case "${low}" in
-      *tint2*|*pcmanfm*|*desktop_window*) continue ;;
-    esac
-    [[ "${x}" =~ ^-?[0-9]+$ && "${y}" =~ ^-?[0-9]+$ ]] || continue
-    [[ "${w}" =~ ^[0-9]+$ && "${h}" =~ ^[0-9]+$ ]] || continue
-    wmctrl -ir "${id}" -b remove,fullscreen >/dev/null 2>&1
-
-    if (( y + h > WORK_H + 5 )); then
-      local new_h=$(( WORK_H - y ))
-      (( new_h > 200 )) || continue
-      wmctrl -ir "${id}" -e "0,${x},${y},${w},${new_h}" >/dev/null 2>&1
-    fi
-  done < <(wmctrl -lGx 2>/dev/null)
-}
-
 while true; do
-  if command -v wmctrl >/dev/null 2>&1; then
-    keep_panel_visible
-  fi
   raise_panel
   sleep 3
 done
