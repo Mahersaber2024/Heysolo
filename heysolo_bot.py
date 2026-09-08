@@ -3157,14 +3157,7 @@ def _plain(html_text: str) -> str:
 async def send_startup_notice(bot):
     accounts = await asyncio.to_thread(list_accounts)
     text = STARTUP_TEXT
-    if accounts:
-        text += f"\n📊 Accounts detected: <b>{len(accounts)}</b>"
-        if len(accounts) > 1:
-            text += f" <code>({', '.join(a['login'] for a in accounts)})</code>"
-        syms = await asyncio.to_thread(get_symbols_for_login, accounts[0]["login"])
-        if syms:
-            text += f"\n💠 Symbols: <code>{', '.join(syms)}</code>"
-    else:
+    if not accounts:
         text += "\n⏳ Waiting for the EA to export its first account file."
 
     print("\n" + _plain(text) + "\n", flush=True)
