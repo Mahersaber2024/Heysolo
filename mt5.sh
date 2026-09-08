@@ -668,14 +668,11 @@ SCREEN_H="${SCREEN_RES_WH#*x}"
 PANEL_H="${PANEL_HEIGHT}"
 
 fit_work_area(){
-  local wid="\${1:-}" wh
+  local wid="\${1:-}"
   [[ -n "\${wid}" ]] || return 0
   command -v wmctrl >/dev/null 2>&1 || return 0
-  wh=\$(( SCREEN_H - PANEL_H ))
-  (( wh > 200 )) || wh=\${SCREEN_H}
   wmctrl -ir "\${wid}" -b remove,fullscreen >/dev/null 2>&1 || true
-  wmctrl -ir "\${wid}" -b remove,maximized_vert,maximized_horz >/dev/null 2>&1 || true
-  wmctrl -ir "\${wid}" -e "1,0,0,\${SCREEN_W},\${wh}" >/dev/null 2>&1 || true
+  wmctrl -ir "\${wid}" -b add,maximized_vert,maximized_horz >/dev/null 2>&1 || true
 }
 
 find_window(){
@@ -1325,8 +1322,7 @@ keep_panel_visible(){
     [[ "${w}" =~ ^[0-9]+$ && "${h}" =~ ^[0-9]+$ ]] || continue
     wmctrl -ir "${id}" -b remove,fullscreen >/dev/null 2>&1
     if (( w * 100 >= SCREEN_W * 80 && y + h > WORK_H )); then
-      wmctrl -ir "${id}" -b remove,maximized_vert,maximized_horz >/dev/null 2>&1
-      wmctrl -ir "${id}" -e "1,0,0,${SCREEN_W},${WORK_H}" >/dev/null 2>&1
+      wmctrl -ir "${id}" -b add,maximized_vert,maximized_horz >/dev/null 2>&1
     fi
   done < <(wmctrl -lGx 2>/dev/null)
 }
