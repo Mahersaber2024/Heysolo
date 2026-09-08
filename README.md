@@ -39,6 +39,7 @@ and uninstalling any of it - is done from inside this one panel:
 - **X** - opens the uninstaller (`uninstall.sh`) with options to remove the
   bot, the MT5 terminals + desktop, or everything.
 - **U** - re-downloads the latest version of all the scripts below.
+- **F** - resets only the MT5 desktop layer, removing its generated configs, icons, wallpaper, taskbar state and caches, then rebuilding it. It does not remove the Telegram bot, terminals, Wine prefixes or MQL5 assets.
 
 Under the hood, `heysolo.sh` downloads `install.sh`, `mt5.sh`, and
 `uninstall.sh` once into `/opt/heysolo/scripts` and calls whichever one a

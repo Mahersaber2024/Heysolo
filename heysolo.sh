@@ -158,6 +158,7 @@ panel(){
   echo
   say "  ${CYAN}TERMINALS${NC}  [${BOLD}1..9${NC}] start/stop   [${BOLD}R1${NC}] restart   [${BOLD}D1${NC}] desktop on/off   [${BOLD}K1${NC}] remove"
   say "             [${BOLD}A${NC}] start all    [${BOLD}Z${NC}] stop all   [${BOLD}V${NC}] vnc on/off       [${BOLD}W${NC}] window to front"
+  say "             [${BOLD}F${NC}] reset desktop configs only (does not touch Telegram bot or terminals)"
   echo
   say "  ${CYAN}SETUP${NC}      [${BOLD}P${NC}] prepare server   [${BOLD}I${NC}] install/add terminal   [${BOLD}M${NC}] sync MQL5 files"
   say "             [${BOLD}S${NC}] wine stealth     ${DIM}hide Wine from brokers (spoof Windows 10)${NC}"
@@ -253,6 +254,12 @@ do_action(){
         fi
         sleep 1 ;;
     w)  if declare -F desktop_restore_window >/dev/null 2>&1; then desktop_restore_window; else warn "desktop module missing"; fi ;;
+    f)  if declare -F desktop_reset_all >/dev/null 2>&1; then
+          desktop_reset_all
+        else
+          warn "desktop module missing"
+        fi
+        pause ;;
     p)  run_mt5 step1; pause ;;
     i)  run_mt5 step2; pause ;;
     s)  if [[ -s "${SCRIPTS_DIR}/win/wine-stealth.sh" ]]; then
