@@ -1330,6 +1330,12 @@ raise_panel(){
   fi
 }
 
+is_really_maximized(){
+  local id="$1" st
+  st=$(xprop -id "${id}" _NET_WM_STATE 2>/dev/null)
+  [[ "${st}" == *_NET_WM_STATE_MAXIMIZED_VERT* && "${st}" == *_NET_WM_STATE_MAXIMIZED_HORZ* ]]
+}
+
 keep_panel_visible(){
   local id desk x y w h cls low
   while read -r id desk x y w h cls _; do
@@ -1341,7 +1347,7 @@ keep_panel_visible(){
     [[ "${x}" =~ ^-?[0-9]+$ && "${y}" =~ ^-?[0-9]+$ ]] || continue
     [[ "${w}" =~ ^[0-9]+$ && "${h}" =~ ^[0-9]+$ ]] || continue
     wmctrl -ir "${id}" -b remove,fullscreen >/dev/null 2>&1
-    if (( w * 100 >= SCREEN_W * 80 && y + h > WORK_H )); then
+    if (( y + h > WORK_H )) && is_really_maximized "${id}"; then
       wmctrl -ir "${id}" -b remove,maximized_vert,maximized_horz >/dev/null 2>&1
       wmctrl -ir "${id}" -e "0,0,0,${SCREEN_W},${WORK_H}" >/dev/null 2>&1
     fi
@@ -1367,6 +1373,11 @@ desktop_ensure_window_guard(){
     apt-get install -y wmctrl xdotool >/dev/null 2>&1 || true
   fi
   command -v wmctrl >/dev/null 2>&1 || { warn "wmctrl missing - cannot keep the taskbar above the terminals."; return 0; }
+  if ! command -v xprop >/dev/null 2>&1; then
+    wait_for_dpkg_lock
+    apt-get install -y x11-utils >/dev/null 2>&1 || true
+  fi
+  command -v xprop >/dev/null 2>&1 || warn "xprop missing (x11-utils) - the window guard may misjudge maximized windows."
   local script; script=$(desktop_write_window_guard)
   as_mt5 "screen -ls" 2>/dev/null | grep -q '\.windowguard\b' && return 0
   as_mt5 "screen -dmS windowguard bash -c 'export DISPLAY=:${DISPLAY_NUM}; ${script} >>\"${WINDOW_GUARD_LOG}\" 2>&1'"
