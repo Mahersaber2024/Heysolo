@@ -177,6 +177,8 @@ uninstall_bot(){
 
 uninstall_desktop(){
   info "Removing the VNC desktop layer (wallpaper, icons, taskbar)..."
+  as_mt5 "screen -S windowguard -X quit"
+  as_mt5 "screen -S panelwatch -X quit"
   as_mt5 "pkill -x tint2"
   as_mt5 "pkill -f 'pcmanfm --desktop'"
   rm -rf "${ASSET_DIR}"
@@ -201,6 +203,7 @@ stop_all_mt5(){
   as_mt5 "screen -S titlewatch -X quit"
   as_mt5 "screen -S clipwatch -X quit"
   as_mt5 "screen -S panelwatch -X quit"
+  as_mt5 "screen -S windowguard -X quit"
   as_mt5 "pkill -x tint2"
   as_mt5 "pkill x11vnc"
   as_mt5 "pkill -f 'Xvfb :${DISPLAY_NUM}'"

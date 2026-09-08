@@ -273,52 +273,72 @@ ensure_screenshot_support(){
   fi
 }
 
-repair_screenshots(){
-  header; title "SCREENSHOT REPAIR"; header
-  echo "  Display depth must be >= ${COLOR_DEPTH_MIN}-bit and every prefix needs gdiplus."
-  echo
+SCREENSHOT_DISPLAY_RESTARTED=0
 
-  local depth restarted=0
+ensure_display_depth_ok(){
+  SCREENSHOT_DISPLAY_RESTARTED=0
+  local depth slug exe wineprefix termpath
   depth=$(timeout 5 xdpyinfo -display ":${DISPLAY_NUM}" 2>/dev/null \
           | awk '/depth of root window/ {print $5}')
+
+  if [[ -n "${depth}" ]] && (( depth >= COLOR_DEPTH_MIN )); then
+    return 0
+  fi
 
   if [[ -z "${depth}" ]]; then
     warn "Could not read the display depth - starting the display at ${COLOR_DEPTH}-bit."
     start_display
-    restarted=1
-  elif (( depth < COLOR_DEPTH_MIN )); then
-    warn "Display :${DISPLAY_NUM} is running at ${depth}-bit - that is why screenshots fail."
-    info "Restarting it at ${COLOR_DEPTH}-bit (terminals are closed cleanly first, then reopened)."
-    local slug exe wineprefix termpath
-    while IFS='|' read -r slug exe wineprefix termpath; do
-      [[ -n "${slug}" ]] || continue
-      graceful_stop_terminal "${slug}" "${termpath}"
-    done < "${TERMINALS_FILE}" 2>/dev/null || true
-
-    as_mt5 "screen -S vnc -X quit" >/dev/null 2>&1 || true
-    pkill -u "${MT5_USER}" -f "Xvfb :${DISPLAY_NUM}" >/dev/null 2>&1 || true
-    sleep 1
-    rm -f "/tmp/.X${DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${DISPLAY_NUM}" 2>/dev/null || true
-    start_display
-    restarted=1
-  else
-    ok "Display :${DISPLAY_NUM} is at ${depth}-bit - deep enough for screenshots."
+    SCREENSHOT_DISPLAY_RESTARTED=1
+    return 0
   fi
 
+  warn "Display :${DISPLAY_NUM} is running at ${depth}-bit - EA screenshots need >= ${COLOR_DEPTH_MIN}-bit."
+  info "Restarting it at ${COLOR_DEPTH}-bit (terminals are closed cleanly first, then reopened)."
+  while IFS='|' read -r slug exe wineprefix termpath; do
+    [[ -n "${slug}" ]] || continue
+    graceful_stop_terminal "${slug}" "${termpath}"
+  done < "${TERMINALS_FILE}" 2>/dev/null || true
+
+  as_mt5 "screen -S vnc -X quit" >/dev/null 2>&1 || true
+  pkill -u "${MT5_USER}" -f "Xvfb :${DISPLAY_NUM}" >/dev/null 2>&1 || true
+  sleep 1
+  rm -f "/tmp/.X${DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${DISPLAY_NUM}" 2>/dev/null || true
+  start_display
+  SCREENSHOT_DISPLAY_RESTARTED=1
+  return 0
+}
+
+ensure_screenshot_support_all(){
   local slug exe wineprefix termpath
   while IFS='|' read -r slug exe wineprefix termpath; do
     [[ -n "${slug}" ]] || continue
     [[ -n "${wineprefix}" ]] || wineprefix="$(wineprefix_for_slug "${slug}")"
     [[ -d "${wineprefix}/drive_c" ]] || continue
-    echo "  - ${slug}"
     ensure_screenshot_support "${wineprefix}"
   done < "${TERMINALS_FILE}" 2>/dev/null || true
+  return 0
+}
 
-  if (( restarted == 1 )); then
+ensure_screenshots_ready(){
+  if ! command -v winetricks >/dev/null 2>&1; then
+    wait_for_dpkg_lock
+    apt-get install -y winetricks cabextract >/dev/null 2>&1 || true
+  fi
+  ensure_display_depth_ok
+  ensure_screenshot_support_all
+  if (( SCREENSHOT_DISPLAY_RESTARTED == 1 )) && [[ -s "${TERMINALS_FILE}" ]]; then
     info "Reopening the terminals..."
     start_all_terminals
   fi
+  ok "EA screenshots ready: display depth >= ${COLOR_DEPTH_MIN}-bit and gdiplus in every prefix."
+  return 0
+}
 
+repair_screenshots(){
+  header; title "SCREENSHOT REPAIR"; header
+  echo "  Display depth must be >= ${COLOR_DEPTH_MIN}-bit and every prefix needs gdiplus."
+  echo
+  ensure_screenshots_ready
   header
   ok "Done. EA screenshots should work now - no EA changes needed."
   echo "  If one still fails, check the Experts tab: a chart has to be open for it."
@@ -643,6 +663,21 @@ raise_taskbar(){
   done
 }
 
+SCREEN_W="${SCREEN_RES_WH%x*}"
+SCREEN_H="${SCREEN_RES_WH#*x}"
+PANEL_H="${PANEL_HEIGHT}"
+
+fit_work_area(){
+  local wid="\${1:-}" wh
+  [[ -n "\${wid}" ]] || return 0
+  command -v wmctrl >/dev/null 2>&1 || return 0
+  wh=\$(( SCREEN_H - PANEL_H ))
+  (( wh > 200 )) || wh=\${SCREEN_H}
+  wmctrl -ir "\${wid}" -b remove,fullscreen >/dev/null 2>&1 || true
+  wmctrl -ir "\${wid}" -b remove,maximized_vert,maximized_horz >/dev/null 2>&1 || true
+  wmctrl -ir "\${wid}" -e "0,0,0,\${SCREEN_W},\${wh}" >/dev/null 2>&1 || true
+}
+
 find_window(){
   local wid=""
 
@@ -671,6 +706,7 @@ raise(){
     timeout 5 xdotool windowraise "\${wid}" >/dev/null 2>&1 || true
     timeout 5 xdotool windowactivate "\${wid}" >/dev/null 2>&1 || true
   fi
+  fit_work_area "\${wid}"
   raise_taskbar
   log "raised window \${wid}"
   return 0
@@ -834,7 +870,10 @@ panel_padding = 4 2 4
 panel_dock = 0
 wm_menu = 1
 panel_layer = top
+strut_policy = follow_size
 autohide = 0
+autohide_show_timeout = 0
+autohide_hide_timeout = 0
 disable_transparency = 1
 panel_background_id = 2
 panel_items = LTSC
@@ -929,12 +968,13 @@ desktop_write_openbox_rules(){
     </application>'
   fi
 
-  if [[ -s "${rc}" ]] && ! grep -q 'HeySolo openbox rules - rev 2' "${rc}" 2>/dev/null; then
+  if [[ -s "${rc}" ]] && ! grep -q 'HeySolo openbox rules - rev 3' "${rc}" 2>/dev/null; then
     cp -f "${rc}" "${rc}.heysolo.bak" 2>/dev/null || true
   fi
 
   cat > "${rc}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- HeySolo openbox rules - rev 3 -->
 
 <openbox_config xmlns="http://openbox.org/3.4/rc">
   <resistance>
@@ -1094,7 +1134,20 @@ desktop_write_openbox_rules(){
     <application class="terminal64.exe*">
       <layer>normal</layer>
       <fullscreen>no</fullscreen>
-      <maximized>no</maximized>
+      <maximized>yes</maximized>
+    </application>
+    <application name="terminal64.exe*">
+      <layer>normal</layer>
+      <fullscreen>no</fullscreen>
+      <maximized>yes</maximized>
+    </application>
+    <application class="Wine">
+      <layer>normal</layer>
+      <fullscreen>no</fullscreen>
+    </application>
+    <application class="wine">
+      <layer>normal</layer>
+      <fullscreen>no</fullscreen>
     </application>
     
     ${explorer_rule}
@@ -1219,6 +1272,11 @@ while true; do
     flock -w 5 "\${LOCK}" -c 'pgrep -x tint2 >/dev/null 2>&1 || setsid tint2 -c "'"\${CONF}"'" >>"'"${TINT2_LOG}"'" 2>&1 &'
     sleep 2
   fi
+  if command -v wmctrl >/dev/null 2>&1; then
+    for w in \$(wmctrl -lx 2>/dev/null | awk 'tolower(\$3) ~ /tint2/ {print \$1}'); do
+      wmctrl -ir "\${w}" -b add,above >/dev/null 2>&1
+    done
+  fi
   if command -v xdotool >/dev/null 2>&1; then
     for w in \$(xdotool search --class '^tint2\$' 2>/dev/null); do
       xdotool windowraise "\${w}" >/dev/null 2>&1
@@ -1238,6 +1296,82 @@ desktop_ensure_panel_watchdog(){
   as_mt5 "screen -dmS panelwatch bash -c 'export DISPLAY=:${DISPLAY_NUM}; ${script}'"
 }
 
+WINDOW_GUARD_LOG="${ASSET_DIR}/logs/window-guard.log"
+
+desktop_write_window_guard(){
+  local script="${BIN_DIR}/window-guard.sh" sw sh
+  sw="${SCREEN_RES_WH%x*}"
+  sh="${SCREEN_RES_WH#*x}"
+  [[ "${sw}" =~ ^[0-9]+$ ]] || sw=1920
+  [[ "${sh}" =~ ^[0-9]+$ ]] || sh=1080
+  mkdir -p "${BIN_DIR}" "$(dirname "${WINDOW_GUARD_LOG}")" 2>/dev/null || true
+  {
+    echo '#!/usr/bin/env bash'
+    echo "export DISPLAY=:${DISPLAY_NUM}"
+    echo "SCREEN_W=${sw}"
+    echo "SCREEN_H=${sh}"
+    echo "PANEL_H=${PANEL_HEIGHT}"
+  } > "${script}"
+  cat >> "${script}" <<'GUARDEOF'
+WORK_H=$(( SCREEN_H - PANEL_H ))
+(( WORK_H > 200 )) || WORK_H=${SCREEN_H}
+
+raise_panel(){
+  local t
+  if command -v wmctrl >/dev/null 2>&1; then
+    for t in $(wmctrl -lx 2>/dev/null | awk 'tolower($3) ~ /tint2/ {print $1}'); do
+      wmctrl -ir "${t}" -b add,above >/dev/null 2>&1
+    done
+  fi
+  if command -v xdotool >/dev/null 2>&1; then
+    for t in $(xdotool search --class '^tint2$' 2>/dev/null); do
+      xdotool windowraise "${t}" >/dev/null 2>&1
+    done
+  fi
+}
+
+keep_panel_visible(){
+  local id desk x y w h cls low
+  while read -r id desk x y w h cls _; do
+    [[ -n "${id}" ]] || continue
+    low="${cls,,}"
+    case "${low}" in
+      *tint2*|*pcmanfm*|*desktop_window*) continue ;;
+    esac
+    [[ "${x}" =~ ^-?[0-9]+$ && "${y}" =~ ^-?[0-9]+$ ]] || continue
+    [[ "${w}" =~ ^[0-9]+$ && "${h}" =~ ^[0-9]+$ ]] || continue
+    wmctrl -ir "${id}" -b remove,fullscreen >/dev/null 2>&1
+    if (( w * 100 >= SCREEN_W * 80 && y + h > WORK_H )); then
+      wmctrl -ir "${id}" -b remove,maximized_vert,maximized_horz >/dev/null 2>&1
+      wmctrl -ir "${id}" -e "0,0,0,${SCREEN_W},${WORK_H}" >/dev/null 2>&1
+    fi
+  done < <(wmctrl -lGx 2>/dev/null)
+}
+
+while true; do
+  if command -v wmctrl >/dev/null 2>&1; then
+    keep_panel_visible
+  fi
+  raise_panel
+  sleep 3
+done
+GUARDEOF
+  chmod +x "${script}"
+  chown "${MT5_USER}:${MT5_USER}" "${script}" 2>/dev/null || true
+  echo "${script}"
+}
+
+desktop_ensure_window_guard(){
+  if ! command -v wmctrl >/dev/null 2>&1; then
+    wait_for_dpkg_lock
+    apt-get install -y wmctrl xdotool >/dev/null 2>&1 || true
+  fi
+  command -v wmctrl >/dev/null 2>&1 || { warn "wmctrl missing - cannot keep the taskbar above the terminals."; return 0; }
+  local script; script=$(desktop_write_window_guard)
+  as_mt5 "screen -ls" 2>/dev/null | grep -q '\.windowguard\b' && return 0
+  as_mt5 "screen -dmS windowguard bash -c 'export DISPLAY=:${DISPLAY_NUM}; ${script} >>\"${WINDOW_GUARD_LOG}\" 2>&1'"
+}
+
 desktop_ensure_taskbar(){
   step "starting the clean taskbar (tint2)"
   if ! command -v tint2 >/dev/null 2>&1; then
@@ -1255,6 +1389,7 @@ desktop_ensure_taskbar(){
   sleep 2
   desktop_hide_desktop_window
   desktop_ensure_panel_watchdog
+  desktop_ensure_window_guard
   if pgrep -u "${MT5_USER}" -x tint2 >/dev/null 2>&1; then
     ok "Clean taskbar running (launcher buttons + window list + clock)."
   else
@@ -1458,6 +1593,7 @@ desktop_doctor(){
   echo "  autocutsel  : $(pgrep -u ${MT5_USER} -x autocutsel >/dev/null 2>&1 && echo running || echo 'NOT RUNNING')"
   echo "  title-watch : $(as_mt5 "screen -ls" 2>/dev/null | grep -q '\.titlewatch\b' && echo running || echo 'NOT RUNNING')"
   echo "  panel-watch : $(as_mt5 "screen -ls" 2>/dev/null | grep -q '\.panelwatch\b' && echo running || echo 'NOT RUNNING')"
+  echo "  window-guard: $(as_mt5 "screen -ls" 2>/dev/null | grep -q '\.windowguard\b' && echo running || echo 'NOT RUNNING')"
   echo "  resolution  : ${SCREEN_RES} (geometry ${SCREEN_RES_WH}, work area ${WORK_RES_WH}, low-bandwidth=${LOW_BANDWIDTH})"
   local _depth
   _depth=$(timeout 5 xdpyinfo -display ":${DISPLAY_NUM}" 2>/dev/null | awk '/depth of root window/ {print $5}')
@@ -1534,6 +1670,7 @@ boot_recover(){
   require_root
   HEYSOLO_STAGE_WARNINGS=()
   guard "virtual display + desktop" start_display
+  guard "EA screenshot support" ensure_screenshots_ready
   if [[ -s "${TERMINALS_FILE}" ]]; then
     sleep 3
     guard "start terminals" start_all_terminals
@@ -2439,6 +2576,7 @@ start_all_terminals(){
       ok "${slug} started."
     fi
   done < "${TERMINALS_FILE}"
+  declare -F desktop_ensure_window_guard >/dev/null 2>&1 && desktop_ensure_window_guard || true
 }
 
 manage_one_terminal(){
@@ -2657,6 +2795,7 @@ step1_prepare_server(){
 
   export DESKTOP_ICONS=0
   guard "virtual display + VNC" start_display
+  guard "EA screenshot support" ensure_screenshots_ready
   guard "boot recovery service" install_boot_service
   if [[ "${SKIP_DESKTOP:-0}" == "1" ]]; then
     warn "SKIP_DESKTOP=1 - skipping wallpaper/taskbar."
@@ -2700,6 +2839,7 @@ step2_install_terminals(){
   select_installers || { press_enter; return; }
   HEYSOLO_STAGE_WARNINGS=()
   guard "install terminals" install_selected
+  guard "EA screenshots"    ensure_screenshots_ready
   guard "start terminals"   start_all_terminals
 
   sleep 6
@@ -2758,7 +2898,6 @@ main_menu(){
     echo -e "   ${BOLD}5)${NC} Remove a terminal"
     echo -e "   ${BOLD}6)${NC} Uploaded installers    - list what's in ${MT5_LOCAL_DIR}"
     echo -e "   ${BOLD}7)${NC} Sync MQL5 assets       - push Experts/Include/Indicators/set/Templates"
-    echo -e "   ${BOLD}8)${NC} Fix EA screenshots     - display colour depth + gdiplus in every prefix"
     echo
     echo -e "  ${BOLD}0)${NC} Exit"
     echo
@@ -2795,7 +2934,6 @@ main_menu(){
          header
          sync_mql5_assets_all
          press_enter ;;
-      8) require_root; repair_screenshots; press_enter ;;
       0) echo "Goodbye!"; HEYSOLO_CLEAN_EXIT=1; exit 0 ;;
       *) warn "Invalid."; sleep 1 ;;
     esac
@@ -2820,12 +2958,12 @@ case "${1:-menu}" in
       packages)  desktop_install_packages ;;
       wallpaper) desktop_prepare_dirs; desktop_fetch_wallpaper; desktop_apply_wallpaper ;;
       icons)     desktop_sync_icons ;;
-      taskbar)   desktop_write_openbox_rules; desktop_write_tint2_conf; desktop_ensure_taskbar ;;
+      taskbar)   desktop_write_openbox_rules; desktop_write_tint2_conf; desktop_ensure_taskbar; desktop_ensure_window_guard ;;
       titles)    desktop_ensure_title_watcher ;;
       clipboard) desktop_ensure_clipboard ;;
       doctor)    desktop_doctor ;;
       clean)     desktop_write_openbox_rules; desktop_write_tint2_conf
-                 desktop_ensure_taskbar; purge_wine_shortcuts_local
+                 desktop_ensure_taskbar; desktop_ensure_window_guard; purge_wine_shortcuts_local
                  desktop_hide_desktop_window
                  ok "Taskbar cleaned - the 'desktop 1' button is gone." ;;
       start)     desktop_start ;;
