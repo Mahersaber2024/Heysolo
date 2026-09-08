@@ -20,6 +20,7 @@ SHARED_COMMON_DIR="${MT5_HOME}/.heysolo-common"
 LAUNCHER_DIR="/opt/heysolo"
 LAUNCHER_CLI="/usr/local/bin/heysolo"
 MT5_EXE_DIR="/opt/heysolo/mt5"
+MQL5_LOCAL_DIR="/opt/heysolo/mt5-mql5"
 
 BACKUP_ROOT="/root"
 BACKUP_PREFIX="heysolo-backup-"
@@ -275,7 +276,10 @@ mt5_installed(){ id "${MT5_USER}" &>/dev/null || [[ -d "${MT5_STATE_DIR}" ]]; }
 
 clean_launcher_dir_keep_mt5(){
   [[ -d "${LAUNCHER_DIR}" ]] || return 0
-  find "${LAUNCHER_DIR}" -mindepth 1 -maxdepth 1 -not -name "$(basename "${MT5_EXE_DIR}")" -exec rm -rf {} + 2>/dev/null || true
+  find "${LAUNCHER_DIR}" -mindepth 1 -maxdepth 1 \
+    -not -name "$(basename "${MT5_EXE_DIR}")" \
+    -not -name "$(basename "${MQL5_LOCAL_DIR}")" \
+    -exec rm -rf {} + 2>/dev/null || true
 }
 
 cleanup_launcher_if_unused(){
@@ -283,7 +287,7 @@ cleanup_launcher_if_unused(){
     return 0
   fi
   if [[ -d "${LAUNCHER_DIR}" || -f "${LAUNCHER_CLI}" ]]; then
-    info "Nothing left for the heysolo launcher to manage - removing ${LAUNCHER_DIR} (keeping ${MT5_EXE_DIR}) and ${LAUNCHER_CLI}..."
+    info "Nothing left for the heysolo launcher to manage - removing ${LAUNCHER_DIR} (keeping ${MT5_EXE_DIR} and ${MQL5_LOCAL_DIR}) and ${LAUNCHER_CLI}..."
     clean_launcher_dir_keep_mt5
     rm -f "${LAUNCHER_CLI}"
     ok "Launcher removed."
