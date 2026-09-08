@@ -88,8 +88,10 @@ files (Outbox events, Control files, the prop dashboard). If both run on the
    ```text
    %APPDATA%\MetaQuotes\Terminal\Common\Files
    ```
-2. Go one level up to the `Files` folder's parent (`Common`), right-click it →
+2. Right-click the `Files` folder itself (not its parent `Common`) →
    **Properties → Sharing → Advanced Sharing** → check **Share this folder**.
+   Only `Files` needs to be shared - the rest of `Common` should stay
+   private.
 3. Click **Permissions** and give the account you'll use from Linux
    **Full Control** (Read/Write - the EA and the bot both need to write files
    here).
@@ -99,7 +101,7 @@ files (Outbox events, Control files, the prop dashboard). If both run on the
    (Control Panel → Windows Defender Firewall → Allow an app through
    firewall).
 6. Note the machine's local IP (`ipconfig`) and the share name, e.g.
-   `\\192.168.1.50\Common`.
+   `\\192.168.1.50\Files`.
 
 Use a dedicated Windows user for this share (not your personal login) and
 give it a strong password - this account is basically an open door to that
@@ -128,27 +130,27 @@ folder from the network.
    ```
 4. Mount the share:
    ```bash
-   sudo mount -t cifs //192.168.1.50/Common /mnt/mt5-common \
+   sudo mount -t cifs //192.168.1.50/Files /mnt/mt5-common \
      -o credentials=/etc/mt5-share.credentials,uid=root,gid=root,iocharset=utf8,vers=3.0
    ```
-   Replace `192.168.1.50` and `Common` with the IP/share name from step 1.6.
+   Replace `192.168.1.50` and `Files` with the IP/share name from step 1.6.
 5. Verify the mount can see the EA's data:
    ```bash
-   ls /mnt/mt5-common/Files/TelegramBridge
+   ls /mnt/mt5-common/TelegramBridge
    ```
 6. Make the mount survive reboots by adding it to `/etc/fstab`:
    ```text
-   //192.168.1.50/Common /mnt/mt5-common cifs credentials=/etc/mt5-share.credentials,uid=root,gid=root,iocharset=utf8,vers=3.0,_netdev 0 0
+   //192.168.1.50/Files /mnt/mt5-common cifs credentials=/etc/mt5-share.credentials,uid=root,gid=root,iocharset=utf8,vers=3.0,_netdev 0 0
    ```
 
 ### 3. Point the bot at the mounted folder
 
-Set `common_files_dir` to the **`Files`** subfolder inside the mount (this is
-what `heysolo_settings.py` expects - it's the same folder MT5 calls
-`Common\Files`):
+Since the share itself *is* the `Files` folder, `common_files_dir` points
+straight at the mount (this is what `heysolo_settings.py` expects - it's
+the same folder MT5 calls `Common\Files`):
 
 ```json
-"common_files_dir": "/mnt/mt5-common/Files"
+"common_files_dir": "/mnt/mt5-common"
 ```
 
 You can set this during the bot setup step (**T** in the panel), by editing

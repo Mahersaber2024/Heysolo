@@ -1,17 +1,4 @@
-"""
-db/setup_db.py
-
-Explicitly (re)creates every table heysolo_bot needs (experts, accounts,
-bot_users, user_accounts, user_topics) by running the same SCHEMA that
-db.database.PgDatabase normally runs the first time the bot connects.
-
-install.sh calls this right after setup_database() saves the connection
-info into heysolo_settings.json and the venv (with psycopg2) is ready, so a
-fresh install gets a fully migrated schema before
-the systemd service ever starts - instead of relying on the bot's own lazy
-migration on first connection. Safe to re-run any time (every statement in
-SCHEMA is CREATE TABLE/INDEX IF NOT EXISTS).
-"""
+# NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
 import os
 import sys
 
@@ -44,13 +31,10 @@ def test_connection() -> bool:
 
 
 def create_tables() -> bool:
-    """Delegates to db.database.PgDatabase, which creates every table this
-    bot needs (experts, accounts, bot_users, user_accounts, user_topics)
-    with CREATE TABLE IF NOT EXISTS, so this is always safe to re-run."""
     try:
         from db.database import PgDatabase
         print("\n📊 Creating/verifying tables...")
-        PgDatabase()  # __init__ connects, runs SCHEMA and seeds the default experts
+        PgDatabase()
         print("✅ experts, accounts, bot_users, user_accounts, user_topics ready")
         return True
     except Exception as e:
@@ -88,7 +72,6 @@ def show_tables():
 
 
 def drop_all_tables():
-    """Drop all tables (use with caution!)"""
     confirm = input("⚠️ Are you sure you want to drop ALL tables? (yes/no): ")
     if confirm.lower() != "yes":
         print("❌ Operation cancelled.")

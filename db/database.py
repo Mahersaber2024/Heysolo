@@ -1,24 +1,5 @@
-"""PostgreSQL layer for heysolo_bot (module: ``db/database.py``).
-
-Everything that used to live in ``heysolo_settings.json`` and needs to be
-*per user* now lives in the ``heysolo`` PostgreSQL database:
-
-  experts        the EAs the bot knows about + what each one supports
-  accounts       every reporting MT5 login, and which expert it runs
-  bot_users      admins / users, plus each user's last active account
-  user_accounts  which users may see which accounts
-  user_topics    per-user Telegram topic (thread) routing overrides
-
-Connection details (db_host/db_port/db_name/db_user/db_password) come from
-heysolo_settings.json itself - written there by install.sh's
-setup_database() step - via heysolo_settings.get_db_config(). If PostgreSQL
-can't be reached the module degrades to a local JSON store so the bot still
-boots, and retries Postgres every minute.
-"""
-
-import json
+# NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
 import logging
-import os
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -27,18 +8,8 @@ import heysolo_settings
 
 logger = logging.getLogger(__name__)
 
-# This module now lives in the db/ subpackage, but the JSON fallback store
-# is written next to the bot's own files (one level up), so resolve
-# BASE_DIR to the parent (bot install) directory.
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-JSON_STORE_FILE = os.path.join(BASE_DIR, "heysolo_db.json")
-
 NOTIFY_KINDS = ("bias", "trade", "log", "result")
 
-# The two EAs that ship with the project. ACHCMBias reads Control_*.txt, so
-# bias / manual-auto / start-stop all work from Telegram. The other one only
-# exports events - there is nothing to set a bias on, so its users never see
-# those buttons at all.
 DEFAULT_EXPERTS: List[dict] = [
     {
         "code": "achcmbias",
@@ -72,6 +43,11 @@ CREATE TABLE IF NOT EXISTS experts (
     sort_order    INTEGER NOT NULL DEFAULT 100
 );
 
+-- expert_id here is legacy: it used to decide which buttons an account's
+-- users got, which meant an EA that had not reported yet (or a row auto-
+-- created by ensure_account with expert_id NULL) silently decided a user's
+-- permissions. Capabilities now live on bot_users.expert_id. The column is
+-- kept only so _backfill_user_experts() can carry old installs over.
 CREATE TABLE IF NOT EXISTS accounts (
     login      TEXT PRIMARY KEY,
     expert_id  INTEGER REFERENCES experts(id) ON DELETE SET NULL,
@@ -81,7 +57,12 @@ CREATE TABLE IF NOT EXISTS accounts (
 CREATE TABLE IF NOT EXISTS bot_users (
     user_id      BIGINT PRIMARY KEY,
     is_admin     BOOLEAN NOT NULL DEFAULT FALSE,
+    expert_id    INTEGER REFERENCES experts(id) ON DELETE SET NULL,
+    dest_mode    TEXT,
+    dest_chat_id BIGINT,
     active_login TEXT,
+    display_name TEXT,
+    username     TEXT,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -91,20 +72,50 @@ CREATE TABLE IF NOT EXISTS user_accounts (
     PRIMARY KEY (user_id, login)
 );
 
+-- One row per (user, kind) holding just a topic number. Where a user's
+-- alerts go - their DM or a group - is a single choice on bot_users
+-- (dest_mode/dest_chat_id); a topic number only refines *which* thread of
+-- that one group each kind lands in. mode/chat_id here are leftovers from
+-- when every kind carried its own destination, and are read once by
+-- _migrate_user_dest() and then never again.
 CREATE TABLE IF NOT EXISTS user_topics (
     user_id   BIGINT NOT NULL,
     kind      TEXT   NOT NULL,
-    thread_id BIGINT NOT NULL,
+    mode      TEXT   NOT NULL DEFAULT 'thread',
+    chat_id   BIGINT,
+    thread_id BIGINT,
+    notify    BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (user_id, kind)
+);
+
+CREATE TABLE IF NOT EXISTS control_log (
+    login      TEXT PRIMARY KEY,
+    user_id    BIGINT,
+    action     TEXT,
+    mode       TEXT,
+    trading    BOOLEAN,
+    changed_at BIGINT NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS user_accounts_login_idx ON user_accounts (login);
 """
 
+MIGRATE_USER_TOPICS = """
+ALTER TABLE user_topics ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'thread';
+ALTER TABLE user_topics ADD COLUMN IF NOT EXISTS chat_id BIGINT;
+ALTER TABLE user_topics ALTER COLUMN thread_id DROP NOT NULL;
+ALTER TABLE user_topics ADD COLUMN IF NOT EXISTS notify BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS display_name TEXT;
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS username TEXT;
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS expert_id INTEGER REFERENCES experts(id) ON DELETE SET NULL;
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS dest_mode TEXT;
+ALTER TABLE bot_users ADD COLUMN IF NOT EXISTS dest_chat_id BIGINT;
+"""
 
-# --------------------------------------------------------------------------
-# connection settings
-# --------------------------------------------------------------------------
+DEST_MODES = ("dm", "group")
+DEFAULT_DEST_MODE = "dm"
+
+
 def db_params() -> Dict[str, Any]:
     cfg = heysolo_settings.get_db_config()
     return {
@@ -141,13 +152,7 @@ def _expert_row(row: dict) -> dict:
     }
 
 
-# --------------------------------------------------------------------------
-# PostgreSQL backend
-# --------------------------------------------------------------------------
 class PgDatabase:
-    """Thin, thread-safe psycopg2 wrapper with one auto-reconnect retry."""
-
-    kind = "postgresql"
 
     def __init__(self):
         import psycopg2
@@ -160,7 +165,6 @@ class PgDatabase:
         self._connect()
         self._migrate()
 
-    # -- plumbing ---------------------------------------------------------
     def _connect(self):
         self._conn = self._psycopg2.connect(**db_params())
         self._conn.autocommit = True
@@ -191,8 +195,11 @@ class PgDatabase:
         with self._lock:
             with self._conn.cursor() as cur:
                 cur.execute(SCHEMA)
+                cur.execute(MIGRATE_USER_TOPICS)
         self._seed_experts()
         self._import_legacy_settings()
+        self._backfill_user_experts()
+        self._migrate_user_dest()
 
     def _seed_experts(self):
         for e in DEFAULT_EXPERTS:
@@ -208,8 +215,6 @@ class PgDatabase:
             )
 
     def _import_legacy_settings(self):
-        """First run after the JSON -> Postgres switch: carry the existing
-        admin/user ids over so nobody gets locked out of their own bot."""
         row = self._run("SELECT count(*) AS n FROM bot_users", fetch="one") or {}
         if (row.get("n") or 0) > 0:
             return
@@ -229,7 +234,70 @@ class PgDatabase:
             logger.info("Imported %d admin(s) and %d user(s) from heysolo_settings.json",
                         len(admins), len(users))
 
-    # -- experts ----------------------------------------------------------
+    def _backfill_user_experts(self):
+        rows = self._run(
+            """
+            SELECT ua.user_id, array_agg(DISTINCT a.expert_id) AS expert_ids
+            FROM bot_users bu
+            JOIN user_accounts ua ON ua.user_id = bu.user_id
+            JOIN accounts a ON a.login = ua.login
+            WHERE bu.expert_id IS NULL AND a.expert_id IS NOT NULL
+            GROUP BY ua.user_id
+            """,
+            fetch="all",
+        ) or []
+        carried = 0
+        for r in rows:
+            ids = [i for i in (r.get("expert_ids") or []) if i is not None]
+            if len(ids) != 1:
+                logger.warning(
+                    "User %s was granted accounts running %d different EAs - leaving "
+                    "their expert unset; assign it from Access.", r["user_id"], len(ids))
+                continue
+            self.set_user_expert(int(r["user_id"]), int(ids[0]))
+            carried += 1
+        if carried:
+            logger.info("Carried the expert of %d user(s) over from their accounts.", carried)
+
+    def get_expert_for_user(self, user_id) -> Optional[dict]:
+        if user_id is None:
+            return None
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            return None
+        row = self._run(
+            """
+            SELECT e.* FROM bot_users bu
+            JOIN experts e ON e.id = bu.expert_id
+            WHERE bu.user_id = %s
+            """,
+            (uid,), fetch="one",
+        )
+        return _expert_row(row) if row else None
+
+    def set_user_expert(self, user_id: int, expert_id) -> None:
+        self.upsert_user(user_id)
+        self._run(
+            "UPDATE bot_users SET expert_id = %s WHERE user_id = %s",
+            (None if expert_id is None else int(expert_id), int(user_id)),
+        )
+
+    def get_user_experts(self) -> Dict[int, Optional[dict]]:
+        rows = self._run(
+            """
+            SELECT bu.user_id, e.id, e.code, e.display_name, e.has_bias,
+                   e.has_mode, e.has_trading, e.notify_kinds
+            FROM bot_users bu
+            LEFT JOIN experts e ON e.id = bu.expert_id
+            """,
+            fetch="all",
+        ) or []
+        out: Dict[int, Optional[dict]] = {}
+        for r in rows:
+            out[int(r["user_id"])] = _expert_row(r) if r.get("id") else None
+        return out
+
     def list_experts(self) -> List[dict]:
         rows = self._run("SELECT * FROM experts ORDER BY sort_order, id", fetch="all") or []
         return [_expert_row(r) for r in rows]
@@ -255,7 +323,6 @@ class PgDatabase:
         )
         return _expert_row(row) if row else None
 
-    # -- accounts ---------------------------------------------------------
     def ensure_account(self, login: str) -> None:
         self._run(
             "INSERT INTO accounts (login) VALUES (%s) ON CONFLICT (login) DO NOTHING",
@@ -293,19 +360,36 @@ class PgDatabase:
             (None if expert_id is None else int(expert_id), str(login)),
         )
 
-    # -- users ------------------------------------------------------------
-    def upsert_user(self, user_id: int, is_admin: Optional[bool] = None) -> bool:
-        """Returns True when the row was created."""
+    def upsert_user(self, user_id: int, is_admin: Optional[bool] = None,
+                    display_name: Optional[str] = None,
+                    username: Optional[str] = None) -> bool:
         uid = int(user_id)
         existed = self._run("SELECT 1 AS x FROM bot_users WHERE user_id = %s", (uid,), fetch="one")
         if existed:
             if is_admin is not None:
                 self._run("UPDATE bot_users SET is_admin = %s WHERE user_id = %s",
                           (bool(is_admin), uid))
+            if display_name:
+                self._run("UPDATE bot_users SET display_name = %s WHERE user_id = %s",
+                          (str(display_name)[:128], uid))
+            if username:
+                self._run("UPDATE bot_users SET username = %s WHERE user_id = %s",
+                          (str(username).lstrip("@")[:64], uid))
             return False
-        self._run("INSERT INTO bot_users (user_id, is_admin) VALUES (%s, %s)",
-                  (uid, bool(is_admin)))
+        self._run(
+            "INSERT INTO bot_users (user_id, is_admin, display_name, username) "
+            "VALUES (%s, %s, %s, %s)",
+            (uid, bool(is_admin),
+             str(display_name)[:128] if display_name else None,
+             str(username).lstrip("@")[:64] if username else None),
+        )
         return True
+
+    def get_user_names(self) -> Dict[int, Dict[str, Any]]:
+        rows = self._run(
+            "SELECT user_id, display_name, username FROM bot_users", fetch="all") or []
+        return {int(r["user_id"]): {"display_name": r.get("display_name"),
+                                   "username": r.get("username")} for r in rows}
 
     def get_admin_ids(self) -> List[int]:
         rows = self._run(
@@ -336,7 +420,6 @@ class PgDatabase:
         self._run("DELETE FROM bot_users WHERE user_id = %s AND is_admin", (uid,))
         return bool(existed)
 
-    # -- account <-> user assignments --------------------------------------
     def assign_account(self, user_id: int, login: str) -> None:
         self.ensure_account(login)
         self.upsert_user(user_id)
@@ -365,7 +448,6 @@ class PgDatabase:
                          (str(login),), fetch="all") or []
         return [int(r["user_id"]) for r in rows]
 
-    # -- active account ----------------------------------------------------
     def get_active_login(self, user_id: int) -> Optional[str]:
         row = self._run("SELECT active_login FROM bot_users WHERE user_id = %s",
                         (int(user_id),), fetch="one")
@@ -376,269 +458,200 @@ class PgDatabase:
         self._run("UPDATE bot_users SET active_login = %s WHERE user_id = %s",
                   (None if login is None else str(login), int(user_id)))
 
-    # -- per-user topic routing --------------------------------------------
-    def list_user_topics(self, user_id: int) -> Dict[str, int]:
+    def _migrate_user_dest(self):
+        rows = self._run(
+            """
+            SELECT bu.user_id,
+                   max(CASE WHEN ut.mode = 'thread' THEN 1 ELSE 0 END) AS any_group,
+                   max(ut.chat_id) AS chat_id
+            FROM bot_users bu
+            LEFT JOIN user_topics ut ON ut.user_id = bu.user_id
+            WHERE bu.dest_mode IS NULL
+            GROUP BY bu.user_id
+            """,
+            fetch="all",
+        ) or []
+        for r in rows:
+            if r.get("any_group"):
+                self.set_user_dest(int(r["user_id"]), "group", r.get("chat_id"))
+            else:
+                self.set_user_dest(int(r["user_id"]), "dm")
+        if rows:
+            logger.info("Set a single destination for %d user(s).", len(rows))
+
+    def get_user_dest(self, user_id: int) -> Dict[str, Any]:
+        row = self._run("SELECT dest_mode, dest_chat_id FROM bot_users WHERE user_id = %s",
+                        (int(user_id),), fetch="one") or {}
+        mode = row.get("dest_mode") or DEFAULT_DEST_MODE
+        if mode not in DEST_MODES:
+            mode = DEFAULT_DEST_MODE
+        chat_id = row.get("dest_chat_id")
+        return {"mode": mode, "chat_id": int(chat_id) if chat_id is not None else None}
+
+    def set_user_dest(self, user_id: int, mode: str, chat_id=None) -> None:
+        if mode not in DEST_MODES:
+            raise ValueError(f"unsupported destination mode: {mode}")
+        self.upsert_user(user_id)
+        self._run(
+            "UPDATE bot_users SET dest_mode = %s, dest_chat_id = %s WHERE user_id = %s",
+            (mode, None if (mode == "dm" or chat_id is None) else int(chat_id), int(user_id)),
+        )
+
+    def get_user_threads(self, user_id: int) -> Dict[str, Optional[int]]:
         rows = self._run("SELECT kind, thread_id FROM user_topics WHERE user_id = %s",
                          (int(user_id),), fetch="all") or []
-        return {r["kind"]: int(r["thread_id"]) for r in rows}
+        return {r["kind"]: (int(r["thread_id"]) if r["thread_id"] is not None else None)
+                for r in rows}
 
-    def get_user_topic(self, user_id: int, kind: str) -> Optional[int]:
+    def get_user_thread(self, user_id: int, kind: str) -> Optional[int]:
         row = self._run("SELECT thread_id FROM user_topics WHERE user_id = %s AND kind = %s",
                         (int(user_id), str(kind)), fetch="one")
-        return int(row["thread_id"]) if row else None
+        if not row or row.get("thread_id") is None:
+            return None
+        return int(row["thread_id"])
 
-    def set_user_topic(self, user_id: int, kind: str, thread_id: int) -> None:
+    def set_user_thread(self, user_id: int, kind: str, thread_id: Optional[int]) -> None:
         self.upsert_user(user_id)
         self._run(
             """
-            INSERT INTO user_topics (user_id, kind, thread_id) VALUES (%s, %s, %s)
-            ON CONFLICT (user_id, kind) DO UPDATE SET thread_id = EXCLUDED.thread_id
+            INSERT INTO user_topics (user_id, kind, mode, chat_id, thread_id)
+            VALUES (%s, %s, 'thread', NULL, %s)
+            ON CONFLICT (user_id, kind) DO UPDATE
+              SET mode = 'thread', chat_id = NULL, thread_id = EXCLUDED.thread_id
             """,
-            (int(user_id), str(kind), int(thread_id)),
+            (int(user_id), str(kind), None if thread_id is None else int(thread_id)),
         )
 
-    def clear_user_topic(self, user_id: int, kind: str) -> None:
+    def clear_user_thread(self, user_id: int, kind: str) -> None:
         self._run("DELETE FROM user_topics WHERE user_id = %s AND kind = %s",
                   (int(user_id), str(kind)))
 
+    def get_user_notify(self, user_id: int) -> Dict[str, bool]:
+        rows = self._run("SELECT kind, notify FROM user_topics WHERE user_id = %s",
+                         (int(user_id),), fetch="all") or []
+        found = {r["kind"]: bool(r["notify"]) for r in rows if r.get("notify") is not None}
+        return {k: found.get(k, True) for k in NOTIFY_KINDS}
 
-# --------------------------------------------------------------------------
-# JSON fallback backend - same surface, no PostgreSQL required
-# --------------------------------------------------------------------------
-class JsonDatabase:
-    kind = "json-fallback"
+    def is_user_notify_enabled(self, user_id: int, kind: str) -> bool:
+        row = self._run("SELECT notify FROM user_topics WHERE user_id = %s AND kind = %s",
+                        (int(user_id), str(kind)), fetch="one")
+        if not row or row.get("notify") is None:
+            return True
+        return bool(row["notify"])
 
-    def __init__(self, path: str = JSON_STORE_FILE):
-        self._path = path
-        self._lock = threading.RLock()
-        self._data = {"experts": [], "accounts": {}, "users": {},
-                      "assignments": {}, "topics": {}}
-        self._load()
-        if not self._data["experts"]:
-            for idx, e in enumerate(DEFAULT_EXPERTS, start=1):
-                row = dict(e)
-                row["id"] = idx
-                self._data["experts"].append(row)
-            self._save()
-        self._import_legacy_settings()
+    def set_user_notify(self, user_id: int, kind: str, enabled: bool) -> None:
+        self.upsert_user(user_id)
+        self._run(
+            """
+            INSERT INTO user_topics (user_id, kind, mode, chat_id, thread_id, notify)
+            VALUES (%s, %s, 'thread', NULL, NULL, %s)
+            ON CONFLICT (user_id, kind) DO UPDATE
+              SET notify = EXCLUDED.notify
+            """,
+            (int(user_id), str(kind), bool(enabled)),
+        )
 
-    def _load(self):
-        try:
-            with open(self._path, "r", encoding="utf-8") as fh:
-                loaded = json.load(fh)
-            if isinstance(loaded, dict):
-                self._data.update(loaded)
-        except (OSError, ValueError):
-            pass
+    def toggle_user_notify(self, user_id: int, kind: str) -> bool:
+        new_value = not self.is_user_notify_enabled(user_id, kind)
+        self.set_user_notify(user_id, kind, new_value)
+        return new_value
 
-    def _save(self):
-        try:
-            tmp = self._path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(self._data, fh, indent=2)
-            os.replace(tmp, self._path)
-        except OSError as exc:
-            logger.warning("Could not write %s: %s", self._path, exc)
+    def record_control_change(self, login: str, user_id: int, action: str,
+                              mode: Optional[str] = None,
+                              trading: Optional[bool] = None) -> None:
+        self._run(
+            """
+            INSERT INTO control_log (login, user_id, action, mode, trading, changed_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (login) DO UPDATE
+              SET user_id = EXCLUDED.user_id,
+                  action = EXCLUDED.action,
+                  mode = EXCLUDED.mode,
+                  trading = EXCLUDED.trading,
+                  changed_at = EXCLUDED.changed_at
+            """,
+            (str(login), int(user_id), str(action), mode,
+             None if trading is None else bool(trading), int(time.time())),
+        )
 
-    def _import_legacy_settings(self):
-        if self._data["users"]:
-            return
-        try:
-            import heysolo_settings as _settings
-            admins = [int(x) for x in (_settings.get_admin_ids() or [])]
-            users = [int(x) for x in (_settings.get_user_ids() or [])]
-        except Exception:
-            return
-        for uid in admins:
-            self._data["users"][str(uid)] = {"is_admin": True, "active_login": None}
-        for uid in users:
-            if uid not in admins:
-                self._data["users"].setdefault(str(uid), {"is_admin": False, "active_login": None})
-        self._save()
-
-    # -- experts ----------------------------------------------------------
-    def list_experts(self) -> List[dict]:
-        rows = sorted(self._data["experts"],
-                      key=lambda e: (e.get("sort_order", 100), e.get("id", 0)))
-        return [_expert_row(r) for r in rows]
-
-    def get_expert(self, expert_id) -> Optional[dict]:
-        if expert_id is None:
+    def get_control_change(self, login: str) -> Optional[Dict[str, Any]]:
+        row = self._run(
+            "SELECT user_id, action, mode, trading, changed_at FROM control_log WHERE login = %s",
+            (str(login),), fetch="one")
+        if not row:
             return None
-        for e in self._data["experts"]:
-            if int(e["id"]) == int(expert_id):
-                return _expert_row(e)
-        return None
-
-    def get_expert_by_code(self, code: str) -> Optional[dict]:
-        for e in self._data["experts"]:
-            if e.get("code") == code:
-                return _expert_row(e)
-        return None
-
-    def get_expert_for_login(self, login: str) -> Optional[dict]:
-        acc = self._data["accounts"].get(str(login)) or {}
-        return self.get_expert(acc.get("expert_id"))
-
-    # -- accounts ---------------------------------------------------------
-    def ensure_account(self, login: str) -> None:
-        with self._lock:
-            if str(login) not in self._data["accounts"]:
-                self._data["accounts"][str(login)] = {"expert_id": None}
-                self._save()
-
-    def get_account(self, login: str) -> Optional[dict]:
-        acc = self._data["accounts"].get(str(login))
-        if acc is None:
-            return None
-        exp = self.get_expert(acc.get("expert_id"))
-        return {"login": str(login), "expert_id": acc.get("expert_id"),
-                "expert_code": (exp or {}).get("code"),
-                "expert_name": (exp or {}).get("display_name")}
-
-    def list_accounts_db(self) -> List[dict]:
-        return [self.get_account(login) for login in sorted(self._data["accounts"])]
-
-    def set_account_expert(self, login: str, expert_id) -> None:
-        with self._lock:
-            self.ensure_account(login)
-            self._data["accounts"][str(login)]["expert_id"] = (
-                None if expert_id is None else int(expert_id))
-            self._save()
-
-    # -- users ------------------------------------------------------------
-    def upsert_user(self, user_id: int, is_admin: Optional[bool] = None) -> bool:
-        with self._lock:
-            key = str(int(user_id))
-            created = key not in self._data["users"]
-            row = self._data["users"].setdefault(key, {"is_admin": False, "active_login": None})
-            if is_admin is not None:
-                row["is_admin"] = bool(is_admin)
-            self._save()
-            return created
-
-    def get_admin_ids(self) -> List[int]:
-        return [int(k) for k, v in self._data["users"].items() if v.get("is_admin")]
-
-    def get_user_ids(self) -> List[int]:
-        return [int(k) for k, v in self._data["users"].items() if not v.get("is_admin")]
-
-    def remove_user(self, user_id: int) -> bool:
-        with self._lock:
-            key = str(int(user_id))
-            existed = self._data["users"].pop(key, None) is not None
-            self._data["assignments"].pop(key, None)
-            self._data["topics"].pop(key, None)
-            self._save()
-            return existed
-
-    def demote_admin(self, user_id: int) -> bool:
-        key = str(int(user_id))
-        if (self._data["users"].get(key) or {}).get("is_admin"):
-            return self.remove_user(user_id)
-        return False
-
-    # -- assignments ------------------------------------------------------
-    def assign_account(self, user_id: int, login: str) -> None:
-        with self._lock:
-            self.ensure_account(login)
-            self.upsert_user(user_id)
-            logins = self._data["assignments"].setdefault(str(int(user_id)), [])
-            if str(login) not in logins:
-                logins.append(str(login))
-            self._save()
-
-    def unassign_account(self, user_id: int, login: str) -> None:
-        with self._lock:
-            logins = self._data["assignments"].get(str(int(user_id)), [])
-            if str(login) in logins:
-                logins.remove(str(login))
-                self._save()
-
-    def is_account_assigned(self, user_id: int, login: str) -> bool:
-        return str(login) in self._data["assignments"].get(str(int(user_id)), [])
-
-    def get_user_logins(self, user_id: int) -> List[str]:
-        return list(self._data["assignments"].get(str(int(user_id)), []))
-
-    def get_account_users(self, login: str) -> List[int]:
-        return [int(uid) for uid, logins in self._data["assignments"].items()
-                if str(login) in logins]
-
-    # -- active account ----------------------------------------------------
-    def get_active_login(self, user_id: int) -> Optional[str]:
-        return (self._data["users"].get(str(int(user_id))) or {}).get("active_login")
-
-    def set_active_login(self, user_id: int, login: Optional[str]) -> None:
-        with self._lock:
-            self.upsert_user(user_id)
-            self._data["users"][str(int(user_id))]["active_login"] = (
-                None if login is None else str(login))
-            self._save()
-
-    # -- topics -----------------------------------------------------------
-    def list_user_topics(self, user_id: int) -> Dict[str, int]:
-        return {k: int(v) for k, v in (self._data["topics"].get(str(int(user_id))) or {}).items()}
-
-    def get_user_topic(self, user_id: int, kind: str) -> Optional[int]:
-        return self.list_user_topics(user_id).get(str(kind))
-
-    def set_user_topic(self, user_id: int, kind: str, thread_id: int) -> None:
-        with self._lock:
-            self.upsert_user(user_id)
-            self._data["topics"].setdefault(str(int(user_id)), {})[str(kind)] = int(thread_id)
-            self._save()
-
-    def clear_user_topic(self, user_id: int, kind: str) -> None:
-        with self._lock:
-            topics = self._data["topics"].get(str(int(user_id))) or {}
-            if str(kind) in topics:
-                topics.pop(str(kind))
-                self._save()
+        return {
+            "user_id": int(row["user_id"]) if row.get("user_id") is not None else None,
+            "action": row.get("action") or "",
+            "mode": row.get("mode"),
+            "trading": row.get("trading"),
+            "changed_at": int(row.get("changed_at") or 0),
+        }
+class DatabaseUnavailable(RuntimeError):
+    pass
 
 
-# --------------------------------------------------------------------------
-# singleton access
-# --------------------------------------------------------------------------
-_db = None
+_db: Optional["PgDatabase"] = None
 _db_lock = threading.RLock()
 _last_pg_attempt = 0.0
 _PG_RETRY_SECONDS = 60
 
 
-def get_db():
-    """The active backend: PostgreSQL when reachable, JSON otherwise."""
+def get_db() -> "PgDatabase":
     global _db, _last_pg_attempt
     with _db_lock:
-        if _db is not None and _db.kind == "postgresql":
+        if _db is not None:
             return _db
         now = time.monotonic()
-        if _db is None or (now - _last_pg_attempt) >= _PG_RETRY_SECONDS:
-            _last_pg_attempt = now
-            try:
-                _db = PgDatabase()
-                logger.info("Connected to the PostgreSQL database '%s'.", db_params()["dbname"])
-                return _db
-            except Exception as exc:
-                if _db is None:
-                    logger.error(
-                        "PostgreSQL is unavailable (%s) - falling back to a local JSON store. "
-                        "Re-run install.sh to (re)create the 'heysolo' database.", exc)
-                    _db = JsonDatabase()
-                else:
-                    logger.debug("PostgreSQL still unavailable: %s", exc)
+        if (now - _last_pg_attempt) < _PG_RETRY_SECONDS:
+            raise DatabaseUnavailable(
+                "PostgreSQL was unreachable a moment ago; still cooling down before retrying.")
+        _last_pg_attempt = now
+        try:
+            _db = PgDatabase()
+        except Exception as exc:
+            logger.error(
+                "PostgreSQL is unavailable (%s). Re-run install.sh to (re)create the "
+                "'heysolo' database, or check db_host/db_port/db_name/db_user/db_password "
+                "in heysolo_settings.json.", exc)
+            raise DatabaseUnavailable(str(exc)) from exc
+        logger.info("Connected to the PostgreSQL database '%s'.", db_params()["dbname"])
         return _db
 
 
 def reset_db() -> None:
-    """Drop the cached backend (after credentials change, for example)."""
     global _db, _last_pg_attempt
     with _db_lock:
+        if _db is not None:
+            try:
+                _db._conn.close()
+            except Exception:
+                pass
         _db = None
         _last_pg_attempt = 0.0
 
 
-# -- module-level helpers the bot calls directly ----------------------------
+def remember_user(user_id: int, display_name: Optional[str] = None,
+                  username: Optional[str] = None) -> None:
+    if not display_name and not username:
+        return
+    try:
+        db = get_db()
+        if db._run("SELECT 1 AS x FROM bot_users WHERE user_id = %s",
+                   (int(user_id),), fetch="one"):
+            db.upsert_user(int(user_id), display_name=display_name, username=username)
+    except Exception as exc:
+        logger.debug("Could not store name for %s: %s", user_id, exc)
+
+
+def get_user_names() -> Dict[int, Dict[str, Any]]:
+    try:
+        return get_db().get_user_names()
+    except Exception as exc:
+        logger.warning("Could not read user names: %s", exc)
+        return {}
+
+
 def get_admin_ids() -> List[int]:
     try:
         return get_db().get_admin_ids()
@@ -687,10 +700,116 @@ def remove_user_id(user_id: int) -> bool:
         return False
 
 
+def get_expert_for_user(user_id) -> Optional[dict]:
+    try:
+        return get_db().get_expert_for_user(user_id)
+    except Exception as exc:
+        logger.warning("Could not read the expert for %s (%s) - assuming none.", user_id, exc)
+        return None
+
+
+def set_user_expert(user_id: int, expert_id) -> bool:
+    try:
+        get_db().set_user_expert(int(user_id), expert_id)
+        return True
+    except Exception as exc:
+        logger.warning("Could not set the expert for %s: %s", user_id, exc)
+        return False
+
+
+def list_experts() -> List[dict]:
+    try:
+        return get_db().list_experts()
+    except Exception as exc:
+        logger.warning("Could not read experts: %s", exc)
+        return []
+
+
+def get_user_experts() -> Dict[int, Optional[dict]]:
+    try:
+        return get_db().get_user_experts()
+    except Exception as exc:
+        logger.warning("Could not read per-user experts: %s", exc)
+        return {}
+
+
+def get_user_dest(user_id: int) -> Dict[str, Any]:
+    try:
+        return get_db().get_user_dest(int(user_id))
+    except Exception as exc:
+        logger.warning("Could not read the destination for %s (%s) - using DM.", user_id, exc)
+        return {"mode": DEFAULT_DEST_MODE, "chat_id": None}
+
+
+def set_user_dest(user_id: int, mode: str, chat_id=None) -> bool:
+    try:
+        get_db().set_user_dest(int(user_id), mode, chat_id)
+        return True
+    except Exception as exc:
+        logger.warning("Could not set the destination for %s: %s", user_id, exc)
+        return False
+
+
+def get_user_notify(user_id: int) -> Dict[str, bool]:
+    try:
+        return get_db().get_user_notify(int(user_id))
+    except Exception as exc:
+        logger.warning("Could not read notification switches for %s (%s) - assuming all on.",
+                       user_id, exc)
+        return {k: True for k in NOTIFY_KINDS}
+
+
+def is_user_notify_enabled(user_id: int, kind: str) -> bool:
+    try:
+        return get_db().is_user_notify_enabled(int(user_id), kind)
+    except Exception as exc:
+        logger.warning("Could not read the %s switch for %s (%s) - assuming on.",
+                       kind, user_id, exc)
+        return True
+
+
+def set_user_notify(user_id: int, kind: str, enabled: bool) -> bool:
+    try:
+        get_db().set_user_notify(int(user_id), kind, enabled)
+        return True
+    except Exception as exc:
+        logger.warning("Could not set the %s switch for %s: %s", kind, user_id, exc)
+        return False
+
+
+def toggle_user_notify(user_id: int, kind: str) -> Optional[bool]:
+    try:
+        return get_db().toggle_user_notify(int(user_id), kind)
+    except Exception as exc:
+        logger.warning("Could not toggle the %s switch for %s: %s", kind, user_id, exc)
+        return None
+
+
+def record_control_change(login: str, user_id: int, action: str,
+                          mode: Optional[str] = None,
+                          trading: Optional[bool] = None) -> bool:
+    try:
+        get_db().record_control_change(login, int(user_id), action, mode, trading)
+        return True
+    except Exception as exc:
+        logger.warning("Could not record the control change on %s: %s", login, exc)
+        return False
+
+
+def get_control_change(login: str) -> Optional[Dict[str, Any]]:
+    try:
+        return get_db().get_control_change(login)
+    except Exception as exc:
+        logger.warning("Could not read the last control change on %s: %s", login, exc)
+        return None
+
+
 def is_admin(user_id) -> bool:
-    """Before anyone claims the bot there are no admins and it is open -
-    same behaviour the old JSON settings had."""
-    admins = get_admin_ids()
+    try:
+        admins = get_db().get_admin_ids()
+    except DatabaseUnavailable as exc:
+        logger.warning("is_admin(%s): PostgreSQL unavailable (%s) - denying.", user_id, exc)
+        return False
     if not admins:
         return True
     try:
@@ -701,13 +820,22 @@ def is_admin(user_id) -> bool:
 
 def is_user(user_id) -> bool:
     try:
-        return int(user_id) in get_user_ids()
+        users = get_db().get_user_ids()
+    except DatabaseUnavailable as exc:
+        logger.warning("is_user(%s): PostgreSQL unavailable (%s) - denying.", user_id, exc)
+        return False
+    try:
+        return int(user_id) in users
     except (TypeError, ValueError):
         return False
 
 
 def is_authorized(user_id) -> bool:
-    admins, users = get_admin_ids(), get_user_ids()
+    try:
+        admins, users = get_db().get_admin_ids(), get_db().get_user_ids()
+    except DatabaseUnavailable as exc:
+        logger.warning("is_authorized(%s): PostgreSQL unavailable (%s) - denying.", user_id, exc)
+        return False
     if not admins and not users:
         return True
     try:

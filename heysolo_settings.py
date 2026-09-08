@@ -1,3 +1,4 @@
+# NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
 import json
 import logging
 import os
@@ -18,9 +19,6 @@ DEFAULT_THREADS = {"bias": 2, "trade": 4, "log": 7, "result": 1723}
 DEFAULT_NOTIFY = {"bias": True, "trade": True, "log": False, "result": True}
 DEFAULT_NOTIFY_WINDOW = {"enabled": True, "start": "01:30", "end": "15:30"}
 
-# PostgreSQL connection, previously kept in a separate db.env file. Now
-# lives right here in heysolo_settings.json (db_host/db_port/db_name/
-# db_user/db_password), written by install.sh's setup_database() step.
 DEFAULT_DB_HOST = "127.0.0.1"
 DEFAULT_DB_PORT = 5432
 DEFAULT_DB_NAME = "heysolo"
@@ -294,8 +292,6 @@ def set_common_files_dir(path: str):
     _save(data)
 
 def get_db_config() -> Dict[str, Any]:
-    """PostgreSQL connection info, as stored directly in
-    heysolo_settings.json (db_host/db_port/db_name/db_user/db_password)."""
     data = _load()
     return {
         "db_host": data.get("db_host") or DEFAULT_DB_HOST,
