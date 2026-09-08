@@ -118,6 +118,48 @@ on_desk(){
 }
 idx_ok(){ [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= ${#T_SLUG[@]} )); }
 
+desktop_reset_fallback(){
+  local answer=""
+  read -rp "Reset only the MT5 desktop configs and rebuild them? type RESET: " answer || answer=""
+  [[ "${answer}" == "RESET" ]] || { warn "Reset cancelled."; return 0; }
+
+  if declare -F desktop_reset_all >/dev/null 2>&1; then
+    desktop_reset_all --yes
+    return 0
+  fi
+
+  warn "The desktop library is older than the manager; using the compatibility reset."
+  if declare -F as_mt5 >/dev/null 2>&1; then
+    as_mt5 "screen -S titlewatch -X quit"
+    as_mt5 "screen -S clipwatch -X quit"
+    as_mt5 "screen -S panelwatch -X quit"
+    as_mt5 "screen -S windowguard -X quit"
+    as_mt5 "pkill -x tint2"
+    as_mt5 "pkill -f 'pcmanfm --desktop'"
+  else
+    su - "${MT5_USER}" -c "pkill -x tint2; pkill -f 'pcmanfm --desktop'" 2>/dev/null || true
+  fi
+
+  rm -rf "/home/${MT5_USER}/.heysolo" \
+         "/home/${MT5_USER}/.config/pcmanfm/heysolo" \
+         "/home/${MT5_USER}/.cache/pcmanfm" \
+         "/home/${MT5_USER}/.cache/tint2" 2>/dev/null || true
+  rm -f "/home/${MT5_USER}"/Desktop/mt5-*.desktop \
+        "/home/${MT5_USER}/.config/tint2/tint2rc" \
+        "/home/${MT5_USER}/.config/openbox/rc.xml" \
+        "/home/${MT5_USER}/.config/openbox/rc.xml.heysolo.bak" \
+        "/home/${MT5_USER}/.fehbg" \
+        "/etc/heysolo-mt5/desktop_visible.list" \
+        "/etc/heysolo-mt5/desktop.env" 2>/dev/null || true
+  rm -rf "/home/${MT5_USER}/.local/share/applications/wine" 2>/dev/null || true
+  rm -f "/home/${MT5_USER}/.config/menus/applications-merged/"*wine* 2>/dev/null || true
+  find "/home/${MT5_USER}/.local/share/desktop-directories" -name '*wine*' -delete 2>/dev/null || true
+  find "/home/${MT5_USER}/.local/share/icons" -path '*hicolor*' -name '*wine*' -delete 2>/dev/null || true
+
+  run_mt5 desktop all
+  ok "Desktop reset complete. Telegram bot, terminals, Wine prefixes and MQL5 assets were left untouched."
+}
+
 panel(){
   clear 2>/dev/null || true
   scan_terminals
@@ -254,12 +296,7 @@ do_action(){
         fi
         sleep 1 ;;
     w)  if declare -F desktop_restore_window >/dev/null 2>&1; then desktop_restore_window; else warn "desktop module missing"; fi ;;
-    f)  if declare -F desktop_reset_all >/dev/null 2>&1; then
-          desktop_reset_all
-        else
-          warn "desktop module missing"
-        fi
-        pause ;;
+    f)  desktop_reset_fallback; pause ;;
     p)  run_mt5 step1; pause ;;
     i)  run_mt5 step2; pause ;;
     s)  if [[ -s "${SCRIPTS_DIR}/win/wine-stealth.sh" ]]; then
