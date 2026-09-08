@@ -1350,9 +1350,11 @@ keep_panel_visible(){
     [[ "${x}" =~ ^-?[0-9]+$ && "${y}" =~ ^-?[0-9]+$ ]] || continue
     [[ "${w}" =~ ^[0-9]+$ && "${h}" =~ ^[0-9]+$ ]] || continue
     wmctrl -ir "${id}" -b remove,fullscreen >/dev/null 2>&1
-    if (( y + h > WORK_H )) && { is_really_maximized "${id}" || covers_whole_screen "${w}" "${h}" "${y}"; }; then
-      wmctrl -ir "${id}" -b remove,maximized_vert,maximized_horz >/dev/null 2>&1
-      wmctrl -ir "${id}" -b add,maximized_vert,maximized_horz >/dev/null 2>&1
+
+    if (( y + h > WORK_H + 5 )); then
+      local new_h=$(( WORK_H - y ))
+      (( new_h > 200 )) || continue
+      wmctrl -ir "${id}" -e "0,${x},${y},${w},${new_h}" >/dev/null 2>&1
     fi
   done < <(wmctrl -lGx 2>/dev/null)
 }
