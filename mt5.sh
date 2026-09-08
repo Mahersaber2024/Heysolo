@@ -1134,12 +1134,10 @@ desktop_write_openbox_rules(){
     <application class="terminal64.exe*">
       <layer>normal</layer>
       <fullscreen>no</fullscreen>
-      <maximized>yes</maximized>
     </application>
     <application name="terminal64.exe*">
       <layer>normal</layer>
       <fullscreen>no</fullscreen>
-      <maximized>yes</maximized>
     </application>
     <application class="Wine">
       <layer>normal</layer>
