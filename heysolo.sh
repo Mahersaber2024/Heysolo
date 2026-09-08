@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
+# NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
 
 set -uo pipefail
 
 REPO_RAW="https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main"
 SCRIPTS_DIR="/opt/heysolo/scripts"
 CLI_PATH="/usr/local/bin/heysolo"
-# Only genuine installers/entry-points are listed here. The desktop layer
-# (wallpaper/icons/taskbar) is not an installer - it's a library of functions
-# that now lives inside mt5.sh itself (it's sourced from there, the
-# same way the MT5 panel functions below are), so there is no separate
-# desktop_mt5.sh file to fetch or go missing anymore.
 SCRIPT_LIST=(heysolo.sh install.sh mt5.sh uninstall.sh win/wine-stealth.sh win/test-stealth.sh win/install-stealth.sh)
 
 if [[ -t 1 ]]; then
@@ -176,10 +172,6 @@ panel(){
 t_stop(){
   local i="$1"
   if declare -F graceful_stop_terminal >/dev/null 2>&1; then
-    # Closes the terminal window normally first so MT5 gets to save its open
-    # charts/attached EAs before anything is force-killed - a bare pkill
-    # never gives it that chance, which is what was reverting the terminal
-    # to its last cleanly-saved state on every stop/restart.
     graceful_stop_terminal "${T_SLUG[$i]}" "${T_PATH[$i]}"
   else
     as_mt5 "pkill -f '${T_PATH[$i]}'" 2>/dev/null || true

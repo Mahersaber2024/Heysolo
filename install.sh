@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
 
 set -euo pipefail
 
@@ -104,10 +105,6 @@ if ! command -v psql &>/dev/null; then
     return 1
 fi
 
-# 2>&1 (not 2>/dev/null) on purpose: if the connection itself is broken,
-# the real psql error ends up in these variables instead of being hidden,
-# so the CREATE ROLE below (which is not silenced) surfaces the real cause
-# rather than the installer just dying with no explanation.
 ROLE_EXISTS=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" 2>&1 | tr -d '[:space:]')
 DB_EXISTS=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" 2>&1 | tr -d '[:space:]')
 
@@ -186,7 +183,6 @@ then
 fi
 ok "Database credentials saved to ${target}/${SETTINGS_FILE}"
 }
-
 
 collect_bot_config(){
 echo
@@ -348,13 +344,6 @@ ok "Python environment ready."
 }
 
 run_db_setup_script(){
-    # db/setup_db.py reads db_host/db_port/db_name/db_user/db_password from
-    # heysolo_settings.json (via db.database.db_params() / heysolo_settings.
-    # get_db_config()), so this must run after setup_database() has saved
-    # those into heysolo_settings.json and after setup_venv() has installed
-    # psycopg2. It inserts the repo root onto sys.path itself (see its own
-    # docstring), so running it as "python3 db/setup_db.py" from the repo
-    # root works fine.
     if [[ -f "${INSTALL_DIR}/db/setup_db.py" ]]; then
         info "Creating/verifying database tables..."
         cd "${INSTALL_DIR}"

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
 
 set -uo pipefail
 set -E
@@ -24,20 +25,8 @@ VNC_PORT=5900
 STATE_DIR="/etc/heysolo-mt5"
 DESKTOP_ENV_FILE="${STATE_DIR}/desktop.env"
 
-# Any value already set on the command line (e.g. LOW_BANDWIDTH=0 sudo bash ...)
-# wins. Otherwise, whatever was chosen the LAST time step 1 ran wins - not the
-# hard-coded fallback. This is what makes the desktop look the SAME every time
-# it is (re)started, instead of a different one each time these scripts are
-# invoked fresh (menu, step2, VNC toggle, reboot...).
 [[ -f "${DESKTOP_ENV_FILE}" ]] && source "${DESKTOP_ENV_FILE}" 2>/dev/null || true
 
-# Colour depth is NOT just cosmetic: MT5's ChartScreenShot() goes through
-# Wine's GDI/GDI+, and on a 16-bit X display that path cannot build the 32-bit
-# DIB it needs - so screenshots come back false/black/empty even though the
-# very same EA works on Windows. 24-bit is the minimum that works; this used
-# to default to 16 to save VNC bandwidth, which silently broke every EA
-# screenshot on the server. Bandwidth is handled by LOW_BANDWIDTH/x11vnc
-# instead, never by dropping the depth below 24.
 COLOR_DEPTH_MIN=24
 COLOR_DEPTH="${COLOR_DEPTH:-24}"
 if [[ ! "${COLOR_DEPTH}" =~ ^[0-9]+$ ]] || (( COLOR_DEPTH < COLOR_DEPTH_MIN )); then
@@ -46,7 +35,6 @@ if [[ ! "${COLOR_DEPTH}" =~ ^[0-9]+$ ]] || (( COLOR_DEPTH < COLOR_DEPTH_MIN )); 
 fi
 SCREEN_GEOMETRY="${SCREEN_GEOMETRY:-1920x1080}"
 LOW_BANDWIDTH="${LOW_BANDWIDTH:-1}"
-# A SCREEN_RES inherited from an older install can still carry the old depth.
 SCREEN_RES="${SCREEN_RES:-${SCREEN_GEOMETRY}x${COLOR_DEPTH}}"
 if [[ "${SCREEN_RES}" != *"x${COLOR_DEPTH}" ]]; then
   SCREEN_RES="${SCREEN_GEOMETRY}x${COLOR_DEPTH}"
@@ -63,8 +51,6 @@ EOF
 }
 persist_desktop_settings
 if [[ "${COLOR_DEPTH_UPGRADED:-0}" == "1" ]]; then
-  # Existing installs have COLOR_DEPTH=16 saved in desktop.env; rewrite it so
-  # the display restarts at 24-bit and EA screenshots start working.
   echo "Raised the display colour depth to ${COLOR_DEPTH}-bit (16-bit breaks EA screenshots under Wine)." >&2
 fi
 
@@ -77,10 +63,6 @@ fi
 VNC_OPTS="${VNC_BASE_OPTS} ${VNC_TUNE_OPTS}"
 
 WINEPREFIX_BASE="/home/${MT5_USER}/mt5-terminals"
-# Every terminal gets its OWN, fully isolated wineprefix under here
-# (${WINEPREFIX_BASE}/<slug>) - no two brokers ever share a C: drive,
-# registry, or data-folder lock again. wineprefix_for_slug() is the only
-# place that decides the path, so it can't drift out of sync with itself.
 wineprefix_for_slug(){ echo "${WINEPREFIX_BASE}/${1}"; }
 
 MT5_LOCAL_DIR="/opt/heysolo/mt5"
@@ -88,7 +70,6 @@ MQL5_LOCAL_DIR="/opt/heysolo/mt5-mql5"
 
 TERMINALS_FILE="${STATE_DIR}/terminals.list"
 VNC_PASS_FILE="/home/${MT5_USER}/.vnc/passwd"
-
 
 if [[ -t 1 ]]; then
   RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -187,10 +168,6 @@ _as_user(){
   fi
 }
 
-# Same as _as_user, but keeps stdout/stderr instead of throwing it away, so a
-# silent wine/wineboot failure isn't just "nothing happened" - there's a log
-# to look at. Used for the steps that are most likely to fail silently
-# (prefix init, the actual installer launch).
 _as_user_logged(){
   local secs="$1" cmd="$2" logfile="$3"
   mkdir -p "$(dirname "${logfile}")" 2>/dev/null || true
@@ -249,12 +226,6 @@ init_prefix(){
   local logfile="/var/log/heysolo-wine-init-$(basename "${wineprefix}").log"
   info "Preparing the wine prefix (first boot, this takes a few seconds)..."
 
-  # Always create the prefix directory ourselves (as root, with the right
-  # owner) instead of leaving it to wine to create on its own the first time
-  # it runs. If this step is skipped and wineboot ever fails partway - wrong
-  # permissions, no space, a killed process - wine is left trying to chdir
-  # into a directory that doesn't fully exist, which is exactly the
-  # "wine: chdir to ... No such file or directory" failure this fixes.
   mkdir -p "${wineprefix}"
   chown -R "${MT5_USER}:${MT5_USER}" "${wineprefix}"
   if [[ ! -d "${wineprefix}" ]]; then
@@ -268,11 +239,6 @@ init_prefix(){
   fi
   purge_wine_shortcuts
 
-  # A prefix is only really usable once wine has actually populated it -
-  # drive_c existing is the real signal, not just the directory being there.
-  # Without this check, a failed wineboot still leaves an (empty) directory
-  # behind, so the next run's "already exists, skip init" check in
-  # install_selected would wrongly treat it as already prepared.
   if [[ ! -d "${wineprefix}/drive_c" ]]; then
     err "The wine prefix at ${wineprefix} was not actually initialized (no drive_c folder) - wineboot failed."
     return 1
@@ -281,16 +247,6 @@ init_prefix(){
   ensure_screenshot_support "${wineprefix}"
 }
 
-# ---------------------------------------------------------------------------
-# ChartScreenShot() support inside a prefix.
-#
-# MT5 encodes chart screenshots through GDI+ (gdiplus.dll). Wine's builtin
-# gdiplus is a reimplementation and, depending on how wine was packaged, can
-# be missing the PNG encoder entirely - the EA then just gets `false` back
-# from ChartScreenShot with nothing written, on a server where the identical
-# EA screenshots fine on Windows. Dropping the real gdiplus in fixes it for
-# EVERY EA in that prefix, with zero EA-side changes.
-# ---------------------------------------------------------------------------
 ensure_screenshot_support(){
   local wineprefix="$1"
   local logfile="/var/log/heysolo-gdiplus-$(basename "${wineprefix}").log"
@@ -317,8 +273,6 @@ ensure_screenshot_support(){
   fi
 }
 
-# Re-run the screenshot fixes on every terminal that already exists, without
-# reinstalling anything. Safe to run repeatedly.
 repair_screenshots(){
   header; title "SCREENSHOT REPAIR"; header
   echo "  Display depth must be >= ${COLOR_DEPTH_MIN}-bit and every prefix needs gdiplus."
@@ -371,29 +325,15 @@ repair_screenshots(){
   header
 }
 
-# ---------------------------------------------------------------------------
-# Desktop layer (wallpaper / icons / taskbar / clipboard / window helpers).
-#
-# This is NOT an installer - it is a plain library of functions used by the
-# MT5 setup steps below and by the heysolo panel (which sources everything
-# above the "case" dispatcher at the bottom of this file - see heysolo.sh).
-# It used to live in its own file (desktop_mt5.sh) that had to be located or
-# re-downloaded separately; it is defined directly here instead, so there is
-# nothing desktop-related left to fetch, install, or go missing.
-# ---------------------------------------------------------------------------
-
 MT5_USER="${MT5_USER:-mt5user}"
 DISPLAY_NUM="${DISPLAY_NUM:-1}"
 
-# Same settings file mt5.sh writes/reads - guarantees this script gives
-# the SAME wallpaper/colour-depth result whether it's called from step1, step2,
-# the heysolo panel, the boot-recovery service, or run by hand on its own.
 STATE_DIR="${STATE_DIR:-/etc/heysolo-mt5}"
 DESKTOP_ENV_FILE="${DESKTOP_ENV_FILE:-${STATE_DIR}/desktop.env}"
 [[ -f "${DESKTOP_ENV_FILE}" ]] && source "${DESKTOP_ENV_FILE}" 2>/dev/null || true
 
 COLOR_DEPTH="${COLOR_DEPTH:-24}"
-if [[ ! "${COLOR_DEPTH}" =~ ^[0-9]+$ ]] || (( COLOR_DEPTH < 24 )); then COLOR_DEPTH=24; fi  # <24bpp = no EA screenshots
+if [[ ! "${COLOR_DEPTH}" =~ ^[0-9]+$ ]] || (( COLOR_DEPTH < 24 )); then COLOR_DEPTH=24; fi
 SCREEN_GEOMETRY="${SCREEN_GEOMETRY:-1920x1080}"
 LOW_BANDWIDTH="${LOW_BANDWIDTH:-1}"
 SCREEN_RES="${SCREEN_RES:-${SCREEN_GEOMETRY}x${COLOR_DEPTH}}"
@@ -970,11 +910,6 @@ desktop_write_openbox_rules(){
   rc="${dir}/rc.xml"
   mkdir -p "${dir}" 2>/dev/null || true
 
-  # explorer.exe is wine's virtual-desktop container ONLY when WINE_VDESKTOP=1.
-  # In that mode it must be pinned borderless at (0,0) to act as a fake fullscreen
-  # root. Otherwise (default now) explorer.exe is just a normal window - the MT5
-  # installer's file dialogs and "Open Data Folder" both run as explorer.exe, so
-  # forcing them to (0,0) with no decor hides their titlebar/close button off-screen.
   local explorer_rule
   if [[ "${WINE_VDESKTOP:-0}" == "1" ]]; then
     explorer_rule='<application class="explorer.exe*">
@@ -1555,7 +1490,6 @@ desktop_doctor(){
   header
 }
 
-
 HEYSOLO_SCRIPTS_DIR="/opt/heysolo/scripts"
 HEYSOLO_SELF_PATH="${HEYSOLO_SCRIPTS_DIR}/mt5.sh"
 BOOT_SERVICE_NAME="heysolo-mt5-desktop"
@@ -1653,8 +1587,6 @@ install_system_packages(){
     x11-utils jq python3 \
     winetricks cabextract \
     || true
-  # winetricks/cabextract are what let us drop a real gdiplus into each prefix -
-  # that is the DLL MT5 uses to encode ChartScreenShot() images.
   apt-get install "${APT_Q[@]}" winetricks cabextract >/dev/null 2>&1 || true
   ok "Base packages ready."
 
@@ -1751,13 +1683,6 @@ link_winehq_binaries(){
   return 0
 }
 
-# `wine --version` only proves the binary is installed - it says nothing
-# about whether wine can actually create and boot a prefix for MT5_USER,
-# which is exactly the step that was failing silently and only showing up
-# much later, mid-terminal-install ("wine: chdir to ... No such file or
-# directory"). This runs that real end-to-end check once, right after the
-# user exists, so a broken wine setup is caught and reported in Step 1 -
-# not discovered halfway through installing a broker's terminal in Step 2.
 verify_wine_works(){
   if ! id "${MT5_USER}" &>/dev/null; then
     warn "Cannot smoke-test wine yet - user ${MT5_USER} does not exist."
@@ -2104,16 +2029,10 @@ remove_terminal_files(){
     '$3==w && $1!=s{print $1; exit}' "${TERMINALS_FILE}" 2>/dev/null || true)
 
   if [[ -n "${wineprefix}" && -z "${other_owner}" ]]; then
-    # Nobody else uses this prefix - it was created just for this terminal,
-    # so wipe the whole thing (registry, temp files, everything), not only
-    # the install folder.
     su - "${MT5_USER}" -c "rm -rf '${wineprefix}'" 2>/dev/null || true
     return 0
   fi
 
-  # Legacy terminal installed before per-broker prefixes existed - this
-  # wineprefix is still shared with another terminal, so only remove this
-  # terminal's own install + MQL5 folders and leave the shared prefix alone.
   if [[ -n "${termpath}" ]]; then
     local install_dir mql5_dir
     install_dir=$(dirname "${termpath}")
@@ -2385,10 +2304,6 @@ install_selected(){
     fi
     ok "Ready: ${dest_path} ($(du -h "${dest_path}" 2>/dev/null | cut -f1 || echo '?'))."
 
-    # Its own prefix, never shared with any other broker - so a `find` inside
-    # it can never land on someone else's terminal64.exe, and removing this
-    # terminal later can safely wipe the whole prefix without touching anyone
-    # else's install.
     if [[ ! -d "${wineprefix}/drive_c" ]]; then
       info "Creating an isolated wine prefix for ${exe} at ${wineprefix} ..."
       if ! init_prefix "${wineprefix}"; then
@@ -2489,12 +2404,6 @@ start_terminal(){
 graceful_stop_terminal(){
   local slug="$1" termpath="$2" timeout="${3:-20}" wid waited=0
 
-  # Force-killing terminal64.exe (pkill) never gives MT5 a chance to flush
-  # its open charts / attached EAs to Profiles/Default, so the NEXT start
-  # silently reverts to whatever was last saved on a clean exit. Ask the
-  # window to close normally first (WM_DELETE_WINDOW via wmctrl), wait for
-  # MT5 to actually exit and save, and only pkill as a last resort if it
-  # refuses to close in time.
   wid=$(as_mt5 "wmctrl -lx 2>/dev/null | awk 'tolower(\$3) ~ /terminal64\\.exe/ {print \$1; exit}'")
   if [[ -n "${wid}" ]]; then
     as_mt5 "wmctrl -ic ${wid}" 2>/dev/null || true
@@ -2904,9 +2813,6 @@ case "${1:-menu}" in
           as_mt5 "screen -ls" || true
           HEYSOLO_CLEAN_EXIT=1 ;;
   desktop)
-    # Desktop-only maintenance (wallpaper/icons/taskbar/etc). Not a separate
-    # installer - just direct access to the library functions defined above,
-    # for rebuilding one piece of the desktop without a full install/step.
     require_root
     shift
     case "${1:-all}" in
