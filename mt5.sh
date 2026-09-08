@@ -432,7 +432,7 @@ desktop_install_packages(){
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
   wait_for_dpkg_lock
   apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
-    pcmanfm feh tint2 wmctrl xdotool zenity dbus-x11 \
+    pcmanfm feh tint2 wmctrl xdotool zenity dbus-x11 autocutsel \
     icoutils imagemagick x11-utils xprop x11-xserver-utils \
     >/dev/null 2>&1 || true
   if ! command -v tint2 >/dev/null 2>&1 || ! command -v pcmanfm >/dev/null 2>&1; then
@@ -668,11 +668,14 @@ SCREEN_H="${SCREEN_RES_WH#*x}"
 PANEL_H="${PANEL_HEIGHT}"
 
 fit_work_area(){
-  local wid="\${1:-}"
+  local wid="\${1:-}" wh
   [[ -n "\${wid}" ]] || return 0
   command -v wmctrl >/dev/null 2>&1 || return 0
+  wh=\$(( SCREEN_H - PANEL_H ))
+  (( wh > 200 )) || wh=\${SCREEN_H}
   wmctrl -ir "\${wid}" -b remove,fullscreen >/dev/null 2>&1 || true
-  wmctrl -ir "\${wid}" -b add,maximized_vert,maximized_horz >/dev/null 2>&1 || true
+  wmctrl -ir "\${wid}" -b remove,maximized_vert,maximized_horz >/dev/null 2>&1 || true
+  wmctrl -ir "\${wid}" -e "0,0,0,\${SCREEN_W},\${wh}" >/dev/null 2>&1 || true
 }
 
 find_window(){
@@ -873,7 +876,7 @@ autohide_show_timeout = 0
 autohide_hide_timeout = 0
 disable_transparency = 1
 panel_background_id = 2
-panel_items = TSC
+panel_items = LTSC
 
 taskbar_mode = single_desktop
 taskbar_padding = 2 0 4
@@ -920,6 +923,23 @@ mouse_right = none
 mouse_scroll_up = toggle
 mouse_scroll_down = iconify
 EOF
+
+  {
+    echo ""
+    echo "launcher_icon_theme = hicolor"
+    echo "launcher_padding = 6 2 8"
+    echo "launcher_background_id = 0"
+    echo "launcher_icon_size = 26"
+    echo "launcher_tooltip = 1"
+    if [[ -s "${TERMINALS_FILE}" ]]; then
+      local l_slug l_rest
+      while IFS='|' read -r l_slug l_rest; do
+        [[ -z "${l_slug:-}" ]] && continue
+        [[ -f "${DESKTOP_DIR}/mt5-${l_slug}.desktop" ]] || continue
+        echo "launcher_item_app = ${DESKTOP_DIR}/mt5-${l_slug}.desktop"
+      done < "${TERMINALS_FILE}"
+    fi
+  } >> "${TINT2_CONF}"
 
   chown -R "${MT5_USER}:${MT5_USER}" "${MT5_HOME}/.config/tint2"
 }
@@ -1322,7 +1342,8 @@ keep_panel_visible(){
     [[ "${w}" =~ ^[0-9]+$ && "${h}" =~ ^[0-9]+$ ]] || continue
     wmctrl -ir "${id}" -b remove,fullscreen >/dev/null 2>&1
     if (( w * 100 >= SCREEN_W * 80 && y + h > WORK_H )); then
-      wmctrl -ir "${id}" -b add,maximized_vert,maximized_horz >/dev/null 2>&1
+      wmctrl -ir "${id}" -b remove,maximized_vert,maximized_horz >/dev/null 2>&1
+      wmctrl -ir "${id}" -e "0,0,0,${SCREEN_W},${WORK_H}" >/dev/null 2>&1
     fi
   done < <(wmctrl -lGx 2>/dev/null)
 }
@@ -1399,6 +1420,54 @@ desktop_launch_manager(){
   return 0
 }
 
+desktop_ensure_clipboard(){
+  step "starting the clipboard keeper (autocutsel)"
+  if ! command -v autocutsel >/dev/null 2>&1; then
+    wait_for_dpkg_lock
+    apt-get install -y autocutsel >/dev/null 2>&1 || true
+    command -v autocutsel >/dev/null 2>&1 || {
+      warn "autocutsel missing - VNC copy/paste may keep pasting the same old text."
+      return 0
+    }
+  fi
+
+  pkill -u "${MT5_USER}" -x autocutsel >/dev/null 2>&1 || true
+  sleep 1
+  mt5_run_quiet 10 "setsid autocutsel -selection CLIPBOARD -fork >/dev/null 2>&1"
+  mt5_run_quiet 10 "setsid autocutsel -selection PRIMARY   -fork >/dev/null 2>&1"
+  sleep 1
+  if pgrep -u "${MT5_USER}" -x autocutsel >/dev/null 2>&1; then
+    ok "Clipboard keeper running - copy/paste over VNC now updates properly."
+  else
+    warn "autocutsel did not stay up - copy/paste may be stuck on old text."
+  fi
+  desktop_ensure_clipboard_watchdog
+}
+
+desktop_write_clipboard_watchdog(){
+  local script="${BIN_DIR}/clipboard-watch.sh"
+  mkdir -p "${BIN_DIR}"
+  cat > "${script}" <<'EOF'
+#!/usr/bin/env bash
+while true; do
+  pgrep -x autocutsel >/dev/null 2>&1 || {
+    setsid autocutsel -selection CLIPBOARD -fork >/dev/null 2>&1
+    setsid autocutsel -selection PRIMARY   -fork >/dev/null 2>&1
+  }
+  sleep 30
+done
+EOF
+  chmod +x "${script}"
+  chown "${MT5_USER}:${MT5_USER}" "${script}" 2>/dev/null || true
+  echo "${script}"
+}
+
+desktop_ensure_clipboard_watchdog(){
+  local script; script=$(desktop_write_clipboard_watchdog)
+  as_mt5 "screen -ls" 2>/dev/null | grep -q '\.clipwatch\b' && return 0
+  as_mt5 "screen -dmS clipwatch bash -c 'export DISPLAY=:${DISPLAY_NUM}; ${script}'"
+}
+
 desktop_ensure_pcmanfm(){
   info "pcmanfm is not installed yet - installing it..."
   wait_for_dpkg_lock
@@ -1436,6 +1505,7 @@ desktop_start(){
   desktop_apply_wallpaper
   desktop_ensure_taskbar
   desktop_ensure_title_watcher
+  desktop_ensure_clipboard
   step "removing wine's junk launchers"
   purge_wine_shortcuts_local
   step "desktop layer done"
@@ -1520,6 +1590,7 @@ desktop_doctor(){
   echo "  x11vnc      : $(pgrep -u ${MT5_USER} -x x11vnc >/dev/null 2>&1 && echo running || echo 'NOT RUNNING')"
   echo "  pcmanfm     : $(desktop_manager_active && echo running || echo 'NOT RUNNING')"
   echo "  tint2       : $(pgrep -u ${MT5_USER} -x tint2 >/dev/null 2>&1 && echo running || echo 'NOT RUNNING')"
+  echo "  autocutsel  : $(pgrep -u ${MT5_USER} -x autocutsel >/dev/null 2>&1 && echo running || echo 'NOT RUNNING')"
   echo "  title-watch : $(as_mt5 "screen -ls" 2>/dev/null | grep -q '\.titlewatch\b' && echo running || echo 'NOT RUNNING')"
   echo "  panel-watch : $(as_mt5 "screen -ls" 2>/dev/null | grep -q '\.panelwatch\b' && echo running || echo 'NOT RUNNING')"
   echo "  window-guard: $(as_mt5 "screen -ls" 2>/dev/null | grep -q '\.windowguard\b' && echo running || echo 'NOT RUNNING')"
@@ -2046,6 +2117,79 @@ ensure_mql5_local_dir(){
     chown -R "${MT5_USER}:${MT5_USER}" "${MQL5_LOCAL_DIR}" 2>/dev/null || true
   fi
   chmod -R 2775 "${MQL5_LOCAL_DIR}" 2>/dev/null || true
+}
+
+MQL5_REPO_SUBDIRS=(Experts Include Indicators set Templates)
+
+fetch_mql5_assets_from_repo(){
+  ensure_mql5_local_dir
+  info "Fetching Experts/Include/Indicators/set/Templates from ${REPO_OWNER}/${REPO_NAME}..."
+
+  local tree_json
+  tree_json="$(curl -fsSL "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/trees/main?recursive=1" 2>/dev/null)"
+  if [[ -z "${tree_json}" ]]; then
+    warn "Could not reach the GitHub API - keeping whatever MQL5 assets are already local."
+    return 1
+  fi
+
+  local list_file
+  list_file="$(mktemp)"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "${list_file}" <<'PYEOF' <<<"${tree_json}"
+import json, sys
+out_path = sys.argv[1]
+wanted = ("Experts/", "Include/", "Indicators/", "set/", "Templates/")
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = {}
+with open(out_path, "w") as f:
+    for entry in data.get("tree", []):
+        if entry.get("type") != "blob":
+            continue
+        path = entry.get("path", "")
+        if path.startswith(wanted):
+            f.write(path + "\n")
+PYEOF
+  else
+    printf '%s' "${tree_json}" \
+      | grep -o '"path"[[:space:]]*:[[:space:]]*"\(Experts\|Include\|Indicators\|set\|Templates\)/[^"]*"' \
+      | sed 's/^"path"[[:space:]]*:[[:space:]]*"//; s/"$//' > "${list_file}"
+  fi
+
+  if [[ ! -s "${list_file}" ]]; then
+    warn "No files found under Experts/Include/Indicators/set/Templates in the repo tree."
+    rm -f "${list_file}"
+    return 1
+  fi
+
+  local path dest ok_n=0 fail_n=0
+  while IFS= read -r path; do
+    [[ -z "${path}" ]] && continue
+    dest="${MQL5_LOCAL_DIR}/${path}"
+    mkdir -p "$(dirname "${dest}")" 2>/dev/null || true
+    if curl -fsSL "${REPO_RAW}/${path}" -o "${dest}.part" 2>/dev/null && [[ -s "${dest}.part" ]]; then
+      mv -f "${dest}.part" "${dest}"
+      ok_n=$((ok_n+1))
+    else
+      rm -f "${dest}.part" 2>/dev/null || true
+      warn "  failed to fetch: ${path}"
+      fail_n=$((fail_n+1))
+    fi
+  done < "${list_file}"
+  rm -f "${list_file}"
+
+  if id "${MT5_USER}" &>/dev/null; then
+    chown -R "${MT5_USER}:${MT5_USER}" "${MQL5_LOCAL_DIR}" 2>/dev/null || true
+  fi
+  chmod -R 2775 "${MQL5_LOCAL_DIR}" 2>/dev/null || true
+
+  if (( fail_n > 0 )); then
+    warn "MQL5 assets: ${ok_n} file(s) downloaded, ${fail_n} failed (kept local copies where they already existed)."
+    return 1
+  fi
+  ok "MQL5 assets: ${ok_n} file(s) downloaded from the repo into ${MQL5_LOCAL_DIR}."
+  return 0
 }
 
 win_path_of(){
@@ -2772,7 +2916,8 @@ step2_install_terminals(){
   guard "start terminals"   start_all_terminals
 
   sleep 6
-  guard "MQL5 assets"       sync_mql5_assets_all
+  guard "MQL5 assets (download from repo)" fetch_mql5_assets_from_repo
+  guard "MQL5 assets (sync to terminals)"  sync_mql5_assets_all
   export DESKTOP_ICONS=1
   guard "desktop layer"     desktop_setup_all
   if (( ${#HEYSOLO_STAGE_WARNINGS[@]} > 0 )); then
@@ -2875,6 +3020,8 @@ case "${1:-menu}" in
   boot)   require_root; NONINTERACTIVE=1 boot_recover;          HEYSOLO_CLEAN_EXIT=1 ;;
   screenshots|fix-screenshots)
           require_root; repair_screenshots; HEYSOLO_CLEAN_EXIT=1 ;;
+  mql5-fetch)
+          require_root; fetch_mql5_assets_from_repo; sync_mql5_assets_all; HEYSOLO_CLEAN_EXIT=1 ;;
   doctor) require_root
           if declare -F desktop_doctor >/dev/null 2>&1; then desktop_doctor; fi
           as_mt5 "screen -ls" || true
@@ -2889,6 +3036,7 @@ case "${1:-menu}" in
       icons)     desktop_sync_icons ;;
       taskbar)   desktop_write_openbox_rules; desktop_write_tint2_conf; desktop_ensure_taskbar; desktop_ensure_window_guard ;;
       titles)    desktop_ensure_title_watcher ;;
+      clipboard) desktop_ensure_clipboard ;;
       doctor)    desktop_doctor ;;
       clean)     desktop_write_openbox_rules; desktop_write_tint2_conf
                  desktop_ensure_taskbar; desktop_ensure_window_guard; purge_wine_shortcuts_local
@@ -2899,7 +3047,7 @@ case "${1:-menu}" in
       visible)   [[ -n "${2:-}" && -n "${3:-}" ]] || { echo "Usage: sudo bash $0 desktop visible <slug> <0|1>"; exit 1; }
                  set_terminal_desktop_visible "$2" "$3"
                  ok "${2}: desktop visibility set to ${3}." ;;
-      *) echo "Usage: sudo bash $0 desktop [all|packages|wallpaper|icons|taskbar|titles|clean|start|restore|visible <slug> <0|1>|doctor]"; exit 1 ;;
+      *) echo "Usage: sudo bash $0 desktop [all|packages|wallpaper|icons|taskbar|titles|clipboard|clean|start|restore|visible <slug> <0|1>|doctor]"; exit 1 ;;
     esac
     HEYSOLO_CLEAN_EXIT=1 ;;
   menu|"") main_menu ;;
