@@ -1354,7 +1354,7 @@ keep_panel_visible(){
     wmctrl -ir "${id}" -b remove,fullscreen >/dev/null 2>&1
     if (( y + h > WORK_H )) && { is_really_maximized "${id}" || covers_whole_screen "${w}" "${h}" "${y}"; }; then
       wmctrl -ir "${id}" -b remove,maximized_vert,maximized_horz >/dev/null 2>&1
-      wmctrl -ir "${id}" -e "0,0,0,${SCREEN_W},${WORK_H}" >/dev/null 2>&1
+      wmctrl -ir "${id}" -b add,maximized_vert,maximized_horz >/dev/null 2>&1
     fi
   done < <(wmctrl -lGx 2>/dev/null)
 }
@@ -2593,11 +2593,7 @@ install_selected(){
 }
 
 fit_new_window_to_workarea(){
-  local slug="$1" tries=0 wid sw wh
-  sw="${SCREEN_RES_WH%x*}"
-  wh="${WORK_RES_WH#*x}"
-  [[ "${sw}" =~ ^[0-9]+$ ]] || sw=1920
-  [[ "${wh}" =~ ^[0-9]+$ ]] || wh=1040
+  local slug="$1" tries=0 wid
   while (( tries < 20 )); do
     wid=$(as_mt5 "wmctrl -lx 2>/dev/null | awk 'tolower(\$3) ~ /terminal64\\.exe/ {print \$1; exit}'")
     [[ -n "${wid}" ]] && break
@@ -2605,8 +2601,8 @@ fit_new_window_to_workarea(){
     tries=$((tries+1))
   done
   [[ -n "${wid}" ]] || return 0
-  as_mt5 "wmctrl -ir ${wid} -b remove,fullscreen,maximized_vert,maximized_horz" 2>/dev/null || true
-  as_mt5 "wmctrl -ir ${wid} -e 0,0,0,${sw},${wh}" 2>/dev/null || true
+  as_mt5 "wmctrl -ir ${wid} -b remove,fullscreen" 2>/dev/null || true
+  as_mt5 "wmctrl -ir ${wid} -b add,maximized_vert,maximized_horz" 2>/dev/null || true
 }
 
 start_terminal(){
