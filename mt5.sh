@@ -2111,10 +2111,11 @@ fetch_mql5_assets_from_repo(){
     return 1
   fi
 
-  local list_file
+  local list_file py_file
   list_file="$(mktemp)"
   if command -v python3 >/dev/null 2>&1; then
-    python3 - "${list_file}" <<'PYEOF' <<<"${tree_json}"
+    py_file="$(mktemp)"
+    cat > "${py_file}" <<'PYEOF'
 import json, sys
 out_path = sys.argv[1]
 wanted = ("Experts/", "Include/", "Indicators/", "set/", "Templates/")
@@ -2130,6 +2131,8 @@ with open(out_path, "w") as f:
         if path.startswith(wanted):
             f.write(path + "\n")
 PYEOF
+    python3 "${py_file}" "${list_file}" <<<"${tree_json}"
+    rm -f "${py_file}"
   else
     printf '%s' "${tree_json}" \
       | grep -o '"path"[[:space:]]*:[[:space:]]*"\(Experts\|Include\|Indicators\|set\|Templates\)/[^"]*"' \
