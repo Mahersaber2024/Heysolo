@@ -2145,12 +2145,19 @@ PYEOF
     return 1
   fi
 
-  local path dest ok_n=0 fail_n=0
+  local path dest enc_path ok_n=0 fail_n=0
   while IFS= read -r path; do
     [[ -z "${path}" ]] && continue
     dest="${MQL5_LOCAL_DIR}/${path}"
     mkdir -p "$(dirname "${dest}")" 2>/dev/null || true
-    if curl -fsSL "${REPO_RAW}/${path}" -o "${dest}.part" 2>/dev/null && [[ -s "${dest}.part" ]]; then
+    if command -v python3 >/dev/null 2>&1; then
+      enc_path="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "${path}")"
+    else
+      enc_path="$(printf '%s' "${path}" | sed \
+        -e 's/ /%20/g' -e 's/\[/%5B/g' -e 's/\]/%5D/g' \
+        -e 's/(/%28/g' -e 's/)/%29/g' -e "s/'/%27/g" -e 's/#/%23/g')"
+    fi
+    if curl -fsSL "${REPO_RAW}/${enc_path}" -o "${dest}.part" 2>/dev/null && [[ -s "${dest}.part" ]]; then
       mv -f "${dest}.part" "${dest}"
       ok_n=$((ok_n+1))
     else
