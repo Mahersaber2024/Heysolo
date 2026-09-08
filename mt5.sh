@@ -1336,6 +1336,11 @@ is_really_maximized(){
   [[ "${st}" == *_NET_WM_STATE_MAXIMIZED_VERT* && "${st}" == *_NET_WM_STATE_MAXIMIZED_HORZ* ]]
 }
 
+covers_whole_screen(){
+  local w="$1" h="$2" y="$3"
+  (( w * 100 >= SCREEN_W * 97 && y + h >= SCREEN_H - 10 ))
+}
+
 keep_panel_visible(){
   local id desk x y w h cls low
   while read -r id desk x y w h cls _; do
@@ -1347,7 +1352,7 @@ keep_panel_visible(){
     [[ "${x}" =~ ^-?[0-9]+$ && "${y}" =~ ^-?[0-9]+$ ]] || continue
     [[ "${w}" =~ ^[0-9]+$ && "${h}" =~ ^[0-9]+$ ]] || continue
     wmctrl -ir "${id}" -b remove,fullscreen >/dev/null 2>&1
-    if (( y + h > WORK_H )) && is_really_maximized "${id}"; then
+    if (( y + h > WORK_H )) && { is_really_maximized "${id}" || covers_whole_screen "${w}" "${h}" "${y}"; }; then
       wmctrl -ir "${id}" -b remove,maximized_vert,maximized_horz >/dev/null 2>&1
       wmctrl -ir "${id}" -e "0,0,0,${SCREEN_W},${WORK_H}" >/dev/null 2>&1
     fi
@@ -2587,6 +2592,23 @@ install_selected(){
   desktop_sync_icons
 }
 
+fit_new_window_to_workarea(){
+  local slug="$1" tries=0 wid sw wh
+  sw="${SCREEN_RES_WH%x*}"
+  wh="${WORK_RES_WH#*x}"
+  [[ "${sw}" =~ ^[0-9]+$ ]] || sw=1920
+  [[ "${wh}" =~ ^[0-9]+$ ]] || wh=1040
+  while (( tries < 20 )); do
+    wid=$(as_mt5 "wmctrl -lx 2>/dev/null | awk 'tolower(\$3) ~ /terminal64\\.exe/ {print \$1; exit}'")
+    [[ -n "${wid}" ]] && break
+    sleep 1
+    tries=$((tries+1))
+  done
+  [[ -n "${wid}" ]] || return 0
+  as_mt5 "wmctrl -ir ${wid} -b remove,fullscreen,maximized_vert,maximized_horz" 2>/dev/null || true
+  as_mt5 "wmctrl -ir ${wid} -e 0,0,0,${sw},${wh}" 2>/dev/null || true
+}
+
 start_terminal(){
   local slug="$1" wineprefix="$2" termpath="${3:-}"
   [[ -z "$termpath" ]] && termpath=$(resolve_terminal_exe "${wineprefix}")
@@ -2620,6 +2642,7 @@ start_terminal(){
       export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
       wine \"${termpath}\"'"
   fi
+  ( fit_new_window_to_workarea "${slug}" & )
 }
 
 graceful_stop_terminal(){
