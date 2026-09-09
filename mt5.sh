@@ -2566,9 +2566,13 @@ install_selected(){
 }
 
 fit_new_window_to_workarea(){
-  local slug="$1" tries=0 wid
+  local slug="$1" termpath="${2:-}" tries=0 pid wid
   while (( tries < 20 )); do
-    wid=$(as_mt5 "wmctrl -lx 2>/dev/null | awk 'tolower(\$3) ~ /terminal64\\.exe/ {print \$1; exit}'")
+    if [[ -n "${termpath}" ]]; then
+      pid=$(as_mt5 "pgrep -f '${termpath}'" 2>/dev/null | head -n1)
+      [[ -n "${pid}" ]] && wid=$(as_mt5 "xdotool search --pid ${pid}" 2>/dev/null | head -n1)
+    fi
+    [[ -z "${wid}" ]] && wid=$(as_mt5 "xdotool search --name '^${slug}\$'" 2>/dev/null | head -n1)
     [[ -n "${wid}" ]] && break
     sleep 1
     tries=$((tries+1))
@@ -2611,13 +2615,17 @@ start_terminal(){
       export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
       wine \"${termpath}\"'"
   fi
-  ( fit_new_window_to_workarea "${slug}" & )
+  ( fit_new_window_to_workarea "${slug}" "${termpath}" & )
 }
 
 graceful_stop_terminal(){
-  local slug="$1" termpath="$2" timeout="${3:-20}" wid waited=0
+  local slug="$1" termpath="$2" timeout="${3:-20}" wid pid waited=0
 
-  wid=$(as_mt5 "wmctrl -lx 2>/dev/null | awk 'tolower(\$3) ~ /terminal64\\.exe/ {print \$1; exit}'")
+  pid=$(as_mt5 "pgrep -f '${termpath}'" 2>/dev/null | head -n1)
+  if [[ -n "${pid}" ]]; then
+    wid=$(as_mt5 "xdotool search --pid ${pid}" 2>/dev/null | head -n1)
+  fi
+  [[ -z "${wid}" ]] && wid=$(as_mt5 "xdotool search --name '^${slug}\$'" 2>/dev/null | head -n1)
   if [[ -n "${wid}" ]]; then
     as_mt5 "wmctrl -ic ${wid}" 2>/dev/null || true
     while as_mt5 "pgrep -f '${termpath}'" >/dev/null 2>&1 && (( waited < timeout )); do
