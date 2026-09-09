@@ -1018,6 +1018,12 @@ def relay_targets(login: str, kind: str, fallback_thread: int | None) -> set[tup
                 continue
             if not heysolo_db.is_user_notify_enabled(uid, kind):
                 continue
+            if heysolo_db.is_admin(uid):
+                if CHAT_ID:
+                    targets.add((CHAT_ID, fallback_thread))
+                else:
+                    targets.add((uid, None))
+                continue
             dest = heysolo_db.get_user_dest(uid)
             if dest["mode"] == "dm":
                 targets.add((uid, None))
