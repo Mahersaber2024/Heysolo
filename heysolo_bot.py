@@ -249,6 +249,7 @@ G_MUTE = "🔕"
 G_TRADE = "📈"
 G_LOG = "📝"
 G_RESULT = "📊"
+G_PROP = "🏆"
 
 CANCEL_CB = "CANCEL_PENDING"
 
@@ -368,6 +369,24 @@ def read_card(login: str) -> dict | None:
         "updated": raw.get("updated", ""),
         "account_failed": raw.get("accountFailed", "").lower() == "true",
         "challenge_passed": raw.get("challengePassed", "").lower() == "true",
+        "init_balance": _f(raw, "initBalance"),
+        "yesterday_balance": _f(raw, "yesterdayBalance"),
+        "today_gain_usd": _f(raw, "todayGainUsd"),
+        "today_gain_pct": _f(raw, "todayGainPct"),
+        "yesterday_gain_usd": _f(raw, "yesterdayGainUsd"),
+        "yesterday_gain_pct": _f(raw, "yesterdayGainPct"),
+        "week_gain_usd": _f(raw, "weekGainUsd"),
+        "week_gain_pct": _f(raw, "weekGainPct"),
+        "max_day_drop_usd": _f(raw, "maxDayDropUsd"),
+        "max_day_drop_pct": _f(raw, "maxDayDropPct"),
+        "total_drop_usd": _f(raw, "totalDropUsd"),
+        "total_drop_pct": _f(raw, "totalDropPct"),
+        "cons_max_pct": _f(raw, "consMaxPct"),
+        "cons_curr_pct": _f(raw, "consCurrPct"),
+        "cons_largest_profit_usd": _f(raw, "consLargestProfitUsd"),
+        "cons_largest_profit_date": raw.get("consLargestProfitDate", ""),
+        "cons_status": raw.get("consStatus", ""),
+        "next_reset_ts": _f(raw, "nextResetTs"),
         "source": "AccountStatus",
     }
     if root_for_login(login).is_share:
@@ -387,10 +406,15 @@ def read_prop_data(login: str) -> dict | None:
     status = _prop_block(text, "status")
     general = _prop_block(text, "general")
     today = _prop_block(general, "today")
+    yesterday = _prop_block(general, "yesterday")
+    week = _prop_block(general, "week")
+    max_day_drop = _prop_block(general, "maxDayDrop")
+    total_drop = _prop_block(general, "totalDrop")
     target = _prop_block(text, "targetProfit")
     loss = _prop_block(text, "totalLoss")
     daily = _prop_block(text, "dailyLoss")
     days = _prop_block(text, "tradingDaysReq")
+    cons = _prop_block(text, "consistency")
     if not (meta or general):
         return None
     result = {
@@ -422,6 +446,24 @@ def read_prop_data(login: str) -> dict | None:
         "updated": _pstr(meta, "lastUpdate"),
         "account_failed": _pbool(status, "accountFailed"),
         "challenge_passed": _pbool(status, "challengePassed"),
+        "init_balance": _pnum(general, "initialBalance"),
+        "yesterday_balance": _pnum(daily, "yesterdayBalance"),
+        "today_gain_usd": _pnum(today, "usd"),
+        "today_gain_pct": _pnum(today, "pct"),
+        "yesterday_gain_usd": _pnum(yesterday, "usd"),
+        "yesterday_gain_pct": _pnum(yesterday, "pct"),
+        "week_gain_usd": _pnum(week, "usd"),
+        "week_gain_pct": _pnum(week, "pct"),
+        "max_day_drop_usd": _pnum(max_day_drop, "usd"),
+        "max_day_drop_pct": _pnum(max_day_drop, "pct"),
+        "total_drop_usd": _pnum(total_drop, "usd"),
+        "total_drop_pct": _pnum(total_drop, "pct"),
+        "cons_max_pct": _pnum(cons, "maxPercent"),
+        "cons_curr_pct": _pnum(cons, "currentPercent"),
+        "cons_largest_profit_usd": _pnum(cons, "largestProfit"),
+        "cons_largest_profit_date": _pstr(cons, "largestProfitDate"),
+        "cons_status": _pstr(cons, "status"),
+        "next_reset_ts": _mtime(path) + _pnum(meta, "resetSecondsLeft"),
         "source": "PropDashboard",
     }
     if root_for_login(login).is_share:
@@ -437,9 +479,9 @@ def _mtime(path: Path) -> float:
 def _merge_dashboards(primary: dict, secondary: dict) -> dict:
     out = dict(primary)
     for k, v in secondary.items():
-        if k == "source":
+        if k == "source" or isinstance(v, bool):
             continue
-        if isinstance(v, str) and v and not out.get(k):
+        if isinstance(v, (str, int, float)) and v and not out.get(k):
             out[k] = v
     out["source"] = f"{primary['source']}+{secondary['source']}"
     return out
@@ -617,7 +659,23 @@ def _rule(emoji: str, label: str, current: float, limit: float, status: str, uni
     )
 
 def _row(label: str, value: str, mark: str = "") -> str:
-    return f"{label:<13}{value:>17}{('  ' + mark) if mark else ''}"
+    return f"{label:<17}{value:>16}{('  ' + mark) if mark else ''}"
+
+DOT_FULL, DOT_EMPTY, DOT_WIDTH = "\u2022", "\u25cb", 10
+
+def _dot_bar(magnitude: float, scale: float) -> str:
+    """Dot bar for the General section. `magnitude` is an absolute value,
+    `scale` is the largest magnitude in the group (used to normalize)."""
+    if scale <= 0:
+        return DOT_EMPTY * DOT_WIDTH
+    ratio = max(0.0, min(abs(magnitude) / scale, 1.0))
+    filled = int(round(ratio * DOT_WIDTH))
+    if magnitude != 0 and filled == 0:
+        filled = 1  # never show a nonzero value as a fully empty bar
+    return DOT_FULL * filled + DOT_EMPTY * (DOT_WIDTH - filled)
+
+def _dot_row(label: str, bar: str, value: str) -> str:
+    return f"{label:<14}{bar}  {value:>10}"
 
 def owner_label_for_login(login: str) -> str:
     try:
@@ -631,60 +689,11 @@ def owner_label_for_login(login: str) -> str:
     names = heysolo_db.get_user_names()
     return ", ".join(user_label(u, names, with_id=False) for u in sorted(uids))
 
-def format_stats_message(login: str) -> str:
-    d = read_dashboard(login)
-    if not d:
-        return f"{E_PROGRESS} No data exported for this account yet (enable <code>ExportAccountCard</code> in the EA)."
-
-    cur = d["currency"] or ""
-    if d["account_failed"]:
-        head_emoji, headline = E_BREACHED, "FAILED"
-    elif d["challenge_passed"]:
-        head_emoji, headline = E_MET, "PASSED"
-    else:
-        head_emoji, headline = "🟡", "IN PROGRESS"
-
-    mode_label = (d["mode"] or "-").title()
-    ea_mode = "Manual" if d["ea_mode"] == "MANUAL" else ("Auto" if d["ea_mode"] == "AUTO" else "-")
-    ea_trading = "On" if d["ea_trading"] == "ON" else ("Off" if d["ea_trading"] == "OFF" else "-")
-    today_emoji = "🟢" if d["today_usd"] >= 0 else "🔴"
-    has_manual_controls = bool(d["ea_mode"] or d["ea_trading"] or d["symbols"])
-
-    lines = [
-        f"📊 <b>Account {login}</b> {head_emoji} <b>{headline}</b>",
-        f"<i>{html.escape(d['broker'])} · {mode_label}</i>",
-    ]
-    if d.get("ea_name") or d.get("ea"):
-        lines.append(f"🧩 EA {html.escape(d.get('ea_name') or '-')} · "
-                     f"<code>{html.escape(d.get('ea') or '-')}</code>")
-    lines += [
-        "",
-        f"💵 Balance <b>{d['balance']:,.2f} {cur}</b>",
-        f"📈 Equity <b>{d['equity']:,.2f} {cur}</b>",
-        f"{today_emoji} Today <b>{d['today_usd']:+,.2f} {cur}</b> ({d['today_pct']:+.2f}%)",
-        f"📌 Open trades <b>{d['open_positions']}</b>",
-        "",
-        f"🏦 <b>Prop panel</b> · {mode_label}",
-        _rule("🎯", "Target", d["target_pct"], d["target_min_pct"], d["target_status"]),
-        _rule("🛡️", "Total loss", d["loss_pct"], d["loss_max_pct"], d["loss_status"]),
-        _rule("📆", "Daily loss", d["daily_pct"], d["daily_max_pct"], d["daily_status"]),
-        _rule("🗓️", "Days", d["trading_days"], d["trading_days_min"],
-              "Completed" if d["trading_days"] >= d["trading_days_min"] > 0 else "In Progress", unit=""),
-    ]
-    if has_manual_controls:
-        lines.append("")
-        lines.append(f"⚙️ Mode <b>{ea_mode}</b> · 🚦 Trading <b>{ea_trading}</b>")
-        lines.append(f"💠 Symbols <code>{d['symbols'] or 'waiting for EA'}</code>")
-
-    owner = owner_label_for_login(login)
-    root_label = root_for_login(login).label
-    footer_bits = []
-    lines.append("")
-    if owner:
-        footer_bits.append(f"👤 Owner {html.escape(owner)}")
-    footer_bits.append(f"📂 {root_label}")
-    lines.append(" · ".join(footer_bits))
-
+def _dashboard_footer(d: dict, login: str) -> list[str]:
+    root = root_for_login(login)
+    lines = [""]
+    if root.is_share:
+        lines.append(root.label)
     updated_bits = []
     if d.get("updated"):
         updated_bits.append(f"updated {d['updated']}")
@@ -692,6 +701,141 @@ def format_stats_message(login: str) -> str:
         updated_bits.append(f"🌐 {d['latency_ms']:.0f} ms")
     if updated_bits:
         lines.append(f"<i>{' · '.join(updated_bits)}</i>")
+    return lines
+
+def format_account_info_message(login: str) -> str:
+    d = read_dashboard(login)
+    if not d:
+        return f"{E_PROGRESS} No data exported for this account yet (enable <code>ExportAccountCard</code> in the EA)."
+
+    cur = d["currency"] or ""
+    mode_label = (d["mode"] or "-").title()
+    ea_mode = "Manual" if d["ea_mode"] == "MANUAL" else ("Auto" if d["ea_mode"] == "AUTO" else "-")
+    ea_trading = "On" if d["ea_trading"] == "ON" else ("Off" if d["ea_trading"] == "OFF" else "-")
+    today_emoji = "🟢" if d["today_usd"] >= 0 else "🔴"
+    has_manual_controls = bool(d["ea_mode"] or d["ea_trading"] or d["symbols"])
+    owner = owner_label_for_login(login)
+
+    lines = [
+        f"{G_ACCOUNT} <b>Account {login}</b>",
+        f"<i>{html.escape(d['broker'])} · {mode_label}</i>",
+    ]
+    if d.get("ea_name") or d.get("ea"):
+        lines.append(f"🧩 Expert {html.escape(d.get('ea_name') or '-')} · "
+                     f"<code>{html.escape(d.get('ea') or '-')}</code>")
+    lines.append(f"👤 Owner {html.escape(owner) if owner else '<i>unassigned</i>'}")
+    lines += [
+        "",
+        f"💵 Balance <b>{d['balance']:,.2f} {cur}</b>",
+        f"📈 Equity <b>{d['equity']:,.2f} {cur}</b>",
+        f"{today_emoji} Today <b>{d['today_usd']:+,.2f} {cur}</b> ({d['today_pct']:+.2f}%)",
+        f"📌 Open trades <b>{d['open_positions']}</b>",
+    ]
+    if has_manual_controls:
+        lines.append("")
+        lines.append(f"⚙️ Mode <b>{ea_mode}</b> · 🚦 Trading <b>{ea_trading}</b>")
+        lines.append(f"💠 Symbols <code>{d['symbols'] or 'waiting for EA'}</code>")
+
+    lines += _dashboard_footer(d, login)
+    return "\n".join(lines)
+
+def _fmt_reset_countdown(next_reset_ts: float) -> str:
+    if not next_reset_ts:
+        return ""
+    secs_left = max(0, int(next_reset_ts - time.time()))
+    h, rem = divmod(secs_left, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+def format_prop_panel_message(login: str) -> str:
+    d = read_dashboard(login)
+    if not d:
+        return f"{E_PROGRESS} No prop data exported for this account yet (enable <code>ExportAccountCard</code> in the EA)."
+
+    cur = d["currency"] or ""
+    mode_label = (d["mode"] or "-").title()
+    if d["account_failed"]:
+        head_emoji, headline = E_BREACHED, "FAILED"
+    elif d["challenge_passed"]:
+        head_emoji, headline = E_MET, "PASSED"
+    else:
+        head_emoji, headline = "🟡", "IN PROGRESS"
+
+    days_status = "Completed" if d["trading_days"] >= d["trading_days_min"] > 0 else "In Progress"
+    cons_status = d["cons_status"] or (
+        "Completed" if 0 < d["cons_curr_pct"] < d["cons_max_pct"] else "In Progress")
+    rule_statuses = [d["target_status"], d["loss_status"], d["daily_status"], days_status]
+    passed_count = sum(1 for s in rule_statuses if s in ("Completed", "Allowed"))
+
+    # The EA's exported "dailyLoss.currentPercent" can reflect intraday movement
+    # rather than an actual loss (e.g. it may show a value even on a profitable day).
+    # For display, "Daily loss" should only ever show how much of the daily loss
+    # allowance was actually used: zero on a flat/profitable day, otherwise the
+    # magnitude of today's loss.
+    today_ref_pct = d.get("today_gain_pct")
+    if not today_ref_pct and d.get("today_pct"):
+        today_ref_pct = d["today_pct"]
+    daily_loss_display = max(0.0, -today_ref_pct) if today_ref_pct is not None else d["daily_pct"]
+
+    lines = [
+        f"{G_PROP} <b>Prop Panel</b> · <code>{login}</code>",
+        f"<i>{mode_label} account</i>",
+        RULE,
+        f"{head_emoji} <b>{headline}</b>  ·  {passed_count}/4 rules on track",
+    ]
+    reset_txt = _fmt_reset_countdown(d.get("next_reset_ts") or 0)
+    if reset_txt:
+        lines.append(f"⏳ Resets in <b>{reset_txt}</b>")
+    lines += [
+        RULE,
+        _rule("🎯", "Target", d["target_pct"], d["target_min_pct"], d["target_status"]),
+        _rule("🛡️", "Total loss", d["loss_pct"], d["loss_max_pct"], d["loss_status"]),
+        _rule("📆", "Daily loss", daily_loss_display, d["daily_max_pct"], d["daily_status"]),
+        _rule("🗓️", "Trading days", d["trading_days"], d["trading_days_min"], days_status, unit=""),
+    ]
+    if d.get("cons_max_pct"):
+        lines.append(_rule("🏅", "Consistency", d["cons_curr_pct"], d["cons_max_pct"], cons_status))
+    money_symbol = "$" if cur.upper() in ("USD", "USDT", "USDC") else f" {cur}"
+    bal_str = f"${d['balance']:,.2f}" if money_symbol == "$" else f"{d['balance']:,.2f}{money_symbol}"
+    init_bal_str = f"${d['init_balance']:,.2f}" if money_symbol == "$" else f"{d['init_balance']:,.2f}{money_symbol}"
+    yday_bal_str = (f"${d['yesterday_balance']:,.2f}" if money_symbol == "$"
+                    else f"{d['yesterday_balance']:,.2f}{money_symbol}")
+
+    lines.append(f"<i>{G_ROW} Trading day {d['trading_days']}</i>")
+    lines.append(f"<i>{G_ROW} Initial balance {init_bal_str}</i>")
+    lines.append(f"<i>{G_ROW} Current balance {bal_str}</i>")
+    if d.get("yesterday_balance"):
+        lines.append(f"<i>{G_ROW} Yesterday balance {yday_bal_str}</i>")
+
+    # Drops (Max day drop / Total drop) are losses -> always shown with a
+    # leading minus sign, since Telegram text can't carry color to signal direction.
+    today_pct, week_pct = d["today_gain_pct"], d["week_gain_pct"]
+    yday_pct = d["yesterday_gain_pct"]
+    maxdd_pct, total_pct = -abs(d["max_day_drop_pct"]), -abs(d["total_drop_pct"])
+    today_usd, week_usd = d["today_gain_usd"], d["week_gain_usd"]
+    yday_usd = d["yesterday_gain_usd"]
+    maxdd_usd, total_usd = -abs(d["max_day_drop_usd"]), -abs(d["total_drop_usd"])
+
+    scale = max(abs(today_pct), abs(week_pct), abs(yday_pct),
+                abs(maxdd_pct), abs(total_pct), 0.01)
+
+    def _usd(v: float) -> str:
+        sign = "-" if v < 0 else "+"
+        return f"{sign}{money_symbol}{abs(v):,.2f}" if money_symbol == "$" else f"{sign}{abs(v):,.2f}{money_symbol}"
+
+    lines.append("")
+    # Bar rows, same order as before (Today, Yesterday, This week, Max day drop, Total drop)
+    bar_rows = [
+        ("Today", today_pct, f"{today_pct:+.2f}% / {_usd(today_usd)}"),
+        ("Yesterday", yday_pct, f"{yday_pct:+.2f}% / {_usd(yday_usd)}"),
+        ("This week", week_pct, f"{week_pct:+.2f}% / {_usd(week_usd)}"),
+        ("Max day drop", maxdd_pct, f"{maxdd_pct:.2f}% / {_usd(maxdd_usd)}"),
+        ("Total drop", total_pct, f"{total_pct:.2f}% / {_usd(total_usd)}"),
+    ]
+    for label, val, value in bar_rows:
+        lines.append(f"{label} {_dot_bar(val, scale)} {value}")
+
+    lines += _dashboard_footer(d, login)
     return "\n".join(lines)
 
 def get_symbols_for_login(login: str | None) -> list[str]:
@@ -1240,6 +1384,7 @@ async def watch_outbox(app: Application):
 BTN_BIAS = f"{G_BIAS} Bias"
 BTN_EA = "EA Controller"
 BTN_ACCOUNT = f"{G_ACCOUNT} Account"
+BTN_PROP = f"{G_PROP} Prop Panel"
 BTN_ADMIN = f"{G_ADMIN} Admin"
 BTN_SETTINGS = f"{G_SETTINGS} Settings"
 
@@ -1254,7 +1399,7 @@ def build_main_keyboard(user_id: int, st: "AccountState | None" = None,
                          login: str | None = None) -> ReplyKeyboardMarkup:
     st = st or AccountState()
     caps = expert_caps(user_id)
-    top_row = [BTN_ACCOUNT]
+    top_row = [BTN_ACCOUNT, BTN_PROP]
     if caps["has_bias"] or caps["has_mode"] or caps["has_trading"]:
         top_row.insert(0, BTN_EA)
     rows = [top_row]
@@ -1437,11 +1582,44 @@ def accounts_list_view(user_id: int) -> dict:
 
 def account_detail_view(user_id: int, login: str) -> dict:
     active = resolve_login(user_id)
-    text = format_stats_message(login)
+    text = format_account_info_message(login)
     kb_rows = []
     if login != active:
         kb_rows.append([InlineKeyboardButton(f"{G_OK} Set as active", callback_data=f"ACC_SET_{login}")])
+    kb_rows.append([InlineKeyboardButton(f"{G_PROP} Prop Panel", callback_data=f"PROP_VIEW_{login}")])
     kb_rows.append([InlineKeyboardButton(f"{G_BACK} All accounts", callback_data="ACC_LIST")])
+    return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
+
+def prop_list_view(user_id: int) -> dict:
+    accounts = visible_accounts(user_id)
+    active = resolve_login(user_id)
+    rows = []
+    for a in accounts:
+        d = read_dashboard(a["login"]) or {}
+        if d.get("account_failed"):
+            mark = E_BREACHED
+        elif d.get("challenge_passed"):
+            mark = E_MET
+        else:
+            mark = E_PROGRESS
+        cur_login = a["login"]
+        tag = f" {G_ROW}" if cur_login == active else ""
+        label = f"{mark} {cur_login} \u00b7 {d.get('target_pct', 0):.1f}% target{tag}"
+        rows.append([InlineKeyboardButton(label, callback_data=f"PROP_VIEW_{cur_login}")])
+    text = (
+        f"{G_PROP} <b>Prop Panel</b> ({len(accounts)})\n"
+        f"{G_ROW} Active: <code>{active or '-'}</code>\n"
+        "Tap an account to see its challenge rules."
+    )
+    return {"text": text, "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
+
+def prop_detail_view(user_id: int, login: str) -> dict:
+    text = format_prop_panel_message(login)
+    kb_rows = [
+        [InlineKeyboardButton(f"🔄 Refresh", callback_data=f"PROP_VIEW_{login}"),
+         InlineKeyboardButton(f"{G_ACCOUNT} Account info", callback_data=f"ACC_VIEW_{login}")],
+        [InlineKeyboardButton(f"{G_BACK} All prop panels", callback_data="PROP_LIST")],
+    ]
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
 TOPIC_KIND_LABELS = {"bias": "Bias", "trade": "Trades", "log": "Logs", "result": "Results"}
@@ -2887,10 +3065,15 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == BTN_ACCOUNT:
         if len(await asyncio.to_thread(visible_accounts, uid)) > 1:
             v = await asyncio.to_thread(accounts_list_view, uid)
-            await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         else:
-            stats_text = await asyncio.to_thread(format_stats_message, login)
-            await msg.reply_text(stats_text, parse_mode=ParseMode.HTML)
+            v = await asyncio.to_thread(account_detail_view, uid, login)
+        await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+    elif text == BTN_PROP:
+        if len(await asyncio.to_thread(visible_accounts, uid)) > 1:
+            v = await asyncio.to_thread(prop_list_view, uid)
+        else:
+            v = await asyncio.to_thread(prop_detail_view, uid, login)
+        await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update):
@@ -2932,6 +3115,23 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await q.answer()
         v = await asyncio.to_thread(account_detail_view, uid, target_login)
+        await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        return
+
+    if data == "PROP_LIST":
+        await q.answer()
+        v = await asyncio.to_thread(prop_list_view, uid)
+        await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        return
+
+    if data.startswith("PROP_VIEW_"):
+        target_login = data[len("PROP_VIEW_"):]
+        visible = await asyncio.to_thread(visible_accounts, uid)
+        if target_login not in {a["login"] for a in visible}:
+            await q.answer("Not your account.", show_alert=True)
+            return
+        await q.answer()
+        v = await asyncio.to_thread(prop_detail_view, uid, target_login)
         await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         return
 
