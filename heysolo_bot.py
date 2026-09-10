@@ -346,6 +346,7 @@ def read_card(login: str) -> dict | None:
         "symbols": raw.get("symbols", ""),
         "ea_mode": raw.get("eaMode", ""),
         "ea_trading": raw.get("eaTrading", ""),
+        "ea_bias": raw.get("eaBias", ""),
         "ea": raw.get("ea", ""),
         "ea_name": raw.get("eaName", ""),
         "balance": _f(raw, "balance"),
@@ -399,6 +400,7 @@ def read_prop_data(login: str) -> dict | None:
         "symbols": "",
         "ea_mode": "",
         "ea_trading": "",
+        "ea_bias": "",
         "ea": _pstr(meta, "ea"),
         "ea_name": _pstr(meta, "eaName"),
         "balance": _pnum(general, "currentBalance"),
@@ -787,6 +789,19 @@ def _read_control_blocking(login: str) -> dict:
                 continue
     return out
 
+def _parse_bias_csv(raw: str) -> dict:
+    out = {}
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        sym, _, value = part.partition("=")
+        try:
+            out[sym.strip().upper()] = int(value.strip())
+        except ValueError:
+            continue
+    return out
+
 def refresh_state(login: str) -> AccountState:
     st = _state.setdefault(login, AccountState())
     ctl = _read_control_blocking(login)
@@ -803,6 +818,11 @@ def refresh_state(login: str) -> AccountState:
         st.mode = reported_mode
     if not _hold_pending(st, "trading", reported_trading) and reported_trading is not None:
         st.trading = reported_trading
+    reported_bias = _parse_bias_csv(d.get("ea_bias", ""))
+    for sym, val in reported_bias.items():
+        key = f"bias_{sym}"
+        if not _hold_pending(st, key, val):
+            st.bias[sym] = val
     st._seeded = True
     return st
 
@@ -2987,19 +3007,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.answer("This EA has no bias to set.", show_alert=True)
                 return
             st = await asyncio.to_thread(refresh_state, login)
-            if (st.mode or "").upper() != "MANUAL":
-                await q.answer("Bias Picker is locked while Mode is Auto.", show_alert=True)
-                await safe_edit_message_text(
-                    q,
-                    f"{G_BIAS} <b>Bias Picker</b>\n"
-                    f"{G_BAD} <b>Bias Picker is locked.</b>\n"
-                    f"{G_AUTO} <b>Mode:</b> <b>Auto</b> - the EA decides the bias from price action.\n"
-                    f"Switch <b>Mode</b> to <b>Manual</b> in the EA Controller first.",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
-                        f"{G_BACK} EA Controller", callback_data="EA_OPEN")]]),
-                )
-                return
             kb = await asyncio.to_thread(bias_keyboard, login, st)
             await q.answer()
             if kb is None:
@@ -3094,16 +3101,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("SYM_"):
         if (st.mode or "").upper() != "MANUAL":
             await q.answer("Bias Picker is locked while Mode is Auto.", show_alert=True)
-            sym = data[4:]
-            await safe_edit_message_text(q,
-                f"{G_BIAS} <b>{html.escape(sym)}</b>\n"
-                f"{G_BAD} <b>Bias Picker is locked.</b>\n"
-                f"{G_AUTO} <b>Mode:</b> <b>Auto</b> - the EA decides the bias from price action.\n"
-                f"Switch <b>Mode</b> to <b>Manual</b> in the EA Controller first.",
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
-                    f"{G_BACK} EA Controller", callback_data="EA_OPEN")]]),
-            )
             return
         await q.answer()
         sym = data[4:]
@@ -3134,9 +3131,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             st = await asyncio.to_thread(refresh_state, login)
             previous = st.bias.get(sym, 0)
             st.bias[sym] = val
+            mark_pending(st, f"bias_{sym}", val)
             ok = await write_control(login, st)
             if not ok:
                 st.bias[sym] = previous
+                clear_pending(st, f"bias_{sym}")
         if not ok:
             await q.answer(f"{G_BAD} Could not write the EA control file. Nothing changed.",
                            show_alert=True)
