@@ -28,7 +28,7 @@ from telegram.ext import (
     filters,
 )
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("heysolo_bot")
 
 for _noisy in ("httpx", "httpcore", "telegram", "telegram.ext", "telegram.bot", "apscheduler"):
@@ -36,6 +36,9 @@ for _noisy in ("httpx", "httpcore", "telegram", "telegram.ext", "telegram.bot", 
 
 import heysolo_settings as settings
 from db import database as heysolo_db
+from prop import notifications as prop_notifications
+from prop.plan_prop import format_prop_panel_message as _format_prop_panel_message
+from prop.plan_settings import format_settings_panel_message as _format_settings_panel_message
 
 BOT_TOKEN = settings.get_bot_token()
 CHAT_ID = settings.get_chat_id()
@@ -218,7 +221,7 @@ if not BOT_TOKEN:
 apply_roots()
 
 for _r in ROOTS:
-    log.info("Common\\Files folder (%s): %s", _r.source, _r.path)
+    log.debug("Common\\Files folder (%s): %s", _r.source, _r.path)
 
 G_ACCOUNT = "▤"
 G_BIAS = "◈"
@@ -329,6 +332,9 @@ def card_path(login: str) -> Path:
 
 def data_path(login: str) -> Path:
     return root_for_login(login).dashboards / f"data_{login}.txt"
+
+def settings_path(login: str) -> Path:
+    return root_for_login(login).accounts / f"settings_{login}.txt"
 
 def read_card(login: str) -> dict | None:
     path = card_path(login)
@@ -469,6 +475,34 @@ def read_prop_data(login: str) -> dict | None:
     if root_for_login(login).is_share:
         result["latency_ms"] = elapsed_ms
     return result
+
+def read_live_settings(login: str) -> dict | None:
+    path = settings_path(login)
+    if not path.exists():
+        return None
+    text = _read_text_resilient(path)
+    if not text:
+        return None
+    groups: list[dict] = []
+    current: dict | None = None
+    updated = ""
+    for line in text.splitlines():
+        if not line or line.startswith("login="):
+            continue
+        if line.startswith("updated="):
+            updated = line[len("updated="):].strip()
+            continue
+        if line.startswith("G|"):
+            current = {"title": line[2:].strip(), "rows": []}
+            groups.append(current)
+            continue
+        if line.startswith("R|") and current is not None:
+            parts = line.split("|", 2)
+            if len(parts) == 3:
+                current["rows"].append((parts[1].strip(), parts[2].strip()))
+    if not groups:
+        return None
+    return {"login": login, "updated": updated, "groups": groups}
 
 def _mtime(path: Path) -> float:
     try:
@@ -739,104 +773,11 @@ def format_account_info_message(login: str) -> str:
     lines += _dashboard_footer(d, login)
     return "\n".join(lines)
 
-def _fmt_reset_countdown(next_reset_ts: float) -> str:
-    if not next_reset_ts:
-        return ""
-    secs_left = max(0, int(next_reset_ts - time.time()))
-    h, rem = divmod(secs_left, 3600)
-    m, s = divmod(rem, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}"
-
 def format_prop_panel_message(login: str) -> str:
-    d = read_dashboard(login)
-    if not d:
-        return f"{E_PROGRESS} No prop data exported for this account yet (enable <code>ExportAccountCard</code> in the EA)."
+    return _format_prop_panel_message(login, read_dashboard, _dashboard_footer)
 
-    cur = d["currency"] or ""
-    mode_label = (d["mode"] or "-").title()
-    if d["account_failed"]:
-        head_emoji, headline = E_BREACHED, "FAILED"
-    elif d["challenge_passed"]:
-        head_emoji, headline = E_MET, "PASSED"
-    else:
-        head_emoji, headline = "🟡", "IN PROGRESS"
-
-    days_status = "Completed" if d["trading_days"] >= d["trading_days_min"] > 0 else "In Progress"
-    cons_status = d["cons_status"] or (
-        "Completed" if 0 < d["cons_curr_pct"] < d["cons_max_pct"] else "In Progress")
-    rule_statuses = [d["target_status"], d["loss_status"], d["daily_status"], days_status]
-    passed_count = sum(1 for s in rule_statuses if s in ("Completed", "Allowed"))
-
-    # The EA's exported "dailyLoss.currentPercent" can reflect intraday movement
-    # rather than an actual loss (e.g. it may show a value even on a profitable day).
-    # For display, "Daily loss" should only ever show how much of the daily loss
-    # allowance was actually used: zero on a flat/profitable day, otherwise the
-    # magnitude of today's loss.
-    today_ref_pct = d.get("today_gain_pct")
-    if not today_ref_pct and d.get("today_pct"):
-        today_ref_pct = d["today_pct"]
-    daily_loss_display = max(0.0, -today_ref_pct) if today_ref_pct is not None else d["daily_pct"]
-
-    lines = [
-        f"{G_PROP} <b>Prop Panel</b> · <code>{login}</code>",
-        f"<i>{mode_label} account</i>",
-        RULE,
-        f"{head_emoji} <b>{headline}</b>  ·  {passed_count}/4 rules on track",
-    ]
-    reset_txt = _fmt_reset_countdown(d.get("next_reset_ts") or 0)
-    if reset_txt:
-        lines.append(f"⏳ Resets in <b>{reset_txt}</b>")
-    lines += [
-        RULE,
-        _rule("🎯", "Target", d["target_pct"], d["target_min_pct"], d["target_status"]),
-        _rule("🛡️", "Total loss", d["loss_pct"], d["loss_max_pct"], d["loss_status"]),
-        _rule("📆", "Daily loss", daily_loss_display, d["daily_max_pct"], d["daily_status"]),
-        _rule("🗓️", "Trading days", d["trading_days"], d["trading_days_min"], days_status, unit=""),
-    ]
-    if d.get("cons_max_pct"):
-        lines.append(_rule("🏅", "Consistency", d["cons_curr_pct"], d["cons_max_pct"], cons_status))
-    money_symbol = "$" if cur.upper() in ("USD", "USDT", "USDC") else f" {cur}"
-    bal_str = f"${d['balance']:,.2f}" if money_symbol == "$" else f"{d['balance']:,.2f}{money_symbol}"
-    init_bal_str = f"${d['init_balance']:,.2f}" if money_symbol == "$" else f"{d['init_balance']:,.2f}{money_symbol}"
-    yday_bal_str = (f"${d['yesterday_balance']:,.2f}" if money_symbol == "$"
-                    else f"{d['yesterday_balance']:,.2f}{money_symbol}")
-
-    lines.append(f"<i>{G_ROW} Trading day {d['trading_days']}</i>")
-    lines.append(f"<i>{G_ROW} Initial balance {init_bal_str}</i>")
-    lines.append(f"<i>{G_ROW} Current balance {bal_str}</i>")
-    if d.get("yesterday_balance"):
-        lines.append(f"<i>{G_ROW} Yesterday balance {yday_bal_str}</i>")
-
-    # Drops (Max day drop / Total drop) are losses -> always shown with a
-    # leading minus sign, since Telegram text can't carry color to signal direction.
-    today_pct, week_pct = d["today_gain_pct"], d["week_gain_pct"]
-    yday_pct = d["yesterday_gain_pct"]
-    maxdd_pct, total_pct = -abs(d["max_day_drop_pct"]), -abs(d["total_drop_pct"])
-    today_usd, week_usd = d["today_gain_usd"], d["week_gain_usd"]
-    yday_usd = d["yesterday_gain_usd"]
-    maxdd_usd, total_usd = -abs(d["max_day_drop_usd"]), -abs(d["total_drop_usd"])
-
-    scale = max(abs(today_pct), abs(week_pct), abs(yday_pct),
-                abs(maxdd_pct), abs(total_pct), 0.01)
-
-    def _usd(v: float) -> str:
-        sign = "-" if v < 0 else "+"
-        return f"{sign}{money_symbol}{abs(v):,.2f}" if money_symbol == "$" else f"{sign}{abs(v):,.2f}{money_symbol}"
-
-    lines.append("")
-    # Bar rows, same order as before (Today, Yesterday, This week, Max day drop, Total drop)
-    bar_rows = [
-        ("Today", today_pct, f"{today_pct:+.2f}% / {_usd(today_usd)}"),
-        ("Yesterday", yday_pct, f"{yday_pct:+.2f}% / {_usd(yday_usd)}"),
-        ("This week", week_pct, f"{week_pct:+.2f}% / {_usd(week_usd)}"),
-        ("Max day drop", maxdd_pct, f"{maxdd_pct:.2f}% / {_usd(maxdd_usd)}"),
-        ("Total drop", total_pct, f"{total_pct:.2f}% / {_usd(total_usd)}"),
-    ]
-    for label, val, value in bar_rows:
-        lines.append(f"{label} {_dot_bar(val, scale)} {value}")
-
-    lines += _dashboard_footer(d, login)
-    return "\n".join(lines)
+def format_settings_panel_message(login: str) -> str:
+    return _format_settings_panel_message(login, read_live_settings, _dashboard_footer)
 
 def get_symbols_for_login(login: str | None) -> list[str]:
     if not login:
@@ -1586,7 +1527,8 @@ def account_detail_view(user_id: int, login: str) -> dict:
     kb_rows = []
     if login != active:
         kb_rows.append([InlineKeyboardButton(f"{G_OK} Set as active", callback_data=f"ACC_SET_{login}")])
-    kb_rows.append([InlineKeyboardButton(f"{G_PROP} Prop Panel", callback_data=f"PROP_VIEW_{login}")])
+    kb_rows.append([InlineKeyboardButton(f"{G_PROP} Prop Panel", callback_data=f"PROP_VIEW_{login}"),
+                    InlineKeyboardButton(f"{G_SETTINGS} Live Settings", callback_data=f"SETT_VIEW_{login}")])
     kb_rows.append([InlineKeyboardButton(f"{G_BACK} All accounts", callback_data="ACC_LIST")])
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
@@ -1617,8 +1559,19 @@ def prop_detail_view(user_id: int, login: str) -> dict:
     text = format_prop_panel_message(login)
     kb_rows = [
         [InlineKeyboardButton(f"🔄 Refresh", callback_data=f"PROP_VIEW_{login}"),
+         InlineKeyboardButton(f"{G_SETTINGS} My alerts", callback_data=f"PROP_ALERTS_{login}")],
+        [InlineKeyboardButton(f"🛠️ Live Settings", callback_data=f"SETT_VIEW_{login}"),
          InlineKeyboardButton(f"{G_ACCOUNT} Account info", callback_data=f"ACC_VIEW_{login}")],
-        [InlineKeyboardButton(f"{G_BACK} All prop panels", callback_data="PROP_LIST")],
+        [InlineKeyboardButton(f"{G_BACK} All panels", callback_data="PROP_LIST")],
+    ]
+    return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
+
+def settings_detail_view(user_id: int, login: str) -> dict:
+    text = format_settings_panel_message(login)
+    kb_rows = [
+        [InlineKeyboardButton(f"🔄 Refresh", callback_data=f"SETT_VIEW_{login}"),
+         InlineKeyboardButton(f"{G_PROP} Prop Panel", callback_data=f"PROP_VIEW_{login}")],
+        [InlineKeyboardButton(f"{G_ACCOUNT} Account info", callback_data=f"ACC_VIEW_{login}")],
     ]
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
@@ -2885,6 +2838,57 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text(f"{G_OK} User added." if added else f"{G_NEUTRAL} Already a user.")
             v = await asyncio.to_thread(access_view)
             await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        elif action in ("set_prop_daily_threshold", "set_prop_overall_threshold"):
+            raw = text.strip().rstrip("%").replace(",", ".")
+            try:
+                value = float(raw)
+            except ValueError:
+                value = 0
+            if not 1 <= value <= 99:
+                await msg.reply_text(
+                    f"{G_BAD} Send a number from <code>1</code> to <code>99</code>.",
+                    reply_markup=cancel_kb(), parse_mode=ParseMode.HTML)
+                _pending[uid] = action
+                return
+            kwargs = ({"daily_threshold": value} if action == "set_prop_daily_threshold"
+                      else {"overall_threshold": value})
+            try:
+                config = await asyncio.to_thread(heysolo_db.set_prop_alert_settings, **kwargs)
+            except Exception as exc:
+                await msg.reply_text(
+                    f"{G_BAD} Could not save that setting: <code>{html.escape(str(exc))}</code>",
+                    parse_mode=ParseMode.HTML)
+                return
+            await msg.reply_text(f"{G_OK} Prop warning threshold set to {value:.0f}%.")
+            v = prop_notifications.settings_view(config)
+            await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        elif "set_prop_" in action:
+            parts = action.split(":")
+            action_type = parts[0]
+            target_login = ":".join(parts[1:]) if len(parts) > 1 else ""
+            raw = text.strip().rstrip("%").replace(",", ".")
+            try:
+                value = float(raw)
+            except ValueError:
+                value = 0
+            if not 1 <= value <= 99:
+                await msg.reply_text(
+                    f"{G_BAD} Send a number from <code>1</code> to <code>99</code>.",
+                    reply_markup=cancel_kb(), parse_mode=ParseMode.HTML)
+                _pending[uid] = action
+                return
+            kwargs = ({"daily_threshold": value} if action_type == "set_prop_daily_threshold"
+                      else {"overall_threshold": value})
+            try:
+                config = await asyncio.to_thread(heysolo_db.set_user_prop_alerts, uid, **kwargs)
+            except Exception as exc:
+                await msg.reply_text(
+                    f"{G_BAD} Could not save that setting: <code>{html.escape(str(exc))}</code>",
+                    parse_mode=ParseMode.HTML)
+                return
+            await msg.reply_text(f"{G_OK} Prop warning threshold set to {value:.0f}%.")
+            v = prop_notifications.settings_view(uid, config, target_login)
+            await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         elif action == "set_window":
             start, _, end = text.replace(" ", "").partition("-")
             if _parse_hhmm(start) is None or _parse_hhmm(end) is None:
@@ -3135,6 +3139,66 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         return
 
+    if data.startswith("SETT_VIEW_"):
+        target_login = data[len("SETT_VIEW_"):]
+        visible = await asyncio.to_thread(visible_accounts, uid)
+        if target_login not in {a["login"] for a in visible}:
+            await q.answer("Not your account.", show_alert=True)
+            return
+        await q.answer()
+        v = await asyncio.to_thread(settings_detail_view, uid, target_login)
+        await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        return
+
+    if data.startswith("PROP_ALERTS_"):
+        target_login = data[len("PROP_ALERTS_"):]
+        visible = await asyncio.to_thread(visible_accounts, uid)
+        if target_login not in {a["login"] for a in visible}:
+            await q.answer("Not your account.", show_alert=True)
+            return
+        config = await asyncio.to_thread(heysolo_db.get_user_prop_alerts, uid)
+        v = prop_notifications.settings_view(uid, config, target_login)
+        await q.answer()
+        await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        return
+
+    if data.startswith("PROP_SET_TOGGLE_"):
+        target_login = data[len("PROP_SET_TOGGLE_"):]
+        visible = await asyncio.to_thread(visible_accounts, uid)
+        if target_login not in {a["login"] for a in visible}:
+            await q.answer("Not your account.", show_alert=True)
+            return
+        config = await asyncio.to_thread(heysolo_db.get_user_prop_alerts, uid)
+        config = await asyncio.to_thread(
+            heysolo_db.set_user_prop_alerts, uid, enabled=not config.get("enabled", True))
+        await q.answer(f"Prop alerts {'on' if config['enabled'] else 'off'}")
+        v = prop_notifications.settings_view(uid, config, target_login)
+        await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        return
+
+    if data.startswith("PROP_SET_DAILY_") or data.startswith("PROP_SET_OVERALL_"):
+        is_daily = data.startswith("PROP_SET_DAILY_")
+        target_login = data[len("PROP_SET_DAILY_" if is_daily else "PROP_SET_OVERALL_"):]
+        visible = await asyncio.to_thread(visible_accounts, uid)
+        if target_login not in {a["login"] for a in visible}:
+            await q.answer("Not your account.", show_alert=True)
+            return
+        action = "set_prop_daily_threshold" if is_daily else "set_prop_overall_threshold"
+        _pending[uid] = f"{action}:{target_login}"
+        label = "daily loss" if is_daily else "total loss"
+        config = await asyncio.to_thread(heysolo_db.get_user_prop_alerts, uid)
+        key = "daily_threshold" if is_daily else "overall_threshold"
+        await q.answer()
+        await safe_edit_message_text(
+            q,
+            f"🏆 <b>{label.title()} warning</b>\n"
+            f"Current: <code>{config[key]:.0f}%</code> of the allowed limit.\n"
+            "Send a percentage from <code>1</code> to <code>99</code>.",
+            reply_markup=cancel_kb(),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
     if data.startswith("ACC_SET_"):
         target_login = data[len("ACC_SET_"):]
         visible = await asyncio.to_thread(visible_accounts, uid)
@@ -3365,7 +3429,7 @@ async def send_startup_notice(bot):
     if not accounts:
         text += "\n⏳ Waiting for the EA to export its first account file."
 
-    print("\n" + _plain(text) + "\n", flush=True)
+    log.debug(_plain(text))
 
     if not CHAT_ID:
         log.warning("No reporting group set yet - skipping the startup notice.")
@@ -3382,8 +3446,11 @@ async def send_startup_notice(bot):
 
 async def post_init(app: Application):
     asyncio.create_task(watch_outbox(app))
+    asyncio.create_task(
+        prop_notifications.watch_prop_alerts(
+            app, read_dashboard, list_accounts, heysolo_db, CHAT_ID))
     await send_startup_notice(app.bot)
-    log.info("Bot started. Watching %d folder(s): %s", len(ROOTS),
+    log.debug("Bot started. Watching %d folder(s): %s", len(ROOTS),
              " | ".join(f"{r.source}:{r.path}" for r in ROOTS))
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
