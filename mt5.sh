@@ -668,14 +668,11 @@ SCREEN_H="${SCREEN_RES_WH#*x}"
 PANEL_H="${PANEL_HEIGHT}"
 
 fit_work_area(){
-  local wid="\${1:-}" wh
+  local wid="\${1:-}"
   [[ -n "\${wid}" ]] || return 0
   command -v wmctrl >/dev/null 2>&1 || return 0
-  wh=\$(( SCREEN_H - PANEL_H ))
-  (( wh > 200 )) || wh=\${SCREEN_H}
   wmctrl -ir "\${wid}" -b remove,fullscreen >/dev/null 2>&1 || true
   wmctrl -ir "\${wid}" -b remove,maximized_vert,maximized_horz >/dev/null 2>&1 || true
-  wmctrl -ir "\${wid}" -e "0,0,0,\${SCREEN_W},\${wh}" >/dev/null 2>&1 || true
 }
 
 find_window(){
@@ -1325,7 +1322,24 @@ raise_panel(){
   fi
 }
 
+strip_fullscreen(){
+  # Wine terminals often grab fullscreen and bury the taskbar.
+  # Only remove the fullscreen flag — never resize (that caused progressive shrink).
+  local id cls low
+  while read -r id _ _ _ _ _ cls _; do
+    [[ -n "${id}" ]] || continue
+    low="${cls,,}"
+    case "${low}" in
+      *tint2*|*pcmanfm*|*desktop_window*) continue ;;
+    esac
+    wmctrl -ir "${id}" -b remove,fullscreen >/dev/null 2>&1 || true
+  done < <(wmctrl -lGx 2>/dev/null)
+}
+
 while true; do
+  if command -v wmctrl >/dev/null 2>&1; then
+    strip_fullscreen
+  fi
   raise_panel
   sleep 3
 done
@@ -2566,7 +2580,16 @@ install_selected(){
 }
 
 fit_new_window_to_workarea(){
+  # One-time only on first open: size to the work area so the taskbar stays visible.
+  # Do NOT loop this — repeated geometry under Wine shrinks the window.
   local slug="$1" termpath="${2:-}" tries=0 pid wid
+  local sw sh wh
+  sw="${SCREEN_RES_WH%x*}"
+  sh="${SCREEN_RES_WH#*x}"
+  [[ "${sw}" =~ ^[0-9]+$ ]] || sw=1920
+  [[ "${sh}" =~ ^[0-9]+$ ]] || sh=1080
+  wh=$(( sh - PANEL_HEIGHT ))
+  (( wh > 200 )) || wh=${sh}
   while (( tries < 20 )); do
     if [[ -n "${termpath}" ]]; then
       pid=$(as_mt5 "pgrep -f '${termpath}'" 2>/dev/null | head -n1)
@@ -2579,7 +2602,8 @@ fit_new_window_to_workarea(){
   done
   [[ -n "${wid}" ]] || return 0
   as_mt5 "wmctrl -ir ${wid} -b remove,fullscreen" 2>/dev/null || true
-  as_mt5 "wmctrl -ir ${wid} -b add,maximized_vert,maximized_horz" 2>/dev/null || true
+  as_mt5 "wmctrl -ir ${wid} -b remove,maximized_vert,maximized_horz" 2>/dev/null || true
+  as_mt5 "wmctrl -ir ${wid} -e 0,0,0,${sw},${wh}" 2>/dev/null || true
 }
 
 start_terminal(){
