@@ -982,7 +982,7 @@ desktop_write_openbox_rules(){
     <followMouse>no</followMouse>
     <focusLast>yes</focusLast>
     <underMouse>no</underMouse>
-    <raiseOnFocus>no</raiseOnFocus>
+    <raiseOnFocus>yes</raiseOnFocus>
   </focus>
   <placement>
     <policy>Smart</policy>
