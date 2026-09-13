@@ -130,10 +130,9 @@ guard(){
     log_line "stage ok: ${label}"
     return 0
   fi
-  warn "Stage '${label}' did not finish cleanly (exit ${rc}${HEYSOLO_LAST_ERR:+, ${HEYSOLO_LAST_ERR}}) - continuing."
   log_line "stage FAILED: ${label} (exit ${rc}) ${HEYSOLO_LAST_ERR}"
   HEYSOLO_STAGE_WARNINGS+=("${label}")
-  return 0
+  die "Stage '${label}' failed (exit ${rc}${HEYSOLO_LAST_ERR:+, ${HEYSOLO_LAST_ERR}}) - stopping here." "${rc}"
 }
 
 _on_exit(){
@@ -1710,6 +1709,7 @@ install_system_packages(){
 
   info "Base packages: xvfb x11vnc screen wget openbox ..."
   ensure_universe_component
+  wait_for_dpkg_lock
   apt-get update -y || true
   apt-get install "${APT_Q[@]}" \
     xvfb x11vnc screen wget curl openbox \
@@ -1783,6 +1783,7 @@ install_wine_winehq(){
     avail=$(apt-cache policy "${branch}" 2>/dev/null | awk '/Candidate:/{print $2}')
     [[ -z "${avail}" || "${avail}" == "(none)" ]] && continue
     info "WineHQ ${branch} offers ${avail} - installing it..."
+    wait_for_dpkg_lock
     if apt-get install -y --install-recommends "${branch}"; then
       link_winehq_binaries
       if wine_is_recent_enough; then
@@ -1864,6 +1865,7 @@ install_wine(){
 
   if ! command -v wine >/dev/null 2>&1 || ! wine_is_recent_enough; then
     warn "WineHQ did not provide wine ${WINE_MIN_MAJOR}+ - falling back to the distro package."
+    wait_for_dpkg_lock
     apt-get install "${APT_Q[@]}" wine wine64 wine32 \
       || apt-get install "${APT_Q[@]}" wine wine64 \
       || apt-get install "${APT_Q[@]}" wine \
