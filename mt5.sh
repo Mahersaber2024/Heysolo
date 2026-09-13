@@ -620,9 +620,7 @@ WORK_RES="${WORK_RES_WH:-1280x1024}"
 VDESKTOP="${WINE_VDESKTOP:-0}"
 LOGDIR="\$HOME/.heysolo/logs"
 LOG="\${LOGDIR}/\${SLUG}.log"
-ACTIVE_FILE="\$HOME/.heysolo/active-terminal"
 mkdir -p "\${LOGDIR}" 2>/dev/null || true
-mark_active(){ mkdir -p "\$(dirname "\${ACTIVE_FILE}")" 2>/dev/null || true; printf '%s' "\${SLUG}" > "\${ACTIVE_FILE}" 2>/dev/null || true; }
 log(){ echo "\$(date '+%F %T') \$*" >> "\${LOG}" 2>/dev/null; }
 exec 2>> "\${LOG}"
 
@@ -747,8 +745,6 @@ case "\${1:-open}" in
   restart) stop_it; sleep 3 ;;
   status)  running && echo running || echo stopped; exit 0 ;;
 esac
-
-mark_active
 
 if running; then
   raise || notify "\${SLUG} is running but has no window on the desktop yet - give it a few seconds, or restart it (right-click the icon -> Restart terminal)."
@@ -1314,33 +1310,8 @@ desktop_write_window_guard(){
     echo "SCREEN_W=${sw}"
     echo "SCREEN_H=${sh}"
     echo "PANEL_H=${PANEL_HEIGHT}"
-    echo "REGISTRY='${TERMINALS_FILE}'"
-    echo "ACTIVE_FILE=\"\$HOME/.heysolo/active-terminal\""
   } > "${script}"
   cat >> "${script}" <<'GUARDEOF'
-raise_active_terminal(){
-  [[ -f "${ACTIVE_FILE}" ]] || return 0
-  local slug termpath pid wid
-  slug=$(cat "${ACTIVE_FILE}" 2>/dev/null)
-  [[ -n "${slug}" ]] || return 0
-  [[ -r "${REGISTRY}" ]] || return 0
-  termpath=$(awk -F'|' -v s="${slug}" '$1==s{print $4}' "${REGISTRY}" 2>/dev/null | tail -n1)
-  [[ -n "${termpath}" ]] || return 0
-  pid=$(ps -eo pid=,args= 2>/dev/null | grep -F "${termpath}" | awk '{print $1}' | head -n1)
-  [[ -n "${pid}" ]] || return 0
-  if command -v xdotool >/dev/null 2>&1; then
-    wid=$(xdotool search --pid "${pid}" 2>/dev/null | head -n1)
-    [[ -n "${wid}" ]] || return 0
-    xdotool windowmap "${wid}" >/dev/null 2>&1 || true
-    xdotool windowraise "${wid}" >/dev/null 2>&1 || true
-    xdotool windowactivate "${wid}" >/dev/null 2>&1 || true
-  fi
-  if command -v wmctrl >/dev/null 2>&1 && [[ -n "${wid:-}" ]]; then
-    wmctrl -ir "${wid}" -b remove,hidden >/dev/null 2>&1 || true
-    wmctrl -ia "${wid}" >/dev/null 2>&1 || true
-  fi
-}
-
 raise_panel(){
   local t
   if command -v wmctrl >/dev/null 2>&1; then
@@ -1357,7 +1328,11 @@ raise_panel(){
 
 strip_fullscreen(){
   # Wine terminals often grab fullscreen and bury the taskbar.
-  # Only remove the fullscreen flag — never resize (that caused progressive shrink).
+  # Whichever window is actually focused right now is left alone and
+  # kept in front; anything else that grabbed fullscreen gets pushed
+  # back down instead of being allowed to win the stacking race.
+  local active=""
+  command -v xdotool >/dev/null 2>&1 && active=$(xdotool getactivewindow 2>/dev/null)
   local id cls low
   while read -r id _ _ _ _ _ cls _; do
     [[ -n "${id}" ]] || continue
@@ -1366,16 +1341,23 @@ strip_fullscreen(){
       *tint2*|*pcmanfm*|*desktop_window*) continue ;;
     esac
     wmctrl -ir "${id}" -b remove,fullscreen >/dev/null 2>&1 || true
+    if [[ -n "${active}" && "${id}" != "${active}" ]]; then
+      wmctrl -ir "${id}" -b remove,above >/dev/null 2>&1 || true
+      command -v xdotool >/dev/null 2>&1 && xdotool windowlower "${id}" >/dev/null 2>&1 || true
+    fi
   done < <(wmctrl -lGx 2>/dev/null)
+  if [[ -n "${active}" ]]; then
+    command -v xdotool >/dev/null 2>&1 && xdotool windowactivate "${active}" >/dev/null 2>&1 || true
+    command -v wmctrl >/dev/null 2>&1 && wmctrl -ia "${active}" >/dev/null 2>&1 || true
+  fi
 }
 
 while true; do
   if command -v wmctrl >/dev/null 2>&1; then
     strip_fullscreen
   fi
-  raise_active_terminal
   raise_panel
-  sleep 3
+  sleep 1
 done
 GUARDEOF
   chmod +x "${script}"
