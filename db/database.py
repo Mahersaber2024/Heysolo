@@ -43,11 +43,6 @@ CREATE TABLE IF NOT EXISTS experts (
     sort_order    INTEGER NOT NULL DEFAULT 100
 );
 
--- expert_id here is legacy: it used to decide which buttons an account's
--- users got, which meant an EA that had not reported yet (or a row auto-
--- created by ensure_account with expert_id NULL) silently decided a user's
--- permissions. Capabilities now live on bot_users.expert_id. The column is
--- kept only so _backfill_user_experts() can carry old installs over.
 CREATE TABLE IF NOT EXISTS accounts (
     login      TEXT PRIMARY KEY,
     expert_id  INTEGER REFERENCES experts(id) ON DELETE SET NULL,
@@ -72,12 +67,6 @@ CREATE TABLE IF NOT EXISTS user_accounts (
     PRIMARY KEY (user_id, login)
 );
 
--- One row per (user, kind) holding just a topic number. Where a user's
--- alerts go - their DM or a group - is a single choice on bot_users
--- (dest_mode/dest_chat_id); a topic number only refines *which* thread of
--- that one group each kind lands in. mode/chat_id here are leftovers from
--- when every kind carried its own destination, and are read once by
--- _migrate_user_dest() and then never again.
 CREATE TABLE IF NOT EXISTS user_topics (
     user_id   BIGINT NOT NULL,
     kind      TEXT   NOT NULL,

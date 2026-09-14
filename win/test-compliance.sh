@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
-# ============================================================================
-# win/test-compliance.sh - Automated test suite for the Wine compliance module
-# ============================================================================
-# Usage:  sudo bash /opt/heysolo/scripts/win/test-compliance.sh
-# ============================================================================
+# NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
 set -uo pipefail
 
-# Everything Wine-compliance related lives in this folder
 WIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPLIANCE_SCRIPT="${WIN_DIR}/wine-compliance.sh"
 TERMINALS_FILE="/etc/heysolo-mt5/terminals.list"
@@ -20,7 +15,6 @@ echo "🧪 Wine Compliance Module - Automated Test Suite"
 echo "   folder: ${WIN_DIR}"
 echo
 
-# Test 1: script present and executable
 if [[ -x "$COMPLIANCE_SCRIPT" ]]; then
 pass "wine-compliance.sh found and executable"
 elif [[ -s "$COMPLIANCE_SCRIPT" ]]; then
@@ -31,40 +25,34 @@ fail "wine-compliance.sh not found in ${WIN_DIR}"
 echo; echo "Nothing else to test."; exit 1
 fi
 
-# Test 2: syntax is valid
 if bash -n "$COMPLIANCE_SCRIPT" 2>/dev/null; then
 pass "bash syntax valid"
 else
 fail "bash syntax error"
 fi
 
-# Test 3: help works without root
 if bash "$COMPLIANCE_SCRIPT" --help 2>&1 | grep -q "Usage:"; then
 pass "help output"
 else
 fail "help output missing 'Usage:'"
 fi
 
-# From here on root is required
 if [[ $EUID -ne 0 ]]; then
 echo
 skip "root-only tests (re-run with sudo)"
 else
-# Test 4: status runs even with no terminals
 if bash "$COMPLIANCE_SCRIPT" status >/dev/null 2>&1; then
 pass "status command"
 else
 fail "status command"
 fi
 
-# Test 5: Windows profile is selectable / persisted
 if bash "$COMPLIANCE_SCRIPT" version 19045 2>&1 | grep -q "19045"; then
 pass "Windows profile switch (build 19045)"
 else
 fail "Windows profile switch"
 fi
 
-# Test 6: custom build number is accepted
 if bash "$COMPLIANCE_SCRIPT" version 21327 2>&1 | grep -q "21327"; then
 pass "custom build number (21327)"
 bash "$COMPLIANCE_SCRIPT" version 19045 >/dev/null 2>&1 || true   # restore default
@@ -72,7 +60,6 @@ else
 fail "custom build number"
 fi
 
-# Tests 7-9: only meaningful with real terminals
 if [[ -s "$TERMINALS_FILE" ]]; then
 echo
 echo "Terminals found - running live prefix tests..."

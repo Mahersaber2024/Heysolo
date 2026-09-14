@@ -1,14 +1,5 @@
 #!/usr/bin/env bash
-# ============================================================================
-# win/install-compliance.sh - Install / update the Wine compliance module
-# ============================================================================
-# Everything Wine-compliance related lives in one folder:  <scripts>/win/
-#   win/wine-compliance.sh    - the module itself
-#   win/test-compliance.sh    - automated test suite
-#   win/install-compliance.sh - this installer
-#
-# Usage:  sudo bash install-compliance.sh
-# ============================================================================
+# NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
 set -uo pipefail
 
 SCRIPTS_DIR="${SCRIPTS_DIR:-/opt/heysolo/scripts}"
@@ -24,7 +15,6 @@ fi
 echo "Installing Wine Compliance Module into ${WIN_DIR} ..."
 mkdir -p "${WIN_DIR}"
 
-# If we were run from a local checkout, copy; otherwise download from the repo
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 failed=0
 for f in "${FILES[@]}"; do
