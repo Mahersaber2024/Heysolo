@@ -2230,7 +2230,7 @@ fetch_mql5_assets_from_repo(){
     cat > "${py_file}" <<'PYEOF'
 import json, sys
 out_path = sys.argv[1]
-wanted = ("Experts/", "Include/", "Indicators/", "set/", "Templates/")
+wanted = ("MT5/Experts/", "MT5/Include/", "MT5/Indicators/", "MT5/set/", "MT5/Templates/")
 try:
     data = json.load(sys.stdin)
 except Exception:
@@ -2247,7 +2247,7 @@ PYEOF
     rm -f "${py_file}"
   else
     printf '%s' "${tree_json}" \
-      | grep -o '"path"[[:space:]]*:[[:space:]]*"\(Experts\|Include\|Indicators\|set\|Templates\)/[^"]*"' \
+      | grep -o '"path"[[:space:]]*:[[:space:]]*"MT5/\(Experts\|Include\|Indicators\|set\|Templates\)/[^"]*"' \
       | sed 's/^"path"[[:space:]]*:[[:space:]]*"//; s/"$//' > "${list_file}"
   fi
 
@@ -2260,7 +2260,7 @@ PYEOF
   local path dest enc_path ok_n=0 fail_n=0
   while IFS= read -r path; do
     [[ -z "${path}" ]] && continue
-    dest="${MQL5_LOCAL_DIR}/${path}"
+    dest="${MQL5_LOCAL_DIR}/${path#MT5/}"
     mkdir -p "$(dirname "${dest}")" 2>/dev/null || true
     if command -v python3 >/dev/null 2>&1; then
       enc_path="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "${path}")"

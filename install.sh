@@ -548,4 +548,16 @@ esac
 done
 }
 
+if [[ "${1:-}" == "update" ]]; then
+require_root
+load_install_dir
+if [[ ! -d "${INSTALL_DIR}" ]]; then
+err "No existing installation found at ${INSTALL_DIR} - run install.sh and pick 'Full Installation' first."
+exit 1
+fi
+detect_python
+update_bot
+exit 0
+fi
+
 main_menu

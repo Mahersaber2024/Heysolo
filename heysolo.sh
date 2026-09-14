@@ -40,6 +40,13 @@ for f in "${SCRIPT_LIST[@]}"; do
 if fetch_one "${f}"; then ok "${f}"; else warn "${f} kept (download failed)"; fi
 done
 chmod +x "${SCRIPTS_DIR}"/*.sh "${SCRIPTS_DIR}"/*/*.sh 2>/dev/null || true
+if [[ -s "${BOT_STATE_FILE}" && -s "${SCRIPTS_DIR}/install.sh" ]]; then
+echo
+say "  ${CYAN}Updating bot files (git pull, venv, db, restart)...${NC}"
+bash "${SCRIPTS_DIR}/install.sh" update || warn "bot update failed - check the output above."
+else
+warn "bot not installed yet - skipping bot update (press T to install it first)."
+fi
 warn "Re-open the panel to pick up a new heysolo.sh."
 }
 install_cli(){
@@ -69,6 +76,7 @@ VNC_PORT="${VNC_PORT:-5900}"
 SCREEN_RES="${SCREEN_RES:-1920x1080x16}"
 TERMINALS_FILE="${TERMINALS_FILE:-/etc/heysolo-mt5/terminals.list}"
 BOT_SERVICE="heysolo-bot"
+BOT_STATE_FILE="/etc/${BOT_SERVICE}.install_dir"
 AS_MT5_TIMEOUT="${AS_MT5_TIMEOUT:-15}"
 run_mt5(){ bash "${MT5_SCRIPT}" "$@"; }
 dot(){ if [[ "$1" == "1" ]]; then printf '%s' "${GREEN}*${NC}"; else printf '%s' "${RED}o${NC}"; fi; }
