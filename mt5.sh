@@ -616,6 +616,7 @@ export WINEDLLOVERRIDES="winemenubuilder.exe=d"
 SLUG="${slug}"
 TERM_EXE="${termpath}"
 REGISTRY="${TERMINALS_FILE}"
+ACTIVE_FILE="${ASSET_DIR}/active_slug"
 WORK_RES="${WORK_RES_WH:-1280x1024}"
 VDESKTOP="${WINE_VDESKTOP:-0}"
 LOGDIR="\$HOME/.heysolo/logs"
@@ -706,8 +707,38 @@ find_window(){
   return 1
 }
 
+pids_for_prefix(){
+  local prefix="\$1" p
+  for p in /proc/[0-9]*; do
+    p="\${p#/proc/}"
+    grep -qz "WINEPREFIX=\${prefix}\$" "/proc/\${p}/environ" 2>/dev/null && echo "\${p}"
+  done
+}
+
+minimize_other_terminals(){
+  [[ -r "\${REGISTRY}" ]] || return 0
+  command -v wmctrl >/dev/null 2>&1 || return 0
+  local o_slug o_exe o_prefix o_path pids p wid
+  while IFS='|' read -r o_slug o_exe o_prefix o_path; do
+    [[ -n "\${o_slug}" ]] || continue
+    [[ "\${o_slug}" == "\${SLUG}" ]] && continue
+    [[ -n "\${o_prefix}" ]] || continue
+    pids=\$(pids_for_prefix "\${o_prefix}")
+    [[ -n "\${pids}" ]] || continue
+    for p in \${pids}; do
+      if command -v xdotool >/dev/null 2>&1; then
+        for wid in \$(xdotool search --pid "\${p}" 2>/dev/null); do
+          wmctrl -ir "\${wid}" -b add,hidden >/dev/null 2>&1 || true
+        done
+      fi
+    done
+  done < "\${REGISTRY}"
+}
+
 raise(){
   local wid; wid=\$(find_window) || return 1
+  echo "\${SLUG}" > "\${ACTIVE_FILE}" 2>/dev/null || true
+  minimize_other_terminals
   if command -v wmctrl >/dev/null 2>&1; then
     wmctrl -ir "\${wid}" -b remove,hidden >/dev/null 2>&1 || true
     wmctrl -ir "\${wid}" -b remove,shaded >/dev/null 2>&1 || true
@@ -1321,6 +1352,8 @@ desktop_write_window_guard(){
     echo "SCREEN_W=${sw}"
     echo "SCREEN_H=${sh}"
     echo "PANEL_H=${PANEL_HEIGHT}"
+    echo "REGISTRY=\"${TERMINALS_FILE}\""
+    echo "ACTIVE_FILE=\"${ASSET_DIR}/active_slug\""
   } > "${script}"
   cat >> "${script}" <<'GUARDEOF'
 raise_panel(){
@@ -1363,9 +1396,41 @@ strip_fullscreen(){
   fi
 }
 
+pids_for_prefix(){
+  local prefix="$1" p
+  for p in /proc/[0-9]*; do
+    p="${p#/proc/}"
+    grep -qz "WINEPREFIX=${prefix}$" "/proc/${p}/environ" 2>/dev/null && echo "${p}"
+  done
+}
+
+suppress_inactive_terminals(){
+  [[ -r "${REGISTRY}" ]] || return 0
+  [[ -r "${ACTIVE_FILE}" ]] || return 0
+  command -v wmctrl >/dev/null 2>&1 || return 0
+  local active_slug o_slug o_exe o_prefix o_path pids p wid
+  active_slug=$(cat "${ACTIVE_FILE}" 2>/dev/null)
+  [[ -n "${active_slug}" ]] || return 0
+  while IFS='|' read -r o_slug o_exe o_prefix o_path; do
+    [[ -n "${o_slug}" ]] || continue
+    [[ "${o_slug}" == "${active_slug}" ]] && continue
+    [[ -n "${o_prefix}" ]] || continue
+    pids=$(pids_for_prefix "${o_prefix}")
+    [[ -n "${pids}" ]] || continue
+    for p in ${pids}; do
+      if command -v xdotool >/dev/null 2>&1; then
+        for wid in $(xdotool search --pid "${p}" 2>/dev/null); do
+          wmctrl -ir "${wid}" -b add,hidden >/dev/null 2>&1 || true
+        done
+      fi
+    done
+  done < "${REGISTRY}"
+}
+
 while true; do
   if command -v wmctrl >/dev/null 2>&1; then
     strip_fullscreen
+    suppress_inactive_terminals
   fi
   raise_panel
   sleep 1
