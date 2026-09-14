@@ -675,7 +675,7 @@ fit_work_area(){
 }
 
 find_window(){
-  local wid="" pid
+  local wid="" pid pids p
 
   pid=\$(ps -u "\$(id -un)" -o pid=,args= 2>/dev/null | grep -F "\${TERM_EXE}" | awk '{print \$1}' | head -n1)
   if [[ -n "\${pid}" ]] && command -v xdotool >/dev/null 2>&1; then
@@ -686,10 +686,21 @@ find_window(){
     wid=\$(xdotool search --name "^\${SLUG}\$" 2>/dev/null | head -n1)
     [[ -n "\${wid}" ]] && { echo "\${wid}"; return 0; }
   fi
-  if command -v wmctrl >/dev/null 2>&1; then
-    wid=\$(wmctrl -lx 2>/dev/null | awk -v s="\${SLUG}" 'index(tolower(\$0), tolower(s)){print \$1; exit}')
-    [[ -n "\${wid}" ]] && { echo "\${wid}"; return 0; }
-    wid=\$(wmctrl -lx 2>/dev/null | awk 'tolower(\$3) ~ /explorer\.exe|terminal64\.exe/ {print \$1; exit}')
+
+  pids=\$(for p in /proc/[0-9]*; do
+    p="\${p#/proc/}"
+    grep -qz "WINEPREFIX=\${WINEPREFIX}\$" "/proc/\${p}/environ" 2>/dev/null && echo "\${p}"
+  done)
+
+  if [[ -n "\${pids}" ]] && command -v xdotool >/dev/null 2>&1; then
+    for p in \${pids}; do
+      wid=\$(xdotool search --pid "\${p}" 2>/dev/null | head -n1)
+      [[ -n "\${wid}" ]] && { echo "\${wid}"; return 0; }
+    done
+  fi
+
+  if [[ -n "\${pids}" ]] && command -v wmctrl >/dev/null 2>&1; then
+    wid=\$(wmctrl -lp 2>/dev/null | awk -v pids=" \${pids} " '{ if (index(pids, " " \$3 " ")) { print \$1; exit } }')
     [[ -n "\${wid}" ]] && { echo "\${wid}"; return 0; }
   fi
   return 1
