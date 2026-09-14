@@ -548,6 +548,19 @@ esac
 done
 }
 
+if [[ "${1:-}" == "update-files" ]]; then
+require_root
+load_install_dir
+if [[ ! -d "${INSTALL_DIR}" ]]; then
+err "No existing installation found at ${INSTALL_DIR} - run install.sh and pick 'Full Installation' first."
+exit 1
+fi
+clone_or_update_repo
+save_install_dir
+ok "Bot files updated (service was NOT restarted - press B or 'systemctl restart ${SERVICE_NAME}' when ready)."
+exit 0
+fi
+
 if [[ "${1:-}" == "update" ]]; then
 require_root
 load_install_dir
