@@ -35,6 +35,7 @@ for _noisy in ("httpx", "httpcore", "telegram", "telegram.ext", "telegram.bot", 
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 import heysolo_settings as settings
+import logger_bot
 from db import database as heysolo_db
 from prop import notifications as prop_notifications
 from prop.plan_prop import format_prop_panel_message as _format_prop_panel_message
@@ -1158,7 +1159,7 @@ def _prepare_outbox_batch() -> list[dict]:
 
             allowed, reason = should_relay(event_type)
             if not allowed:
-                log.info("Skipped %s event (%s)", event_type, reason)
+                log.warning("Skipped %s event (%s)", event_type, reason)
                 if photo_path:
                     photo_path.unlink(missing_ok=True)
                 evt.unlink(missing_ok=True)
@@ -3445,6 +3446,7 @@ async def send_startup_notice(bot):
         log.error("Could not post the startup notice: %s", e)
 
 async def post_init(app: Application):
+    logger_bot.install(app, CHAT_ID, THREAD_LOG, level=logging.WARNING)
     asyncio.create_task(watch_outbox(app))
     asyncio.create_task(
         prop_notifications.watch_prop_alerts(
