@@ -465,9 +465,8 @@ clone_or_update_repo
 setup_database "${INSTALL_DIR}" || { err "Database setup failed - see the error above."; return 1; }
 setup_venv
 run_db_setup_script
-systemctl restart "${SERVICE_NAME}" 2>/dev/null
 save_install_dir
-ok "Update completed."
+ok "Update completed (service was NOT restarted - press B or 'systemctl restart ${SERVICE_NAME}' when ready)."
 }
 
 uninstall_bot(){
