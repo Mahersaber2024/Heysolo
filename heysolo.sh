@@ -42,7 +42,6 @@ done
 chmod +x "${SCRIPTS_DIR}"/*.sh "${SCRIPTS_DIR}"/*/*.sh 2>/dev/null || true
 if [[ -s "${BOT_STATE_FILE}" && -s "${SCRIPTS_DIR}/install.sh" ]]; then
 echo
-say "  ${CYAN}Updating bot files (git pull only, no restart)...${NC}"
 bash "${SCRIPTS_DIR}/install.sh" update-files || warn "bot file update failed - check the output above."
 else
 warn "bot not installed yet - skipping bot update (press T to install it first)."
