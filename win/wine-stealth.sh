@@ -140,8 +140,8 @@ choose_profile() {
 
 # Colors
 if [[ -t 1 ]]; then
-    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-    CYAN='\033[0;36m'; BLUE='\033[0;34m'; NC='\033[0m'; BOLD='\033[1m'; DIM='\033[2m'
+    RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
+    CYAN=$'\033[0;36m'; BLUE=$'\033[0;34m'; NC=$'\033[0m'; BOLD=$'\033[1m'; DIM=$'\033[2m'
 else
     RED=''; GREEN=''; YELLOW=''; CYAN=''; BLUE=''; NC=''; BOLD=''; DIM=''
 fi
@@ -214,13 +214,13 @@ Windows Registry Editor Version 5.00
 "Version"="${WIN10_VERSION}"
 "BuildVersion"="${WIN10_BUILD}"
 "SubBuildNumber"="0"
-"ProgramFilesDir"="C:\\Program Files"
-"ProgramFilesDir (x86)"="C:\\Program Files (x86)"
-"CommonFilesDir"="C:\\Program Files\\Common Files"
+"ProgramFilesDir"="C:\\\\Program Files"
+"ProgramFilesDir (x86)"="C:\\\\Program Files (x86)"
+"CommonFilesDir"="C:\\\\Program Files\\\\Common Files"
 
 [HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders]
-"Common AppData"="C:\\ProgramData"
-"Common Documents"="C:\\Users\\Public\\Documents"
+"Common AppData"="C:\\\\ProgramData"
+"Common Documents"="C:\\\\Users\\\\Public\\\\Documents"
 
 [HKEY_LOCAL_MACHINE\Hardware\Description\System\CentralProcessor\0]
 "ProcessorNameString"="Intel(R) Core(TM) i7-10700K CPU @ 3.80GHz"
@@ -266,8 +266,9 @@ apply_stealth_to_prefix() {
     local reg_file
     reg_file=$(generate_stealth_reg "$wineprefix")
     
-    # Import registry
-    as_mt5 "WINEPREFIX='${wineprefix}' wine regedit '${reg_file}'" >/dev/null 2>&1
+    # Import registry (silently - /S avoids the interactive Registry Editor GUI)
+    local import1_ok=1 import2_ok=1
+    as_mt5 "WINEPREFIX='${wineprefix}' wine regedit /S '${reg_file}'" >/dev/null 2>&1 || import1_ok=0
     
     # Remove Wine-specific files
     as_mt5 "WINEPREFIX='${wineprefix}' rm -f ~/.wine/dosdevices/c:/windows/system32/wine*.dll" 2>/dev/null || true
@@ -295,20 +296,30 @@ Windows Registry Editor Version 5.00
 
 EOF
     
-    as_mt5 "WINEPREFIX='${wineprefix}' wine regedit '/tmp/wine-appdefaults-$$.reg'" >/dev/null 2>&1
+    as_mt5 "WINEPREFIX='${wineprefix}' wine regedit /S '/tmp/wine-appdefaults-$$.reg'" >/dev/null 2>&1 || import2_ok=0
     
     # Clean up temp files
     rm -f "$reg_file" "/tmp/wine-appdefaults-$$.reg"
     
-    # Record that stealth was applied
-    mkdir -p "$(dirname "$STEALTH_STATE_FILE")"
-    grep -v "^${slug}|" "$STEALTH_STATE_FILE" > "${STEALTH_STATE_FILE}.tmp" 2>/dev/null || true
-    echo "${slug}|${wineprefix}|$(date +%s)" >> "$STEALTH_STATE_FILE"
-    mv "${STEALTH_STATE_FILE}.tmp" "$STEALTH_STATE_FILE" 2>/dev/null || true
-    
-    ok "Stealth applied to ${slug}"
-    log "Stealth applied to ${slug} (${wineprefix})"
-    return 0
+    # Verify the import actually landed, instead of assuming success
+    local win_build
+    win_build=$(as_mt5 "WINEPREFIX='${wineprefix}' wine cmd /c 'reg query \"HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\" /v CurrentBuild'" 2>/dev/null | grep -oP '\d+' | tail -1)
+
+    if [[ ${import1_ok} -eq 1 && ${import2_ok} -eq 1 && "${win_build}" == "${WIN10_BUILD}" ]]; then
+        # Record that stealth was applied (only now that it's confirmed)
+        mkdir -p "$(dirname "$STEALTH_STATE_FILE")"
+        grep -v "^${slug}|" "$STEALTH_STATE_FILE" > "${STEALTH_STATE_FILE}.tmp" 2>/dev/null || true
+        echo "${slug}|${wineprefix}|$(date +%s)" >> "$STEALTH_STATE_FILE"
+        mv "${STEALTH_STATE_FILE}.tmp" "$STEALTH_STATE_FILE" 2>/dev/null || true
+
+        ok "Stealth applied to ${slug} (verified: build ${win_build})"
+        log "Stealth applied to ${slug} (${wineprefix}), verified build ${win_build}"
+        return 0
+    else
+        err "Stealth import failed for ${slug} - registry shows build '${win_build:-NOT SET}' (expected ${WIN10_BUILD}). Check that wine/regedit works for this prefix."
+        log "Stealth apply FAILED for ${slug} (${wineprefix}) - import1=${import1_ok} import2=${import2_ok} build=${win_build:-NOT SET}"
+        return 1
+    fi
 }
 
 # Test stealth on a Wine prefix
@@ -417,19 +428,28 @@ Windows Registry Editor Version 5.00
 
 EOF
     
-    as_mt5 "WINEPREFIX='${wineprefix}' wine regedit '/tmp/wine-revert-$$.reg'" >/dev/null 2>&1
+    as_mt5 "WINEPREFIX='${wineprefix}' wine regedit /S '/tmp/wine-revert-$$.reg'" >/dev/null 2>&1
     
     rm -f "/tmp/wine-revert-$$.reg"
     
-    # Remove from state file
-    if [[ -f "$STEALTH_STATE_FILE" ]]; then
-        grep -v "^${slug}|" "$STEALTH_STATE_FILE" > "${STEALTH_STATE_FILE}.tmp" 2>/dev/null || true
-        mv "${STEALTH_STATE_FILE}.tmp" "$STEALTH_STATE_FILE" 2>/dev/null || true
+    # Verify the key is actually gone instead of assuming success
+    local leftover
+    leftover=$(as_mt5 "WINEPREFIX='${wineprefix}' wine cmd /c 'reg query \"HKCU\\Software\\Wine\\AppDefaults\\terminal64.exe\" /v Version'" 2>/dev/null | grep -oP '(?<=REG_SZ\s{4}).*' | tr -d '\r')
+
+    if [[ -z "${leftover}" ]]; then
+        # Remove from state file (only now that revert is confirmed)
+        if [[ -f "$STEALTH_STATE_FILE" ]]; then
+            grep -v "^${slug}|" "$STEALTH_STATE_FILE" > "${STEALTH_STATE_FILE}.tmp" 2>/dev/null || true
+            mv "${STEALTH_STATE_FILE}.tmp" "$STEALTH_STATE_FILE" 2>/dev/null || true
+        fi
+        ok "Stealth reverted from ${slug}"
+        log "Stealth reverted from ${slug}"
+        return 0
+    else
+        err "Revert failed for ${slug} - terminal64.exe version override is still '${leftover}'."
+        log "Stealth revert FAILED for ${slug} (${wineprefix}) - leftover=${leftover}"
+        return 1
     fi
-    
-    ok "Stealth reverted from ${slug}"
-    log "Stealth reverted from ${slug}"
-    return 0
 }
 
 # ============================================================================
