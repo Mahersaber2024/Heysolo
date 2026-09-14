@@ -163,16 +163,21 @@ fi
 
 as_mt5() {
 local cmd="$1"
+# Disable mscoree (Mono/.NET) and mshtml (Gecko) before wine ever runs, so
+# a fresh/uninitialized prefix never pops the "Wine Mono is missing" or
+# "Gecko is missing" installer dialog. MT5 needs neither, and that dialog
+# can hang indefinitely (no timeout of its own) if the download stalls.
+local suppress="export WINEDLLOVERRIDES=\"mscoree=,mshtml=\";"
 if [[ "${WINE_COMPLIANCE_DEBUG:-0}" == "1" ]]; then
 if command -v runuser >/dev/null 2>&1; then
-timeout 120 runuser -u "${MT5_USER}" -- bash -lc "export DISPLAY=:1; $cmd"
+timeout 120 runuser -u "${MT5_USER}" -- bash -lc "export DISPLAY=:1; ${suppress} $cmd"
 else
-timeout 120 su "${MT5_USER}" -s /bin/bash -c "export DISPLAY=:1; $cmd"
+timeout 120 su "${MT5_USER}" -s /bin/bash -c "export DISPLAY=:1; ${suppress} $cmd"
 fi
 elif command -v runuser >/dev/null 2>&1; then
-timeout 120 runuser -u "${MT5_USER}" -- bash -lc "export DISPLAY=:1; $cmd" 2>/dev/null
+timeout 120 runuser -u "${MT5_USER}" -- bash -lc "export DISPLAY=:1; ${suppress} $cmd" 2>/dev/null
 else
-timeout 120 su "${MT5_USER}" -s /bin/bash -c "export DISPLAY=:1; $cmd" 2>/dev/null
+timeout 120 su "${MT5_USER}" -s /bin/bash -c "export DISPLAY=:1; ${suppress} $cmd" 2>/dev/null
 fi
 }
 
