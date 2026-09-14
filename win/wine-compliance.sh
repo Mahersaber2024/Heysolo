@@ -163,11 +163,42 @@ fi
 
 as_mt5() {
 local cmd="$1"
+if [[ "${WINE_COMPLIANCE_DEBUG:-0}" == "1" ]]; then
 if command -v runuser >/dev/null 2>&1; then
+timeout 120 runuser -u "${MT5_USER}" -- bash -lc "export DISPLAY=:1; $cmd"
+else
+timeout 120 su "${MT5_USER}" -s /bin/bash -c "export DISPLAY=:1; $cmd"
+fi
+elif command -v runuser >/dev/null 2>&1; then
 timeout 120 runuser -u "${MT5_USER}" -- bash -lc "export DISPLAY=:1; $cmd" 2>/dev/null
 else
 timeout 120 su "${MT5_USER}" -s /bin/bash -c "export DISPLAY=:1; $cmd" 2>/dev/null
 fi
+}
+
+# Make sure a (headless) X display is available on :1 before we shell into
+# wine at all. This has NOTHING to do with whether the MT5 app itself is
+# open - it's just the virtual display wine's regedit/reg tools need to
+# start up. Without it, wine doesn't error out, it hangs forever. If some
+# other part of the system already starts Xvfb on :1, this is a no-op.
+ensure_display() {
+[[ -S /tmp/.X11-unix/X1 ]] && return 0
+if ! command -v Xvfb >/dev/null 2>&1; then
+warn "Xvfb not found - install it with: apt-get install -y xvfb"
+return 1
+fi
+info "No display found on :1 - starting a headless Xvfb for this run..."
+nohup runuser -u "${MT5_USER}" -- Xvfb :1 -screen 0 1024x768x16 >/var/log/xvfb-compliance.log 2>&1 &
+disown 2>/dev/null || true
+local waited=0
+until [[ -S /tmp/.X11-unix/X1 ]]; do
+sleep 0.5; ((waited++))
+if (( waited > 20 )); then
+err "Xvfb on :1 did not come up in time - see /var/log/xvfb-compliance.log"
+return 1
+fi
+done
+ok "Xvfb :1 is up"
 }
 
 # ============================================================================
@@ -241,6 +272,14 @@ err "Wine prefix not found: $wineprefix"
 return 1
 fi
 info "Applying compliance to ${slug} (${wineprefix})..."
+ensure_display || { err "No usable display for ${slug} - aborting."; return 1; }
+
+# Make sure the prefix is actually initialized before we touch its registry -
+# on a brand-new/never-run prefix the base HKLM keys may not exist yet, which
+# makes the import look like it "worked" but the later verification query
+# finds nothing (build shows as NOT SET).
+as_mt5 "WINEPREFIX='${wineprefix}' wineboot -u" >/dev/null 2>&1
+as_mt5 "WINEPREFIX='${wineprefix}' wineserver -w" >/dev/null 2>&1
 
 # Generate registry file
 local reg_file
@@ -249,6 +288,8 @@ reg_file=$(generate_compliance_reg "$wineprefix")
 # Import registry (silently - /S avoids the interactive Registry Editor GUI)
 local import1_ok=1 import2_ok=1
 as_mt5 "WINEPREFIX='${wineprefix}' wine regedit /S '${reg_file}'" >/dev/null 2>&1 || import1_ok=0
+# Flush the wineserver so the write is committed before we verify it
+as_mt5 "WINEPREFIX='${wineprefix}' wineserver -w" >/dev/null 2>&1
 
 # Remove non-standard files
 as_mt5 "WINEPREFIX='${wineprefix}' rm -f ~/.wine/dosdevices/c:/windows/system32/wine*.dll" 2>/dev/null || true
@@ -310,6 +351,7 @@ header
 title "COMPLIANCE TEST: ${slug}"
 header
 local issues=0
+ensure_display || { err "No usable display for ${slug} - aborting test."; return 1; }
 
 # Test 1: Check Windows version in registry
 info "Test 1: Windows version in registry..."
@@ -384,6 +426,7 @@ err "Wine prefix not found: $wineprefix"
 return 1
 fi
 info "Reverting compliance from ${slug}..."
+ensure_display || { err "No usable display for ${slug} - aborting revert."; return 1; }
 
 # Remove app-specific overrides
 cat > "/tmp/wine-revert-$$.reg" <<EOF
