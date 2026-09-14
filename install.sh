@@ -40,8 +40,11 @@ fi
 
 save_install_dir(){ echo "${INSTALL_DIR}" > "${STATE_FILE}"; }
 load_install_dir(){
-if [[ -f "${STATE_FILE}" ]]; then
+if [[ -f "${STATE_FILE}" ]] && [[ -n "$(cat "${STATE_FILE}" 2>/dev/null)" ]]; then
 INSTALL_DIR=$(cat "${STATE_FILE}")
+elif [[ -f "${SERVICE_FILE}" ]] && grep -q '^WorkingDirectory=' "${SERVICE_FILE}"; then
+INSTALL_DIR=$(grep '^WorkingDirectory=' "${SERVICE_FILE}" | head -1 | cut -d= -f2-)
+save_install_dir
 else
 INSTALL_DIR="${DEFAULT_INSTALL_DIR}"
 fi
@@ -301,27 +304,18 @@ ok "Bot configuration saved securely."
 }
 
 clone_or_update_repo(){
-if [[ -d "${INSTALL_DIR}/.git" ]]; then
-info "Updating existing installation..."
-cd "${INSTALL_DIR}"
-git fetch --all 2>/dev/null || true
-git reset --hard origin/main 2>/dev/null || true
-ok "Repository updated."
-else
-if [[ -d "${INSTALL_DIR}" ]]; then
-warn "Directory exists but is not a git repo. Removing..."
-rm -rf "${INSTALL_DIR}"
-fi
 mkdir -p "${INSTALL_DIR}"
-if git clone "${REPO_URL}" "${INSTALL_DIR}"; then
-ok "Repository cloned."
+cd "${INSTALL_DIR}"
+if [[ ! -d ".git" ]]; then
+info "Turning ${INSTALL_DIR} into a git checkout (no files will be deleted)..."
+git init -q
+fi
+git remote get-url origin >/dev/null 2>&1 && git remote set-url origin "${REPO_URL}" || git remote add origin "${REPO_URL}"
+if git fetch --all 2>/dev/null && git reset --hard origin/main 2>/dev/null; then
+ok "Repository files updated in place."
 else
-warn "Could not clone repository."
-read -rp "Enter repository URL or press Enter to continue: " CUSTOM_REPO
-if [[ -n "$CUSTOM_REPO" ]]; then
-git clone "$CUSTOM_REPO" "${INSTALL_DIR}" || { err "Failed to clone."; exit 1; }
-fi
-fi
+err "Could not fetch/update from ${REPO_URL} - nothing on disk was changed."
+return 1
 fi
 ok "Bot files ready."
 }
@@ -465,8 +459,9 @@ clone_or_update_repo
 setup_database "${INSTALL_DIR}" || { err "Database setup failed - see the error above."; return 1; }
 setup_venv
 run_db_setup_script
+systemctl restart "${SERVICE_NAME}" 2>/dev/null
 save_install_dir
-ok "Update completed (service was NOT restarted - press B or 'systemctl restart ${SERVICE_NAME}' when ready)."
+ok "Update completed."
 }
 
 uninstall_bot(){
@@ -551,11 +546,13 @@ if [[ "${1:-}" == "update-files" ]]; then
 require_root
 load_install_dir
 if [[ ! -d "${INSTALL_DIR}" ]]; then
-err "No existing installation found at ${INSTALL_DIR} - run install.sh and pick 'Full Installation' first."
-exit 1
+warn "${INSTALL_DIR} is missing on disk - re-cloning it now."
 fi
 clone_or_update_repo
 save_install_dir
+if [[ ! -d "${INSTALL_DIR}/venv" ]]; then
+warn "venv is also missing - run 'install.sh update' (or Bot Management > Update Bot) to rebuild it, otherwise the service will not start."
+fi
 ok "Bot files updated (service was NOT restarted - press B or 'systemctl restart ${SERVICE_NAME}' when ready)."
 exit 0
 fi
@@ -564,8 +561,7 @@ if [[ "${1:-}" == "update" ]]; then
 require_root
 load_install_dir
 if [[ ! -d "${INSTALL_DIR}" ]]; then
-err "No existing installation found at ${INSTALL_DIR} - run install.sh and pick 'Full Installation' first."
-exit 1
+warn "${INSTALL_DIR} is missing on disk - reinstalling it now."
 fi
 detect_python
 update_bot
