@@ -1406,23 +1406,26 @@ pids_for_prefix(){
 
 suppress_inactive_terminals(){
   [[ -r "${REGISTRY}" ]] || return 0
-  [[ -r "${ACTIVE_FILE}" ]] || return 0
   command -v wmctrl >/dev/null 2>&1 || return 0
-  local active_slug o_slug o_exe o_prefix o_path pids p wid
-  active_slug=$(cat "${ACTIVE_FILE}" 2>/dev/null)
-  [[ -n "${active_slug}" ]] || return 0
+  command -v xdotool >/dev/null 2>&1 || return 0
+  local active_win active_pid active_prefix o_slug o_exe o_prefix o_path pids p wid
+  active_win=$(xdotool getactivewindow 2>/dev/null)
+  [[ -n "${active_win}" ]] || return 0
+  active_pid=$(xdotool getwindowpid "${active_win}" 2>/dev/null)
+  [[ -n "${active_pid}" ]] || return 0
+  active_prefix=$(tr '\0' '\n' < "/proc/${active_pid}/environ" 2>/dev/null | sed -n 's/^WINEPREFIX=//p')
+  [[ -n "${active_prefix}" ]] || return 0
   while IFS='|' read -r o_slug o_exe o_prefix o_path; do
     [[ -n "${o_slug}" ]] || continue
-    [[ "${o_slug}" == "${active_slug}" ]] && continue
     [[ -n "${o_prefix}" ]] || continue
+    [[ "${o_prefix}" == "${active_prefix}" ]] && continue
     pids=$(pids_for_prefix "${o_prefix}")
     [[ -n "${pids}" ]] || continue
     for p in ${pids}; do
-      if command -v xdotool >/dev/null 2>&1; then
-        for wid in $(xdotool search --pid "${p}" 2>/dev/null); do
-          wmctrl -ir "${wid}" -b add,hidden >/dev/null 2>&1 || true
-        done
-      fi
+      for wid in $(xdotool search --pid "${p}" 2>/dev/null); do
+        [[ "${wid}" == "${active_win}" ]] && continue
+        wmctrl -ir "${wid}" -b add,hidden >/dev/null 2>&1 || true
+      done
     done
   done < "${REGISTRY}"
 }
