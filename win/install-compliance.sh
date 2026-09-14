@@ -41,6 +41,33 @@ echo "Install incomplete - check the network or the repo path (${REPO_RAW}/win/)
 exit 1
 fi
 
+MT5_USER="${MT5_USER:-mt5user}"
+PROFILE_FILE="/etc/heysolo-mt5/compliance-profile.conf"
+mkdir -p "$(dirname "${PROFILE_FILE}")"
+cat > "${PROFILE_FILE}" <<PROF
+WIN10_BUILD="26200"
+WIN10_RELEASE="25H2"
+WIN10_PRODUCT="Microsoft Windows 11 Pro"
+WIN10_EDITION="Professional"
+WIN10_WINVER="win11"
+WIN10_BUILDLAB="26100.ge_release.240331-1435"
+PROF
+echo
+echo "Active profile set to: Microsoft Windows 11 Pro build 26200 (25H2)"
+
+WV=$(sudo -u "${MT5_USER}" wine --version 2>/dev/null | tr -d '\r')
+echo
+echo "Detected Wine: ${WV:-unknown}"
+case "$WV" in
+*taging*) echo "-> staging build: HideWineExports works, the 'on Wine ...' suffix will disappear." ;;
+*)        echo "-> NOT staging: plain Wine ignores HideWineExports."
+echo "   The build will read 26200, but MT5 will still print 'on Wine ... Linux ...'."
+echo "   Fix it with either:"
+echo "     apt-get install --install-recommends winehq-staging"
+echo "   or the binary patch (stop the terminals first):"
+echo "     sudo bash ${WIN_DIR}/wine-compliance.sh hidewine" ;;
+esac
+
 echo
 echo "✅ Wine Compliance Module installed!"
 echo
