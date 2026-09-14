@@ -349,6 +349,17 @@ fi
 return 0
 }
 
+wineprefix_busy_pids() {
+local wineprefix="$1" envfile pid
+for envfile in /proc/[0-9]*/environ; do
+[[ -r "$envfile" ]] || continue
+if tr '\0' '\n' < "$envfile" 2>/dev/null | grep -qxF "WINEPREFIX=${wineprefix}"; then
+pid="${envfile#/proc/}"; pid="${pid%/environ}"
+echo "$pid"
+fi
+done
+}
+
 apply_compliance_to_prefix() {
 local wineprefix="$1"
 local slug="$2"
@@ -356,6 +367,13 @@ local t0 total=8
 t0=$(date +%s)
 if [[ ! -d "$wineprefix" ]]; then
 err "Wine prefix not found: $wineprefix"
+return 1
+fi
+local busy_pids
+busy_pids=$(wineprefix_busy_pids "$wineprefix" | tr '\n' ' ')
+if [[ -n "${busy_pids// /}" ]]; then
+err "${slug}: still running in this prefix (pid: ${busy_pids}) - stop it first (sudo heysolo -> Z, or the terminal's number) then retry. Skipping to avoid a multi-minute hang."
+log "  ${slug}: SKIPPED - prefix busy, pids: ${busy_pids}"
 return 1
 fi
 if [[ "${COMPLIANCE_PREVIEW_SHOWN:-0}" != "1" ]]; then
@@ -600,6 +618,10 @@ if [[ $failed -eq 0 ]]; then
 ok "Compliance applied to ${success} terminal(s)"
 else
 warn "Compliance applied to ${success} terminal(s), ${failed} failed"
+fi
+if ! wine_is_staging; then
+warn "Wine is NOT a staging build ($(wine_version_string)) - HideWineExports is IGNORED by plain Wine."
+info "To drop that suffix: install wine-staging, or run the terminal64.exe binary patch (option H)."
 fi
 header
 info "Restart terminals to apply changes:"
