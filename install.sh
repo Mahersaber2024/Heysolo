@@ -303,21 +303,79 @@ chmod 600 "${target}/${SETTINGS_FILE}"
 ok "Bot configuration saved securely."
 }
 
+MQL5_SUBDIR="MT5"
+MQL5_STASH=""
+
+git_never_touch_mql5(){
+git config core.sparseCheckout true 2>/dev/null || true
+git config core.sparseCheckoutCone false 2>/dev/null || true
+mkdir -p .git/info 2>/dev/null || true
+printf '/*\n!/%s/\n' "${MQL5_SUBDIR}" > .git/info/sparse-checkout 2>/dev/null || true
+grep -qx "/${MQL5_SUBDIR}/" .git/info/exclude 2>/dev/null \
+|| printf '/%s/\n' "${MQL5_SUBDIR}" >> .git/info/exclude 2>/dev/null || true
+git ls-files -z -- "${MQL5_SUBDIR}" 2>/dev/null \
+| xargs -0 -r git update-index --skip-worktree -- 2>/dev/null || true
+}
+
+mql5_restore(){
+[[ -n "${MQL5_STASH}" ]] || return 0
+local stash="${MQL5_STASH}"
+MQL5_STASH=""
+if [[ -d "${stash}/${MQL5_SUBDIR}" ]]; then
+rm -rf "${INSTALL_DIR}/${MQL5_SUBDIR}"
+mv "${stash}/${MQL5_SUBDIR}" "${INSTALL_DIR}/${MQL5_SUBDIR}"
+ok "MQL5 assets untouched: ${INSTALL_DIR}/${MQL5_SUBDIR}"
+fi
+rmdir "${stash}" 2>/dev/null || true
+}
+
+mql5_protect(){
+MQL5_STASH=""
+[[ -d "${INSTALL_DIR}/${MQL5_SUBDIR}" ]] || return 0
+MQL5_STASH="$(mktemp -d "$(dirname "${INSTALL_DIR}")/.heysolo-mql5-keep.XXXXXX" 2>/dev/null)" || MQL5_STASH=""
+if [[ -z "${MQL5_STASH}" ]] || ! mv "${INSTALL_DIR}/${MQL5_SUBDIR}" "${MQL5_STASH}/${MQL5_SUBDIR}" 2>/dev/null; then
+[[ -n "${MQL5_STASH}" ]] && rmdir "${MQL5_STASH}" 2>/dev/null
+MQL5_STASH=""
+err "Could not set ${MQL5_SUBDIR}/ aside - aborting the update instead of risking your MQL5 files."
+return 1
+fi
+trap 'mql5_restore' EXIT INT TERM
+info "${MQL5_SUBDIR}/ set aside - the update will not read, write or delete it."
+}
+
 clone_or_update_repo(){
+local fresh=0 rc=0
 mkdir -p "${INSTALL_DIR}"
 cd "${INSTALL_DIR}"
 if [[ ! -d ".git" ]]; then
 info "Turning ${INSTALL_DIR} into a git checkout (no files will be deleted)..."
 git init -q
+fresh=1
 fi
 git remote get-url origin >/dev/null 2>&1 && git remote set-url origin "${REPO_URL}" || git remote add origin "${REPO_URL}"
+if [[ ${fresh} -eq 1 && ! -d "${MQL5_SUBDIR}" ]]; then
 if git fetch --all 2>/dev/null && git reset --hard origin/main 2>/dev/null; then
-ok "Repository files updated in place."
+git_never_touch_mql5
+ok "Repository files installed (MQL5 assets seeded once into ${INSTALL_DIR}/${MQL5_SUBDIR})."
 else
 err "Could not fetch/update from ${REPO_URL} - nothing on disk was changed."
 return 1
 fi
 ok "Bot files ready."
+return 0
+fi
+git_never_touch_mql5
+mql5_protect || return 1
+if git fetch --all 2>/dev/null && git reset --hard origin/main 2>/dev/null; then
+ok "Repository files updated in place."
+else
+err "Could not fetch/update from ${REPO_URL} - nothing on disk was changed."
+rc=1
+fi
+mql5_restore
+trap - EXIT INT TERM
+[[ ${rc} -eq 0 ]] || return 1
+ok "Bot files ready (${MQL5_SUBDIR}/ skipped)."
 }
 
 setup_venv(){

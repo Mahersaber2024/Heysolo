@@ -20,7 +20,7 @@ SHARED_COMMON_DIR="${MT5_HOME}/.heysolo-common"
 LAUNCHER_DIR="/opt/heysolo"
 LAUNCHER_CLI="/usr/local/bin/heysolo"
 MT5_EXE_DIR="/opt/heysolo/mt5"
-MQL5_LOCAL_DIR="/opt/heysolo/mt5-mql5"
+MQL5_LOCAL_DIR="/opt/heysolo/bot/MT5"
 
 BACKUP_ROOT="/root"
 BACKUP_PREFIX="heysolo-backup-"
@@ -151,6 +151,44 @@ prune_old_backups(){
   done
 }
 
+mql5_is_inside(){
+  local parent="${1%/}"
+  [[ -n "${parent}" && "${MQL5_LOCAL_DIR%/}" == "${parent}/"* ]]
+}
+
+mql5_child_of(){
+  local parent="${1%/}" rel
+  rel="${MQL5_LOCAL_DIR%/}"
+  rel="${rel#${parent}/}"
+  echo "${rel%%/*}"
+}
+
+prune_dir_keep_mql5(){
+  local target="${1%/}" keep
+  [[ -d "${target}" ]] || return 0
+  [[ "${target}" == "${MQL5_LOCAL_DIR%/}" ]] && return 0
+  if ! mql5_is_inside "${target}"; then
+    rm -rf "${target}"
+    return 0
+  fi
+  keep="$(mql5_child_of "${target}")"
+  find "${target}" -mindepth 1 -maxdepth 1 -not -name "${keep}" -exec rm -rf {} + 2>/dev/null || true
+  prune_dir_keep_mql5 "${target}/${keep}"
+  rmdir "${target}" 2>/dev/null || true
+}
+
+remove_dir_keep_mql5(){
+  local target="${1%/}"
+  [[ -d "${target}" ]] || return 0
+  if mql5_is_inside "${target}"; then
+    prune_dir_keep_mql5 "${target}"
+    ok "Cleared ${target} (kept MQL5 assets at ${MQL5_LOCAL_DIR})"
+  else
+    rm -rf "${target}"
+    ok "Removed ${target}"
+  fi
+}
+
 uninstall_bot(){
   local bd; bd=$(bot_dir)
   info "Removing the Telegram bot (${SERVICE_NAME})..."
@@ -166,8 +204,7 @@ uninstall_bot(){
       mv "${bd}/${SETTINGS_FILE}" "${BACKUP_DIR}/${SETTINGS_FILE}" 2>/dev/null || true
       info "Settings kept at ${BACKUP_DIR}/${SETTINGS_FILE}"
     fi
-    rm -rf "${bd}"
-    ok "Removed ${bd}"
+    remove_dir_keep_mql5 "${bd}"
   fi
   rm -f "${BOT_STATE_FILE}"
   if [[ ${PURGE_PACKAGES} -eq 1 ]]; then
@@ -276,10 +313,20 @@ mt5_installed(){ id "${MT5_USER}" &>/dev/null || [[ -d "${MT5_STATE_DIR}" ]]; }
 
 clean_launcher_dir_keep_mt5(){
   [[ -d "${LAUNCHER_DIR}" ]] || return 0
+  local keep_mql5 nested=0
+  if mql5_is_inside "${LAUNCHER_DIR}"; then
+    keep_mql5="$(mql5_child_of "${LAUNCHER_DIR}")"
+    [[ "${LAUNCHER_DIR%/}/${keep_mql5}" != "${MQL5_LOCAL_DIR%/}" ]] && nested=1
+  else
+    keep_mql5="$(basename "${MQL5_LOCAL_DIR}")"
+  fi
   find "${LAUNCHER_DIR}" -mindepth 1 -maxdepth 1 \
     -not -name "$(basename "${MT5_EXE_DIR}")" \
-    -not -name "$(basename "${MQL5_LOCAL_DIR}")" \
+    -not -name "${keep_mql5}" \
     -exec rm -rf {} + 2>/dev/null || true
+  if [[ ${nested} -eq 1 ]]; then
+    prune_dir_keep_mql5 "${LAUNCHER_DIR%/}/${keep_mql5}"
+  fi
 }
 
 cleanup_launcher_if_unused(){

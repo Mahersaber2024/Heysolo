@@ -38,8 +38,11 @@ and uninstalling any of it - is done from inside this one panel:
   (`mt5.sh`), one wizard per terminal, over VNC.
 - **X** - opens the uninstaller (`uninstall.sh`) with options to remove the
   bot, the MT5 terminals + desktop, or everything.
-- **U** - re-downloads the latest version of all the scripts below.
 - **F** - resets only the MT5 desktop layer, removing its generated configs, icons, wallpaper, taskbar state and caches, then rebuilding it. It does not remove the Telegram bot, terminals, Wine prefixes or MQL5 assets.
+- **U** - re-downloads the latest version of all the scripts below, plus
+  the bot's own files. It never
+  reads or writes `/opt/heysolo/bot/MT5`, so your EAs, sets and templates are
+  never changed by an update.
 
 Under the hood, `heysolo.sh` downloads `install.sh`, `mt5.sh`, and
 `uninstall.sh` once into `/opt/heysolo/scripts` and calls whichever one a
@@ -67,12 +70,35 @@ Everything lives under one project directory, `/opt/heysolo`:
 ```text
 /opt/heysolo/scripts   heysolo.sh, install.sh, mt5.sh, uninstall.sh
 /opt/heysolo/bot       bot files, heysolo_settings.json, the Python venv
+/opt/heysolo/bot/MT5   MQL5 assets (Experts, Include, Indicators, set, Templates)
 /opt/heysolo/mt5       MT5 / prop-firm terminal installers
-/opt/heysolo/mt5-mql5  MQL5 assets (Experts, Include, Indicators, set, Templates)
 ```
 
 The bot's own path is remembered in `/etc/heysolo-bot.install_dir`, so if you
 ever change it during setup, every panel action still finds it correctly.
+
+MQL5 assets live in `MT5/` **inside** the bot directory, mirroring the
+repository's own `MT5/` layout. Because of that:
+
+- Removing only the Telegram bot (panel **X** → bot, or `uninstall.sh --bot`)
+  wipes everything in `/opt/heysolo/bot` **except** `MT5/` - your Experts,
+  Include, Indicators, set and Templates files are kept in place, and the
+  empty `bot` shell is left behind only to hold them.
+- The same protection applies when the launcher directory is cleaned up after
+  the last component is removed: `/opt/heysolo/mt5` and
+  `/opt/heysolo/bot/MT5` both survive.
+- **Updates never touch `MT5/`.** The repo's MQL5 assets are downloaded
+  exactly once, during the first install. After that, panel **U** (update
+  scripts) and **Bot Management → Update Bot** set `MT5/` aside before
+  `git fetch` + `git reset --hard origin/main` and put it back untouched, so
+  nothing in it is overwritten, added or deleted - even if those same files
+  changed in the repository. If the update fails or is interrupted, `MT5/` is
+  restored anyway.
+- `mt5.sh`'s asset download (panel **I**, or `mt5.sh mql5-fetch`) also skips
+  every file that already exists locally, so re-running it or adding another
+  terminal later can only fill in missing files. To deliberately pull the
+  repo's versions back over your own, run
+  `sudo bash mt5.sh mql5-fetch --force`.
 
 ## Different-Server Setup (Windows MT5 + Linux Bot)
 

@@ -68,7 +68,7 @@ wineprefix_for_slug(){ echo "${WINEPREFIX_BASE}/${1}"; }
 SHARED_MT5_COMMON_DIR="/home/${MT5_USER}/.heysolo-common"
 
 MT5_LOCAL_DIR="/opt/heysolo/mt5"
-MQL5_LOCAL_DIR="/opt/heysolo/mt5-mql5"
+MQL5_LOCAL_DIR="/opt/heysolo/bot/MT5"
 
 TERMINALS_FILE="${STATE_DIR}/terminals.list"
 VNC_PASS_FILE="/home/${MT5_USER}/.vnc/passwd"
@@ -2316,10 +2316,14 @@ PYEOF
     return 1
   fi
 
-  local path dest enc_path ok_n=0 fail_n=0
+  local path dest enc_path ok_n=0 fail_n=0 skip_n=0
   while IFS= read -r path; do
     [[ -z "${path}" ]] && continue
     dest="${MQL5_LOCAL_DIR}/${path#MT5/}"
+    if [[ -e "${dest}" && "${MQL5_FORCE_FETCH:-0}" != "1" ]]; then
+      skip_n=$((skip_n+1))
+      continue
+    fi
     mkdir -p "$(dirname "${dest}")" 2>/dev/null || true
     if command -v python3 >/dev/null 2>&1; then
       enc_path="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "${path}")"
@@ -2344,6 +2348,9 @@ PYEOF
   fi
   chmod -R 2775 "${MQL5_LOCAL_DIR}" 2>/dev/null || true
 
+  if (( skip_n > 0 )); then
+    info "MQL5 assets: ${skip_n} file(s) already present - kept as-is (run 'mt5.sh mql5-fetch --force' to overwrite from the repo)."
+  fi
   if (( fail_n > 0 )); then
     warn "MQL5 assets: ${ok_n} file(s) downloaded, ${fail_n} failed (kept local copies where they already existed)."
     return 1
@@ -2578,10 +2585,14 @@ PYEOF
     return 1
   fi
 
-  local path dest enc_path ok_n=0 fail_n=0
+  local path dest enc_path ok_n=0 fail_n=0 skip_n=0
   while IFS= read -r path; do
     [[ -z "${path}" ]] && continue
     dest="${HEYSOLO_SETS_LOCAL_DIR}/${path#MT5/HeySoloATM_Sets/}"
+    if [[ -e "${dest}" && "${MQL5_FORCE_FETCH:-0}" != "1" ]]; then
+      skip_n=$((skip_n+1))
+      continue
+    fi
     mkdir -p "$(dirname "${dest}")" 2>/dev/null || true
     if command -v python3 >/dev/null 2>&1; then
       enc_path="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "${path}")"
@@ -3384,7 +3395,9 @@ case "${1:-menu}" in
   screenshots|fix-screenshots)
           require_root; repair_screenshots; HEYSOLO_CLEAN_EXIT=1 ;;
   mql5-fetch)
-          require_root; fetch_mql5_assets_from_repo; sync_mql5_assets_all
+          require_root
+          [[ "${2:-}" == "--force" || "${2:-}" == "-f" ]] && export MQL5_FORCE_FETCH=1
+          fetch_mql5_assets_from_repo; sync_mql5_assets_all
           fetch_heysolo_atm_sets_from_repo; sync_heysolo_atm_sets_all; HEYSOLO_CLEAN_EXIT=1 ;;
   doctor) require_root
           if declare -F desktop_doctor >/dev/null 2>&1; then desktop_doctor; fi
