@@ -2464,7 +2464,7 @@ sync_mql5_assets_all(){
   header
 }
 
-HEYSOLO_SETS_LOCAL_DIR="/opt/heysolo/mt5-heysoloatm-sets"
+HEYSOLO_SETS_LOCAL_DIR="${MQL5_LOCAL_DIR}/HeySoloATM_Sets"
 
 ensure_heysolo_sets_local_dir(){
   mkdir -p "${HEYSOLO_SETS_LOCAL_DIR}"

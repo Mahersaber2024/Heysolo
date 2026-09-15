@@ -249,7 +249,7 @@ m)  if declare -F sync_mql5_assets_all >/dev/null 2>&1; then
 declare -F ensure_mql5_local_dir >/dev/null 2>&1 && ensure_mql5_local_dir
 declare -F ensure_heysolo_sets_local_dir >/dev/null 2>&1 && ensure_heysolo_sets_local_dir
 say "Upload into ${BOLD}${MQL5_LOCAL_DIR:-/opt/heysolo/mt5-mql5}${NC}/{Experts,Include,Indicators,set,Templates}"
-say "Upload HeySoloATM_Sets files into ${BOLD}${HEYSOLO_SETS_LOCAL_DIR:-/opt/heysolo/mt5-heysoloatm-sets}${NC}"
+say "Upload HeySoloATM_Sets files into ${BOLD}${HEYSOLO_SETS_LOCAL_DIR:-/opt/heysolo/mt5-mql5/HeySoloATM_Sets}${NC}"
 read -rp "${DIM}Enter when the files are in place to sync...${NC}" _ || true
 sync_mql5_assets_all
 declare -F sync_heysolo_atm_sets_all >/dev/null 2>&1 && sync_heysolo_atm_sets_all
