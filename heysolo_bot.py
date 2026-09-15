@@ -1166,7 +1166,7 @@ def _prepare_outbox_batch() -> list[dict]:
                 continue
 
             if account and multi_account:
-                text = f"[{account}]\n{text}"
+                text = f"{text}\n\n{G_ACCOUNT} Account: {account}"
 
             targets = (relay_targets(account, event_type.lower(), thread_id) if account
                        else {(CHAT_ID, thread_id)})
