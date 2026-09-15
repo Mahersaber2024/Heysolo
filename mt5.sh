@@ -65,6 +65,8 @@ VNC_OPTS="${VNC_BASE_OPTS} ${VNC_TUNE_OPTS}"
 WINEPREFIX_BASE="/home/${MT5_USER}/mt5-terminals"
 wineprefix_for_slug(){ echo "${WINEPREFIX_BASE}/${1}"; }
 
+SHARED_MT5_COMMON_DIR="/home/${MT5_USER}/.heysolo-common"
+
 MT5_LOCAL_DIR="/opt/heysolo/mt5"
 MQL5_LOCAL_DIR="/opt/heysolo/mt5-mql5"
 
@@ -220,6 +222,45 @@ purge_wine_shortcuts(){
   find "${home}/.local/share/desktop-directories" -name '*wine*' -delete 2>/dev/null || true
   find "${home}/.local/share/icons" -path '*hicolor*' -name '*wine*' -delete 2>/dev/null || true
 }
+mq_terminal_dir_for_prefix(){
+  echo "$1/drive_c/users/${MT5_USER}/AppData/Roaming/MetaQuotes/Terminal"
+}
+
+link_shared_common(){
+  local wineprefix="$1"
+  local mq_dir common_link
+  mq_dir="$(mq_terminal_dir_for_prefix "${wineprefix}")"
+  common_link="${mq_dir}/Common"
+
+  mkdir -p "${mq_dir}"
+  mkdir -p "${SHARED_MT5_COMMON_DIR}/Files"
+
+  if [[ -d "${common_link}" && ! -L "${common_link}" ]]; then
+    info "Merging existing Common\\Files from $(basename "${wineprefix}") into the shared folder..."
+    cp -an "${common_link}/." "${SHARED_MT5_COMMON_DIR}/" 2>/dev/null || true
+    rm -rf "${common_link}"
+  elif [[ -L "${common_link}" ]]; then
+    rm -f "${common_link}"
+  fi
+
+  ln -sfn "${SHARED_MT5_COMMON_DIR}" "${common_link}"
+  chown -h "${MT5_USER}:${MT5_USER}" "${common_link}" 2>/dev/null || true
+  chown -R "${MT5_USER}:${MT5_USER}" "${SHARED_MT5_COMMON_DIR}" 2>/dev/null || true
+}
+
+link_shared_common_all(){
+  [[ -s "${TERMINALS_FILE}" ]] || { info "No terminals registered yet."; return 0; }
+  local slug exe wineprefix termpath
+  while IFS='|' read -r slug exe wineprefix termpath; do
+    [[ -z "${slug}" || -z "${wineprefix}" ]] && continue
+    [[ -d "${wineprefix}" ]] || continue
+    link_shared_common "${wineprefix}"
+    ok "  ${slug} -> shared Common\\Files linked"
+  done < "${TERMINALS_FILE}"
+  ok "All registered terminals now share ${SHARED_MT5_COMMON_DIR} as Common\\Files."
+  warn "Restart every terminal (stop, then start) so MT5 picks up the new Common folder."
+}
+
 init_prefix(){
   local wineprefix="$1"
   local logfile="/var/log/heysolo-wine-init-$(basename "${wineprefix}").log"
@@ -243,6 +284,7 @@ init_prefix(){
     return 1
   fi
 
+  link_shared_common "${wineprefix}"
   ensure_screenshot_support "${wineprefix}"
 }
 
@@ -3348,6 +3390,11 @@ case "${1:-menu}" in
           if declare -F desktop_doctor >/dev/null 2>&1; then desktop_doctor; fi
           as_mt5 "screen -ls" || true
           HEYSOLO_CLEAN_EXIT=1 ;;
+  share-common)
+          require_root
+          info "Linking every registered terminal's Common\\Files to ${SHARED_MT5_COMMON_DIR} ..."
+          link_shared_common_all
+          HEYSOLO_CLEAN_EXIT=1 ;;
   desktop)
     require_root
     shift
@@ -3374,6 +3421,6 @@ case "${1:-menu}" in
     HEYSOLO_CLEAN_EXIT=1 ;;
   menu|"") main_menu ;;
   *)      err "Unknown argument: $1"
-          echo "Usage: bash $0 [menu|step1|step2|guide|doctor|screenshots|boot|desktop]"
+          echo "Usage: bash $0 [menu|step1|step2|guide|doctor|screenshots|boot|desktop|share-common]"
           HEYSOLO_CLEAN_EXIT=1; exit 2 ;;
 esac

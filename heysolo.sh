@@ -149,6 +149,7 @@ say "             [${BOLD}A${NC}] start all    [${BOLD}Z${NC}] stop all   [${BOL
 echo
 say "  ${CYAN}SETUP${NC}      [${BOLD}P${NC}] prepare server   [${BOLD}I${NC}] install/add terminal   [${BOLD}M${NC}] sync MQL5 files"
 say "             [${BOLD}S${NC}] wine compliance  ${DIM}standardize Windows environment for MT5${NC}"
+say "             [${BOLD}C${NC}] share Common\\Files across terminals  ${DIM}needed for copy trade between terminals${NC}"
 echo
 say "  ${CYAN}BOT${NC}        [${BOLD}T${NC}] bot setup        [${BOLD}B${NC}] restart bot            [${BOLD}L${NC}] bot logs"
 echo
@@ -245,6 +246,7 @@ else
 warn "win/wine-compliance.sh not found - press u to update scripts."
 fi
 pause ;;
+c)  run_mt5 share-common; pause ;;
 m)  if declare -F sync_mql5_assets_all >/dev/null 2>&1; then
 declare -F ensure_mql5_local_dir >/dev/null 2>&1 && ensure_mql5_local_dir
 declare -F ensure_heysolo_sets_local_dir >/dev/null 2>&1 && ensure_heysolo_sets_local_dir
