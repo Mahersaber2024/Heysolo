@@ -3145,6 +3145,9 @@ show_final_guide(){
   echo " Push Experts/Include/Indicators/set/Templates into EVERY terminal:"
   echo "    SFTP your files into the matching subfolder of ${MQL5_LOCAL_DIR}"
   echo "    then run this script -> menu option 7 (\"Sync MQL5 assets\")"
+  echo " Push HeySoloATM_Sets into EVERY terminal's MQL5/Files/HeySoloATM_Sets:"
+  echo "    SFTP your files into ${HEYSOLO_SETS_LOCAL_DIR}"
+  echo "    then run this script -> menu option 7 (same sync also pushes this folder)"
   echo
   print_vnc_access
   header
@@ -3269,7 +3272,7 @@ main_menu(){
     echo -e "   ${BOLD}4)${NC} VNC viewing            - turn on/off"
     echo -e "   ${BOLD}5)${NC} Remove a terminal"
     echo -e "   ${BOLD}6)${NC} Uploaded installers    - list what's in ${MT5_LOCAL_DIR}"
-    echo -e "   ${BOLD}7)${NC} Sync MQL5 assets       - push Experts/Include/Indicators/set/Templates"
+    echo -e "   ${BOLD}7)${NC} Sync MQL5 assets       - push Experts/Include/Indicators/set/Templates + HeySoloATM_Sets"
     echo
     echo -e "  ${BOLD}0)${NC} Exit"
     echo
@@ -3290,6 +3293,7 @@ main_menu(){
       6) require_root; list_local_installers; print_upload_instructions; press_enter ;;
       7) require_root
          ensure_mql5_local_dir
+         ensure_heysolo_sets_local_dir
          echo
          header
          title "SHARED MQL5 ASSETS FOLDER: ${MQL5_LOCAL_DIR}"
@@ -3300,11 +3304,13 @@ main_menu(){
          echo "   ${MQL5_LOCAL_DIR}/Indicators  -> MQL5/Indicators"
          echo "   ${MQL5_LOCAL_DIR}/set         -> MQL5/Presets"
          echo "   ${MQL5_LOCAL_DIR}/Templates   -> MQL5/Profiles/Templates"
+         echo "   ${HEYSOLO_SETS_LOCAL_DIR}     -> MQL5/Files/HeySoloATM_Sets"
          echo
          echo " Each terminal has its OWN data folder - files are copied per terminal"
          echo " and then verified file-by-file, so an [OK] means they are really there."
          header
          sync_mql5_assets_all
+         sync_heysolo_atm_sets_all
          press_enter ;;
       0) echo "Goodbye!"; HEYSOLO_CLEAN_EXIT=1; exit 0 ;;
       *) warn "Invalid."; sleep 1 ;;
@@ -3319,7 +3325,8 @@ case "${1:-menu}" in
   screenshots|fix-screenshots)
           require_root; repair_screenshots; HEYSOLO_CLEAN_EXIT=1 ;;
   mql5-fetch)
-          require_root; fetch_mql5_assets_from_repo; sync_mql5_assets_all; HEYSOLO_CLEAN_EXIT=1 ;;
+          require_root; fetch_mql5_assets_from_repo; sync_mql5_assets_all
+          fetch_heysolo_atm_sets_from_repo; sync_heysolo_atm_sets_all; HEYSOLO_CLEAN_EXIT=1 ;;
   doctor) require_root
           if declare -F desktop_doctor >/dev/null 2>&1; then desktop_doctor; fi
           as_mt5 "screen -ls" || true
