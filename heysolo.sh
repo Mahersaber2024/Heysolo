@@ -78,6 +78,14 @@ BOT_SERVICE="heysolo-bot"
 BOT_STATE_FILE="/etc/${BOT_SERVICE}.install_dir"
 AS_MT5_TIMEOUT="${AS_MT5_TIMEOUT:-15}"
 run_mt5(){ bash "${MT5_SCRIPT}" "$@"; }
+if declare -F link_shared_common_all >/dev/null 2>&1 && [[ -s "${TERMINALS_FILE}" ]] \
+   && [[ ! -e "${SHARED_MT5_COMMON_DIR}/.linked" ]]; then
+  say "${CYAN}Linking Common\\Files across all terminals so copy trade works (one-time fix)...${NC}"
+  link_shared_common_all
+  mkdir -p "${SHARED_MT5_COMMON_DIR}" 2>/dev/null || true
+  touch "${SHARED_MT5_COMMON_DIR}/.linked" 2>/dev/null || true
+  pause
+fi
 dot(){ if [[ "$1" == "1" ]]; then printf '%s' "${GREEN}*${NC}"; else printf '%s' "${RED}o${NC}"; fi; }
 bot_state(){
 if ! systemctl list-unit-files 2>/dev/null | grep -q "^${BOT_SERVICE}.service"; then
@@ -149,7 +157,6 @@ say "             [${BOLD}A${NC}] start all    [${BOLD}Z${NC}] stop all   [${BOL
 echo
 say "  ${CYAN}SETUP${NC}      [${BOLD}P${NC}] prepare server   [${BOLD}I${NC}] install/add terminal   [${BOLD}M${NC}] sync MQL5 files"
 say "             [${BOLD}S${NC}] wine compliance  ${DIM}standardize Windows environment for MT5${NC}"
-say "             [${BOLD}C${NC}] share Common\\Files across terminals  ${DIM}needed for copy trade between terminals${NC}"
 echo
 say "  ${CYAN}BOT${NC}        [${BOLD}T${NC}] bot setup        [${BOLD}B${NC}] restart bot            [${BOLD}L${NC}] bot logs"
 echo
@@ -246,7 +253,6 @@ else
 warn "win/wine-compliance.sh not found - press u to update scripts."
 fi
 pause ;;
-c)  run_mt5 share-common; pause ;;
 m)  if declare -F sync_mql5_assets_all >/dev/null 2>&1; then
 declare -F ensure_mql5_local_dir >/dev/null 2>&1 && ensure_mql5_local_dir
 declare -F ensure_heysolo_sets_local_dir >/dev/null 2>&1 && ensure_heysolo_sets_local_dir
