@@ -67,6 +67,16 @@ class TelegramLogHandler(logging.Handler):
         except RuntimeError:
             pass
 
+    def close(self):
+        task = self._worker_task
+        self._worker_task = None
+        if task is not None and not task.done():
+            try:
+                self._loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError:
+                task.cancel()
+        super().close()
+
     async def _worker(self):
         while True:
             text = await self._queue.get()
@@ -91,8 +101,12 @@ class TelegramLogHandler(logging.Handler):
 _installed_handler: TelegramLogHandler | None = None
 
 
+_installed_target: str | None = None
+
+
 def install(app, chat_id, thread_id, level=logging.WARNING, logger_name=None):
-    global _installed_handler
+    global _installed_handler, _installed_target
+    uninstall()
     loop = asyncio.get_event_loop()
     handler = TelegramLogHandler(
         loop,
@@ -103,14 +117,22 @@ def install(app, chat_id, thread_id, level=logging.WARNING, logger_name=None):
     )
     handler.start()
     target = logging.getLogger(logger_name) if logger_name else logging.getLogger()
+    for existing in list(target.handlers):
+        if isinstance(existing, TelegramLogHandler):
+            target.removeHandler(existing)
+            existing.close()
     target.addHandler(handler)
     _installed_handler = handler
+    _installed_target = logger_name
     return handler
 
 
 def uninstall():
-    global _installed_handler
+    global _installed_handler, _installed_target
     if _installed_handler is None:
         return
-    logging.getLogger().removeHandler(_installed_handler)
+    target = logging.getLogger(_installed_target) if _installed_target else logging.getLogger()
+    target.removeHandler(_installed_handler)
+    _installed_handler.close()
     _installed_handler = None
+    _installed_target = None

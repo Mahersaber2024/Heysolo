@@ -149,6 +149,13 @@ def add_manual_root(path: Path) -> bool:
     current = get_manual_roots()
     if any(str(p) == str(path) for p in current):
         return False
+    ident = _identity_of(path)
+    for p in current:
+        if _identity_of(p) == ident:
+            return False
+    for r in ROOTS:
+        if _identity_of(r.path) == ident:
+            return False
     save_manual_roots(current + [path])
     return True
 
@@ -162,15 +169,37 @@ def remove_manual_root(path: Path) -> bool:
     return True
 
 
+def _identity_of(path: Path) -> str:
+    try:
+        st = path.stat()
+        if st.st_dev and st.st_ino:
+            return f"dev:{st.st_dev}:ino:{st.st_ino}"
+    except OSError:
+        pass
+    try:
+        return "real:" + str(path.resolve(strict=False))
+    except OSError:
+        return "path:" + os.path.normpath(str(path))
+
+
 def resolve_roots() -> list[Root]:
     roots: list[Root] = []
     seen: set[str] = set()
+    seen_real: dict[str, Path] = {}
 
     def add(path: Path, source: str) -> None:
         key = str(path)
         if key in seen:
             return
+        ident = _identity_of(path)
+        first = seen_real.get(ident)
+        if first is not None:
+            log.info("Ignoring %s (%s) - it is the same folder as %s, so events "
+                     "there would be relayed twice", path, source, first)
+            seen.add(key)
+            return
         seen.add(key)
+        seen_real[ident] = path
         roots.append(Root(path, source))
 
     for p in get_manual_roots():
@@ -1112,6 +1141,10 @@ def parse_event(path: Path) -> tuple[str, int, str, str, str]:
             account = ln.split("=", 1)[1].strip()
     return event_type, thread_id, photo, account, body
 
+def _norm_target(chat: int, thread: int | None) -> tuple[int, int | None]:
+    return (int(chat), thread or None)
+
+
 def relay_targets(login: str, kind: str, fallback_thread: int | None) -> set[tuple[int, int | None]]:
     try:
         db = heysolo_db.get_db()
@@ -1126,13 +1159,13 @@ def relay_targets(login: str, kind: str, fallback_thread: int | None) -> set[tup
                 continue
             if heysolo_db.is_admin(uid):
                 if CHAT_ID:
-                    targets.add((CHAT_ID, fallback_thread))
+                    targets.add(_norm_target(CHAT_ID, fallback_thread))
                 else:
-                    targets.add((uid, None))
+                    targets.add(_norm_target(uid, None))
                 continue
             dest = heysolo_db.get_user_dest(uid)
             if dest["mode"] == "dm":
-                targets.add((uid, None))
+                targets.add(_norm_target(uid, None))
                 continue
             chat = dest.get("chat_id") or CHAT_ID
             if not chat:
@@ -1141,7 +1174,7 @@ def relay_targets(login: str, kind: str, fallback_thread: int | None) -> set[tup
             thread = db.get_user_thread(uid, kind)
             if thread is None:
                 thread = fallback_thread
-            targets.add((chat, thread))
+            targets.add(_norm_target(chat, thread))
         return targets
     except Exception as e:
         log.warning("relay_targets failed for %s/%s: %s", login, kind, e)
@@ -1169,7 +1202,7 @@ def _prepare_outbox_batch() -> list[dict]:
                 text = f"{text}\n\n{G_ACCOUNT} Account: {account}"
 
             targets = (relay_targets(account, event_type.lower(), thread_id) if account
-                       else {(CHAT_ID, thread_id)})
+                       else {_norm_target(CHAT_ID, thread_id)})
 
             photo_bytes = None
             if photo_path and photo_path.exists():
@@ -1201,13 +1234,19 @@ def _outbox_events() -> list[tuple["Root", Path]]:
     roots = ROOTS or [primary_root()]
     share = max(1, OUTBOX_BATCH_LIMIT // len(roots))
     found: list[tuple[Root, Path]] = []
+    seen_events: set[str] = set()
     for r in roots:
         try:
             evts = sorted(r.outbox.glob("*.evt"))[:share]
         except OSError as e:
             log.warning("Cannot list %s: %s", r.outbox, e)
             continue
-        found.extend((r, evt) for evt in evts)
+        for evt in evts:
+            ident = _identity_of(evt)
+            if ident in seen_events:
+                continue
+            seen_events.add(ident)
+            found.append((r, evt))
     return found
 
 
@@ -2932,7 +2971,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             invalidate_accounts_cache()
             await msg.reply_text(
                 (f"{G_OK} Folder added:\n<code>{p}</code>" if added
-                 else f"{G_NEUTRAL} Already in the list:\n<code>{p}</code>"),
+                 else f"{G_NEUTRAL} Already being read (same folder as one in the "
+                      f"list, so it was not added twice):\n<code>{p}</code>"),
                 parse_mode=ParseMode.HTML)
             v = common_dir_view()
             await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
