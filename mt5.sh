@@ -735,10 +735,27 @@ minimize_other_terminals(){
   done < "\${REGISTRY}"
 }
 
+unhide_own_windows(){
+  command -v wmctrl >/dev/null 2>&1 || return 0
+  local pids p wid
+  pids=\$(pids_for_prefix "\${WINEPREFIX}")
+  [[ -n "\${pids}" ]] || return 0
+  for p in \${pids}; do
+    if command -v xdotool >/dev/null 2>&1; then
+      for wid in \$(xdotool search --pid "\${p}" 2>/dev/null); do
+        wmctrl -ir "\${wid}" -b remove,hidden >/dev/null 2>&1 || true
+        wmctrl -ir "\${wid}" -b remove,shaded >/dev/null 2>&1 || true
+        timeout 5 xdotool windowmap "\${wid}" >/dev/null 2>&1 || true
+      done
+    fi
+  done
+}
+
 raise(){
   local wid; wid=\$(find_window) || return 1
   echo "\${SLUG}" > "\${ACTIVE_FILE}" 2>/dev/null || true
   minimize_other_terminals
+  unhide_own_windows
   if command -v wmctrl >/dev/null 2>&1; then
     wmctrl -ir "\${wid}" -b remove,hidden >/dev/null 2>&1 || true
     wmctrl -ir "\${wid}" -b remove,shaded >/dev/null 2>&1 || true
