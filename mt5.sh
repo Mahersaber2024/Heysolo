@@ -2464,6 +2464,169 @@ sync_mql5_assets_all(){
   header
 }
 
+HEYSOLO_SETS_LOCAL_DIR="/opt/heysolo/mt5-heysoloatm-sets"
+
+ensure_heysolo_sets_local_dir(){
+  mkdir -p "${HEYSOLO_SETS_LOCAL_DIR}"
+  if id "${MT5_USER}" &>/dev/null; then
+    chown -R "${MT5_USER}:${MT5_USER}" "${HEYSOLO_SETS_LOCAL_DIR}" 2>/dev/null || true
+  fi
+  chmod -R 2775 "${HEYSOLO_SETS_LOCAL_DIR}" 2>/dev/null || true
+}
+
+fetch_heysolo_atm_sets_from_repo(){
+  ensure_heysolo_sets_local_dir
+  info "Fetching HeySoloATM_Sets from ${REPO_OWNER}/${REPO_NAME}..."
+
+  local tree_json
+  tree_json="$(curl -fsSL "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/trees/main?recursive=1" 2>/dev/null)"
+  if [[ -z "${tree_json}" ]]; then
+    warn "Could not reach the GitHub API - keeping whatever HeySoloATM_Sets files are already local."
+    return 1
+  fi
+
+  local list_file py_file
+  list_file="$(mktemp)"
+  if command -v python3 >/dev/null 2>&1; then
+    py_file="$(mktemp)"
+    cat > "${py_file}" <<'PYEOF'
+import json, sys
+out_path = sys.argv[1]
+wanted = "MT5/HeySoloATM_Sets/"
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = {}
+with open(out_path, "w") as f:
+    for entry in data.get("tree", []):
+        if entry.get("type") != "blob":
+            continue
+        path = entry.get("path", "")
+        if path.startswith(wanted):
+            f.write(path + "\n")
+PYEOF
+    python3 "${py_file}" "${list_file}" <<<"${tree_json}"
+    rm -f "${py_file}"
+  else
+    printf '%s' "${tree_json}" \
+      | grep -o '"path"[[:space:]]*:[[:space:]]*"MT5/HeySoloATM_Sets/[^"]*"' \
+      | sed 's/^"path"[[:space:]]*:[[:space:]]*"//; s/"$//' > "${list_file}"
+  fi
+
+  if [[ ! -s "${list_file}" ]]; then
+    warn "No files found under MT5/HeySoloATM_Sets in the repo tree."
+    rm -f "${list_file}"
+    return 1
+  fi
+
+  local path dest enc_path ok_n=0 fail_n=0
+  while IFS= read -r path; do
+    [[ -z "${path}" ]] && continue
+    dest="${HEYSOLO_SETS_LOCAL_DIR}/${path#MT5/HeySoloATM_Sets/}"
+    mkdir -p "$(dirname "${dest}")" 2>/dev/null || true
+    if command -v python3 >/dev/null 2>&1; then
+      enc_path="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "${path}")"
+    else
+      enc_path="$(printf '%s' "${path}" | sed \
+        -e 's/ /%20/g' -e 's/\[/%5B/g' -e 's/\]/%5D/g' \
+        -e 's/(/%28/g' -e 's/)/%29/g' -e "s/'/%27/g" -e 's/#/%23/g')"
+    fi
+    if curl -fsSL "${REPO_RAW}/${enc_path}" -o "${dest}.part" 2>/dev/null && [[ -s "${dest}.part" ]]; then
+      mv -f "${dest}.part" "${dest}"
+      ok_n=$((ok_n+1))
+    else
+      rm -f "${dest}.part" 2>/dev/null || true
+      warn "  failed to fetch: ${path}"
+      fail_n=$((fail_n+1))
+    fi
+  done < "${list_file}"
+  rm -f "${list_file}"
+
+  if id "${MT5_USER}" &>/dev/null; then
+    chown -R "${MT5_USER}:${MT5_USER}" "${HEYSOLO_SETS_LOCAL_DIR}" 2>/dev/null || true
+  fi
+  chmod -R 2775 "${HEYSOLO_SETS_LOCAL_DIR}" 2>/dev/null || true
+
+  if (( fail_n > 0 )); then
+    warn "HeySoloATM_Sets: ${ok_n} file(s) downloaded, ${fail_n} failed (kept local copies where they already existed)."
+    return 1
+  fi
+  ok "HeySoloATM_Sets: ${ok_n} file(s) downloaded from the repo into ${HEYSOLO_SETS_LOCAL_DIR}."
+  return 0
+}
+
+declare -A HEYSOLO_SETS_DIR_OWNER=()
+
+sync_heysolo_atm_sets(){
+  local slug="$1" wineprefix="$2" termpath="${3:-}"
+  ensure_heysolo_sets_local_dir
+  local mql5_dir="" install_dir=""
+  if [[ -n "${termpath}" ]]; then
+    install_dir="$(dirname "${termpath}")"
+    mql5_dir=$(resolve_mql5_dir "${wineprefix}" "${install_dir}") || mql5_dir=""
+  fi
+  if [[ -z "${mql5_dir}" ]]; then
+    warn "${slug}: NOTHING COPIED - its MQL5 data folder does not exist yet."
+    warn "${slug}: start this terminal once (menu 3 -> Start) so MT5 creates it, then try again."
+    return 1
+  fi
+
+  local owner="${HEYSOLO_SETS_DIR_OWNER[${mql5_dir}]:-}"
+  if [[ -n "${owner}" && "${owner}" != "${slug}" ]]; then
+    warn "${slug}: SKIPPED - it shares one MQL5 data folder with '${owner}':"
+    warn "        ${mql5_dir}"
+    return 1
+  fi
+  HEYSOLO_SETS_DIR_OWNER["${mql5_dir}"]="${slug}"
+
+  local dest="${mql5_dir}/Files/HeySoloATM_Sets"
+  local n_src
+  n_src=$(find "${HEYSOLO_SETS_LOCAL_DIR}" -type f 2>/dev/null | wc -l | tr -d ' ')
+  if (( n_src == 0 )); then
+    info "${slug}: no files in ${HEYSOLO_SETS_LOCAL_DIR} yet - nothing to copy."
+    return 0
+  fi
+  mkdir -p "${dest}" 2>/dev/null || true
+  cp -rf "${HEYSOLO_SETS_LOCAL_DIR}/." "${dest}/" 2>/dev/null || true
+
+  local rel missing=0
+  while IFS= read -r rel; do
+    [[ -f "${dest}/${rel}" ]] || missing=$((missing+1))
+  done < <(cd "${HEYSOLO_SETS_LOCAL_DIR}" && find . -type f -printf '%P\n' 2>/dev/null)
+
+  chown -R "${MT5_USER}:${MT5_USER}" "${dest}" 2>/dev/null || true
+
+  if (( missing > 0 )); then
+    err "${slug}: ${missing}/${n_src} HeySoloATM_Sets file(s) did NOT arrive in ${dest}"
+    return 1
+  fi
+  ok "${slug}: ${n_src} HeySoloATM_Sets file(s) verified in ${dest}"
+  return 0
+}
+
+sync_heysolo_atm_sets_all(){
+  [[ -s "${TERMINALS_FILE}" ]] || return 0
+  HEYSOLO_SETS_DIR_OWNER=()
+
+  local slug exe wineprefix termpath n_ok=0 n_fail=0
+  while IFS='|' read -r slug exe wineprefix termpath; do
+    [[ -z "${slug:-}" ]] && continue
+    if sync_heysolo_atm_sets "${slug}" "${wineprefix}" "${termpath:-}"; then
+      n_ok=$((n_ok+1))
+    else
+      n_fail=$((n_fail+1))
+    fi
+  done < "${TERMINALS_FILE}"
+  echo
+  header
+  if (( n_fail > 0 )); then
+    warn "HeySoloATM_Sets sync: ${n_ok} terminal(s) done, ${n_fail} NOT done (see the lines above)."
+  else
+    ok "HeySoloATM_Sets sync: ${n_ok} terminal(s) done, every file verified at its destination."
+  fi
+  header
+}
+
 server_ip(){
   curl -fsSL --max-time 5 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}'
 }
@@ -3051,6 +3214,8 @@ step2_install_terminals(){
   sleep 6
   guard "MQL5 assets (download from repo)" fetch_mql5_assets_from_repo
   guard "MQL5 assets (sync to terminals)"  sync_mql5_assets_all
+  guard "HeySoloATM_Sets (download from repo)" fetch_heysolo_atm_sets_from_repo
+  guard "HeySoloATM_Sets (sync to terminals)"  sync_heysolo_atm_sets_all
   export DESKTOP_ICONS=1
   guard "desktop layer"     desktop_setup_all
   if (( ${#HEYSOLO_STAGE_WARNINGS[@]} > 0 )); then
