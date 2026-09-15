@@ -253,7 +253,7 @@ apply_roots()
 for _r in ROOTS:
     log.debug("Common\\Files folder (%s): %s", _r.source, _r.path)
 
-G_ACCOUNT = "▤"
+G_ACCOUNT = "ℹ"
 G_BIAS = "◈"
 G_MANUAL = "✎"
 G_AUTO = "⟳"
@@ -781,7 +781,7 @@ def format_account_info_message(login: str) -> str:
     owner = owner_label_for_login(login)
 
     lines = [
-        f"{G_ACCOUNT} <b>Account {login}</b>",
+        f"<b>Account {login}</b>",
         f"<i>{html.escape(d['broker'])} · {mode_label}</i>",
     ]
     if d.get("ea_name") or d.get("ea"):
@@ -1199,8 +1199,7 @@ def _prepare_outbox_batch() -> list[dict]:
                 continue
 
             if account and multi_account:
-                text = f"{text}\n\n{G_ACCOUNT} Account: {account}"
-
+                text = f"{text}\n\n Account: {account}"
             targets = (relay_targets(account, event_type.lower(), thread_id) if account
                        else {_norm_target(CHAT_ID, thread_id)})
 
@@ -1364,7 +1363,7 @@ async def watch_outbox(app: Application):
 
 BTN_BIAS = f"{G_BIAS} Bias"
 BTN_EA = "EA Controller"
-BTN_ACCOUNT = f"{G_ACCOUNT} Account"
+BTN_ACCOUNT = f"Account"
 BTN_PROP = f"{G_PROP} Prop Panel"
 BTN_ADMIN = f"{G_ADMIN} Admin"
 BTN_SETTINGS = f"{G_SETTINGS} Settings"
@@ -1408,7 +1407,7 @@ def bias_keyboard(login: str, st: AccountState) -> InlineKeyboardMarkup | None:
 
 def _account_tag(login: str) -> str:
     if len(list_accounts()) > 1:
-        return f"{G_ACCOUNT} <code>{login}</code>\n"
+        return f"<code>{login}</code>\n"
     return ""
 
 def bias_header(login: str, st: "AccountState") -> str:
@@ -1555,7 +1554,7 @@ def accounts_list_view(user_id: int) -> dict:
         label = f"{mark} {a['login']} \u00b7 {a['broker'] or '-'} \u00b7 {bal} {a['currency'] or ''}".strip()
         rows.append([InlineKeyboardButton(label, callback_data=f"ACC_VIEW_{a['login']}")])
     text = (
-        f"{G_ACCOUNT} <b>Accounts</b> ({len(accounts)})\n"
+        f"<b>Accounts</b> ({len(accounts)})\n"
         f"{G_ROW} Active: <code>{active or '-'}</code>\n"
         "Tap an account to view it or make it active."
     )
