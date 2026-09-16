@@ -23,7 +23,7 @@ def _format_group(group):
     title = html.escape(group["title"].strip())
     icon = _icon(group["title"])
     lines = [f"{icon} <b>{title}</b>"]
-    rows = group["rows"]
+    rows = [(r[0], r[1]) for r in group["rows"]]
     if rows:
         max_label = max(len(label) for label, _ in rows)
         for label, value in rows:
@@ -34,22 +34,28 @@ def _format_group(group):
     return "\n".join(lines)
 
 
-def format_settings_panel_message(login, read_settings, dashboard_footer) -> str:
+def format_settings_panel_message(login, read_settings, dashboard_footer, link_line=None) -> str:
     data = read_settings(login)
+    safe_login = html.escape(str(login))
     if not data or not data.get("groups"):
-        return (
-            "⏳ No live settings exported yet for this account "
+        head = [f"🛠️ <b>EA Inputs</b>  ·  <b>{safe_login}</b>"]
+        if link_line:
+            head.append(link_line)
+        head.append(
+            "⏳ No live inputs exported yet for this account "
             "(the EA writes this file automatically once it's running with "
             "<b>dashprop</b> enabled)."
         )
+        return "\n".join(head)
 
-    safe_login = html.escape(str(login))
     lines = [
-        f"🛠️ <b>Live Settings</b>  ·  <b>{safe_login}</b>",
+        f"🛠️ <b>EA Inputs</b>  ·  <b>{safe_login}</b>",
         "<i>Everything switched on right now that can change what happens to a trade.</i>",
     ]
+    if link_line:
+        lines.append(link_line)
     if data.get("stale"):
-        lines.append("⚠️ <i>EA not exporting right now — showing the last known settings.</i>")
+        lines.append("⚠️ <i>EA not exporting right now — showing the last known inputs.</i>")
     lines.append(RULE)
 
     groups = data["groups"]
