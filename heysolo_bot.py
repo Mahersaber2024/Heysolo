@@ -40,6 +40,12 @@ from db import database as heysolo_db
 from prop import notifications as prop_notifications
 from prop.plan_prop import format_prop_panel_message as _format_prop_panel_message
 from prop.plan_settings import format_settings_panel_message as _format_settings_panel_message
+from prop.plan_status import (
+    format_status_panel_message as _format_status_panel_message,
+    link_button_label as _link_button_label,
+    link_details_text as _link_details_text,
+    link_headline as _link_headline,
+)
 
 BOT_TOKEN = settings.get_bot_token()
 CHAT_ID = settings.get_chat_id()
@@ -291,6 +297,7 @@ def cancel_kb(*extra_rows) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(f"{G_DEL} Cancel", callback_data=CANCEL_CB)])
     return InlineKeyboardMarkup(rows)
 RULE = "─" * 27
+EA_HEARTBEAT_SECONDS = 45.0
 
 def _read_text_resilient(path: Path, attempts: int = 3, delay: float = 0.05) -> str | None:
     for attempt in range(attempts):
@@ -325,6 +332,26 @@ def _i(raw: dict, key: str, default: int = 0) -> int:
     except (KeyError, TypeError, ValueError):
         return default
 
+
+def _link_from_raw(raw: dict, mtime: float, file_ms: float | None = None) -> dict:
+    age = (time.time() - mtime) if mtime else None
+    connected = raw.get("linkConnected")
+    trade = raw.get("linkTradeAllowed")
+    try:
+        ping = float(raw.get("linkPingMs", "") or 0.0)
+    except ValueError:
+        ping = 0.0
+    return {
+        "known": bool(raw) or bool(mtime),
+        "connected": (connected.strip().lower() == "true") if connected else None,
+        "trade_allowed": (trade.strip().lower() == "true") if trade else None,
+        "ping_ms": ping if ping > 0 else None,
+        "server": raw.get("linkServer", ""),
+        "server_time": raw.get("linkServerTime", ""),
+        "age_s": age,
+        "fresh": age is not None and age <= EA_HEARTBEAT_SECONDS,
+        "file_ms": file_ms,
+    }
 
 def _prop_block(text: str, key: str) -> str:
     m = re.search(r"\b" + re.escape(key) + r"\s*:\s*\{", text)
@@ -423,6 +450,24 @@ def read_card(login: str) -> dict | None:
         "cons_largest_profit_date": raw.get("consLargestProfitDate", ""),
         "cons_status": raw.get("consStatus", ""),
         "next_reset_ts": _f(raw, "nextResetTs"),
+        "daily_stop_enabled": raw.get("dailyStopEnabled", "").lower() == "true",
+        "daily_stop_max_usd": _f(raw, "dailyStopMaxUsd"),
+        "daily_stop_used_usd": _f(raw, "dailyStopUsedUsd"),
+        "daily_stop_used_pct": _f(raw, "dailyStopUsedPct"),
+        "daily_stop_status": raw.get("dailyStopStatus", ""),
+        "daily_lock_enabled": raw.get("dailyLockEnabled", "").lower() == "true",
+        "daily_lock_max_usd": _f(raw, "dailyLockMaxUsd"),
+        "daily_lock_used_usd": _f(raw, "dailyLockUsedUsd"),
+        "daily_lock_used_pct": _f(raw, "dailyLockUsedPct"),
+        "daily_lock_status": raw.get("dailyLockStatus", ""),
+        "alert_daily_ratio": _f(raw, "alertDailyRatio"),
+        "alert_total_ratio": _f(raw, "alertTotalRatio"),
+        "alert_warn_at": _f(raw, "alertWarnAt"),
+        "alert_critical_at": _f(raw, "alertCriticalAt"),
+        "inact_max_days": _i(raw, "inactMaxDays"),
+        "inact_days": _i(raw, "inactDays", -1),
+        "inact_last_trade": raw.get("inactLastTrade", ""),
+        "inact_status": raw.get("inactStatus", ""),
         "source": "AccountStatus",
     }
     if root_for_login(login).is_share:
@@ -451,6 +496,10 @@ def read_prop_data(login: str) -> dict | None:
     daily = _prop_block(text, "dailyLoss")
     days = _prop_block(text, "tradingDaysReq")
     cons = _prop_block(text, "consistency")
+    dstop = _prop_block(text, "dailyLossStop")
+    dlock = _prop_block(text, "dailyProfitLock")
+    alerts = _prop_block(text, "alerts")
+    inact = _prop_block(text, "inactivity")
     if not (meta or general):
         return None
     result = {
@@ -500,6 +549,24 @@ def read_prop_data(login: str) -> dict | None:
         "cons_largest_profit_date": _pstr(cons, "largestProfitDate"),
         "cons_status": _pstr(cons, "status"),
         "next_reset_ts": _mtime(path) + _pnum(meta, "resetSecondsLeft"),
+        "daily_stop_enabled": _pbool(dstop, "enabled"),
+        "daily_stop_max_usd": _pnum(dstop, "maxUsd"),
+        "daily_stop_used_usd": _pnum(dstop, "usedUsd"),
+        "daily_stop_used_pct": _pnum(dstop, "usedPercent"),
+        "daily_stop_status": _pstr(dstop, "status"),
+        "daily_lock_enabled": _pbool(dlock, "enabled"),
+        "daily_lock_max_usd": _pnum(dlock, "maxUsd"),
+        "daily_lock_used_usd": _pnum(dlock, "usedUsd"),
+        "daily_lock_used_pct": _pnum(dlock, "usedPercent"),
+        "daily_lock_status": _pstr(dlock, "status"),
+        "alert_daily_ratio": _pnum(alerts, "dailyLossRatio"),
+        "alert_total_ratio": _pnum(alerts, "totalLossRatio"),
+        "alert_warn_at": _pnum(alerts, "warnAt", 0.7),
+        "alert_critical_at": _pnum(alerts, "criticalAt", 0.9),
+        "inact_max_days": int(_pnum(inact, "maxDays")),
+        "inact_days": int(_pnum(inact, "currentDays", -1)),
+        "inact_last_trade": _pstr(inact, "lastTradeDate"),
+        "inact_status": _pstr(inact, "status"),
         "source": "PropDashboard",
     }
     if root_for_login(login).is_share:
@@ -516,23 +583,74 @@ def read_live_settings(login: str) -> dict | None:
     groups: list[dict] = []
     current: dict | None = None
     updated = ""
+    link_raw: dict[str, str] = {}
+    symbol = ""
     for line in text.splitlines():
         if not line or line.startswith("login="):
             continue
+        if line.startswith("symbol="):
+            symbol = line[len("symbol="):].strip()
+            continue
         if line.startswith("updated="):
             updated = line[len("updated="):].strip()
+            continue
+        if line.startswith("link"):
+            key, sep, value = line.partition("=")
+            if sep:
+                link_raw[key.strip()] = value.strip()
             continue
         if line.startswith("G|"):
             current = {"title": line[2:].strip(), "rows": []}
             groups.append(current)
             continue
         if line.startswith("R|") and current is not None:
-            parts = line.split("|", 2)
-            if len(parts) == 3:
-                current["rows"].append((parts[1].strip(), parts[2].strip()))
+            parts = line.split("|")
+            if len(parts) >= 3:
+                label, value = parts[1].strip(), parts[2].strip()
+                try:
+                    state = int(parts[3]) if len(parts) > 3 else 0
+                except ValueError:
+                    state = 0
+                ratio: float | None
+                try:
+                    ratio = float(parts[4]) if len(parts) > 4 else None
+                except ValueError:
+                    ratio = None
+                if ratio is not None and ratio < 0:
+                    ratio = None
+                tip = parts[5].strip() if len(parts) > 5 else ""
+                current["rows"].append((label, value, state, ratio, tip))
     if not groups:
         return None
-    return {"login": login, "updated": updated, "groups": groups}
+    link = _link_from_raw(link_raw, _mtime(path))
+    return {"login": login, "updated": updated, "groups": groups, "symbol": symbol,
+            "link": link, "stale": not link["fresh"]}
+
+def read_link(login: str) -> dict:
+    best_raw: dict[str, str] = {}
+    best_mtime = 0.0
+    file_ms: float | None = None
+    for path in (settings_path(login), card_path(login)):
+        mtime = _mtime(path)
+        if not mtime:
+            continue
+        t0 = time.monotonic()
+        raw = _read_account_file(path)
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        picked = {k: v for k, v in raw.items() if k.startswith("link")}
+        if mtime > best_mtime:
+            best_mtime = mtime
+            file_ms = elapsed_ms
+            if picked:
+                best_raw = picked
+        elif picked and not best_raw:
+            best_raw = picked
+    data_mtime = _mtime(data_path(login))
+    if data_mtime > best_mtime:
+        best_mtime = data_mtime
+    if not root_for_login(login).is_share:
+        file_ms = None
+    return _link_from_raw(best_raw, best_mtime, file_ms)
 
 def _mtime(path: Path) -> float:
     try:
@@ -543,7 +661,11 @@ def _mtime(path: Path) -> float:
 def _merge_dashboards(primary: dict, secondary: dict) -> dict:
     out = dict(primary)
     for k, v in secondary.items():
-        if k == "source" or isinstance(v, bool):
+        if k == "source":
+            continue
+        if isinstance(v, bool):
+            if k not in out:
+                out[k] = v
             continue
         if isinstance(v, (str, int, float)) and v and not out.get(k):
             out[k] = v
@@ -806,8 +928,15 @@ def format_account_info_message(login: str) -> str:
 def format_prop_panel_message(login: str) -> str:
     return _format_prop_panel_message(login, read_dashboard, _dashboard_footer)
 
+def link_line(login: str) -> str:
+    return _link_headline(read_link(login))
+
 def format_settings_panel_message(login: str) -> str:
-    return _format_settings_panel_message(login, read_live_settings, _dashboard_footer)
+    return _format_settings_panel_message(login, read_live_settings, _dashboard_footer,
+                                          link_line(login))
+
+def format_status_panel_message(login: str) -> str:
+    return _format_status_panel_message(login, read_live_settings, read_link, _dashboard_footer)
 
 def get_symbols_for_login(login: str | None) -> list[str]:
     if not login:
@@ -1365,8 +1494,13 @@ BTN_BIAS = f"{G_BIAS} Bias"
 BTN_EA = "EA Controller"
 BTN_ACCOUNT = f"Account"
 BTN_PROP = f"{G_PROP} Prop Panel"
+BTN_STATUS = "🩺 Status Live"
 BTN_ADMIN = f"{G_ADMIN} Admin"
 BTN_SETTINGS = f"{G_SETTINGS} Settings"
+LBL_EA_INPUTS = f"{G_SETTINGS} EA Inputs"
+LBL_STATUS = "🩺 Status Live"
+LBL_PROP = f"{G_PROP} Prop Panel"
+LBL_ACCOUNT = f"{G_ACCOUNT} Account info"
 
 _TOGGLE_RE = re.compile(
     r"^\s*\S*\s*(Mode|Trading)\s*(?:\(.*\)|[:\u00b7\-]\s*\S+)\s*$", re.IGNORECASE)
@@ -1382,7 +1516,7 @@ def build_main_keyboard(user_id: int, st: "AccountState | None" = None,
     top_row = [BTN_ACCOUNT, BTN_PROP]
     if caps["has_bias"] or caps["has_mode"] or caps["has_trading"]:
         top_row.insert(0, BTN_EA)
-    rows = [top_row]
+    rows = [top_row, [BTN_STATUS]]
     if heysolo_db.is_admin(user_id):
         rows.append([BTN_ADMIN])
     else:
@@ -1543,6 +1677,14 @@ async def apply_control_toggle(q, uid: int, login: str, key: str) -> None:
                        show_alert=True)
     await show_ea_panel(q, uid, login, st)
 
+def online_row(login: str) -> list:
+    try:
+        label = _link_button_label(read_link(login))
+    except Exception as exc:
+        log.debug("Could not read the broker link for %s: %s", login, exc)
+        label = "⚪ Unknown"
+    return [InlineKeyboardButton(label, callback_data=f"LINK_{login}")]
+
 def accounts_list_view(user_id: int) -> dict:
     accounts = visible_accounts(user_id)
     active = resolve_login(user_id)
@@ -1563,11 +1705,12 @@ def accounts_list_view(user_id: int) -> dict:
 def account_detail_view(user_id: int, login: str) -> dict:
     active = resolve_login(user_id)
     text = format_account_info_message(login)
-    kb_rows = []
+    kb_rows = [online_row(login)]
     if login != active:
         kb_rows.append([InlineKeyboardButton(f"{G_OK} Set as active", callback_data=f"ACC_SET_{login}")])
-    kb_rows.append([InlineKeyboardButton(f"{G_PROP} Prop Panel", callback_data=f"PROP_VIEW_{login}"),
-                    InlineKeyboardButton(f"{G_SETTINGS} Live Settings", callback_data=f"SETT_VIEW_{login}")])
+    kb_rows.append([InlineKeyboardButton(LBL_STATUS, callback_data=f"STAT_VIEW_{login}")])
+    kb_rows.append([InlineKeyboardButton(LBL_PROP, callback_data=f"PROP_VIEW_{login}"),
+                    InlineKeyboardButton(LBL_EA_INPUTS, callback_data=f"SETT_VIEW_{login}")])
     kb_rows.append([InlineKeyboardButton(f"{G_BACK} All accounts", callback_data="ACC_LIST")])
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
@@ -1597,10 +1740,12 @@ def prop_list_view(user_id: int) -> dict:
 def prop_detail_view(user_id: int, login: str) -> dict:
     text = format_prop_panel_message(login)
     kb_rows = [
+        online_row(login),
         [InlineKeyboardButton(f"🔄 Refresh", callback_data=f"PROP_VIEW_{login}"),
          InlineKeyboardButton(f"{G_SETTINGS} My alerts", callback_data=f"PROP_ALERTS_{login}")],
-        [InlineKeyboardButton(f"🛠️ Live Settings", callback_data=f"SETT_VIEW_{login}"),
-         InlineKeyboardButton(f"{G_ACCOUNT} Account info", callback_data=f"ACC_VIEW_{login}")],
+        [InlineKeyboardButton(LBL_STATUS, callback_data=f"STAT_VIEW_{login}"),
+         InlineKeyboardButton(LBL_EA_INPUTS, callback_data=f"SETT_VIEW_{login}")],
+        [InlineKeyboardButton(LBL_ACCOUNT, callback_data=f"ACC_VIEW_{login}")],
         [InlineKeyboardButton(f"{G_BACK} All panels", callback_data="PROP_LIST")],
     ]
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
@@ -1608,9 +1753,40 @@ def prop_detail_view(user_id: int, login: str) -> dict:
 def settings_detail_view(user_id: int, login: str) -> dict:
     text = format_settings_panel_message(login)
     kb_rows = [
+        online_row(login),
         [InlineKeyboardButton(f"🔄 Refresh", callback_data=f"SETT_VIEW_{login}"),
-         InlineKeyboardButton(f"{G_PROP} Prop Panel", callback_data=f"PROP_VIEW_{login}")],
-        [InlineKeyboardButton(f"{G_ACCOUNT} Account info", callback_data=f"ACC_VIEW_{login}")],
+         InlineKeyboardButton(LBL_STATUS, callback_data=f"STAT_VIEW_{login}")],
+        [InlineKeyboardButton(LBL_PROP, callback_data=f"PROP_VIEW_{login}"),
+         InlineKeyboardButton(LBL_ACCOUNT, callback_data=f"ACC_VIEW_{login}")],
+    ]
+    return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
+
+def status_list_view(user_id: int) -> dict:
+    accounts = visible_accounts(user_id)
+    active = resolve_login(user_id)
+    rows = []
+    for a in accounts:
+        cur_login = a["login"]
+        link = read_link(cur_login)
+        tag = f" {G_ROW}" if cur_login == active else ""
+        rows.append([InlineKeyboardButton(
+            f"{_link_button_label(link)} · {cur_login}{tag}",
+            callback_data=f"STAT_VIEW_{cur_login}")])
+    text = (
+        f"🩺 <b>Status Live</b> ({len(accounts)})\n"
+        f"{G_ROW} Active: <code>{active or '-'}</code>\n"
+        "Tap an account to see its live status."
+    )
+    return {"text": text, "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
+
+def status_detail_view(user_id: int, login: str) -> dict:
+    text = format_status_panel_message(login)
+    kb_rows = [
+        online_row(login),
+        [InlineKeyboardButton(f"🔄 Refresh", callback_data=f"STAT_VIEW_{login}"),
+         InlineKeyboardButton(LBL_EA_INPUTS, callback_data=f"SETT_VIEW_{login}")],
+        [InlineKeyboardButton(LBL_PROP, callback_data=f"PROP_VIEW_{login}"),
+         InlineKeyboardButton(LBL_ACCOUNT, callback_data=f"ACC_VIEW_{login}")],
     ]
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
@@ -3118,6 +3294,12 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             v = await asyncio.to_thread(prop_detail_view, uid, login)
         await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+    elif text == BTN_STATUS:
+        if len(await asyncio.to_thread(visible_accounts, uid)) > 1:
+            v = await asyncio.to_thread(status_list_view, uid)
+        else:
+            v = await asyncio.to_thread(status_detail_view, uid, login)
+        await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update):
@@ -3188,6 +3370,33 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer()
         v = await asyncio.to_thread(settings_detail_view, uid, target_login)
         await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        return
+
+    if data == "STAT_LIST":
+        await q.answer()
+        v = await asyncio.to_thread(status_list_view, uid)
+        await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        return
+
+    if data.startswith("STAT_VIEW_"):
+        target_login = data[len("STAT_VIEW_"):]
+        visible = await asyncio.to_thread(visible_accounts, uid)
+        if target_login not in {a["login"] for a in visible}:
+            await q.answer("Not your account.", show_alert=True)
+            return
+        await q.answer()
+        v = await asyncio.to_thread(status_detail_view, uid, target_login)
+        await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        return
+
+    if data.startswith("LINK_"):
+        target_login = data[len("LINK_"):]
+        visible = await asyncio.to_thread(visible_accounts, uid)
+        if target_login not in {a["login"] for a in visible}:
+            await q.answer("Not your account.", show_alert=True)
+            return
+        link = await asyncio.to_thread(read_link, target_login)
+        await q.answer(_link_details_text(target_login, link), show_alert=True)
         return
 
     if data.startswith("PROP_ALERTS_"):
