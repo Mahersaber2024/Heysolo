@@ -86,6 +86,19 @@ CREATE TABLE IF NOT EXISTS control_log (
     changed_at BIGINT NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS prop_alert_state (
+    login      TEXT PRIMARY KEY,
+    state      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS user_prop_alerts (
+    user_id           BIGINT PRIMARY KEY,
+    enabled           BOOLEAN NOT NULL DEFAULT TRUE,
+    daily_threshold   REAL NOT NULL DEFAULT 80,
+    overall_threshold REAL NOT NULL DEFAULT 80
+);
+
 CREATE INDEX IF NOT EXISTS user_accounts_login_idx ON user_accounts (login);
 """
 
@@ -576,6 +589,59 @@ class PgDatabase:
             "trading": row.get("trading"),
             "changed_at": int(row.get("changed_at") or 0),
         }
+
+    def get_prop_alert_state(self, login: str) -> Dict[str, Any]:
+        row = self._run("SELECT state FROM prop_alert_state WHERE login = %s",
+                        (str(login),), fetch="one")
+        state = (row or {}).get("state")
+        return dict(state) if isinstance(state, dict) else {}
+
+    def save_prop_alert_state(self, login: str, state: Dict[str, Any]) -> None:
+        import json
+        self._run(
+            """
+            INSERT INTO prop_alert_state (login, state, updated_at)
+            VALUES (%s, %s, now())
+            ON CONFLICT (login) DO UPDATE
+              SET state = EXCLUDED.state, updated_at = EXCLUDED.updated_at
+            """,
+            (str(login), json.dumps(state or {})),
+        )
+
+    def get_user_prop_alerts(self, user_id: int) -> Dict[str, Any]:
+        row = self._run(
+            "SELECT enabled, daily_threshold, overall_threshold FROM user_prop_alerts WHERE user_id = %s",
+            (int(user_id),), fetch="one")
+        if not row:
+            return {"enabled": True, "daily_threshold": 80.0, "overall_threshold": 80.0}
+        return {
+            "enabled": bool(row.get("enabled", True)),
+            "daily_threshold": float(row.get("daily_threshold") or 80.0),
+            "overall_threshold": float(row.get("overall_threshold") or 80.0),
+        }
+
+    def set_user_prop_alerts(self, user_id: int, enabled: Optional[bool] = None,
+                             daily_threshold: Optional[float] = None,
+                             overall_threshold: Optional[float] = None) -> Dict[str, Any]:
+        current = self.get_user_prop_alerts(user_id)
+        if enabled is not None:
+            current["enabled"] = bool(enabled)
+        if daily_threshold is not None:
+            current["daily_threshold"] = float(daily_threshold)
+        if overall_threshold is not None:
+            current["overall_threshold"] = float(overall_threshold)
+        self._run(
+            """
+            INSERT INTO user_prop_alerts (user_id, enabled, daily_threshold, overall_threshold)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (user_id) DO UPDATE
+              SET enabled = EXCLUDED.enabled,
+                  daily_threshold = EXCLUDED.daily_threshold,
+                  overall_threshold = EXCLUDED.overall_threshold
+            """,
+            (int(user_id), current["enabled"], current["daily_threshold"], current["overall_threshold"]),
+        )
+        return current
 class DatabaseUnavailable(RuntimeError):
     pass
 
@@ -791,6 +857,44 @@ def get_control_change(login: str) -> Optional[Dict[str, Any]]:
     except Exception as exc:
         logger.warning("Could not read the last control change on %s: %s", login, exc)
         return None
+
+
+def get_prop_alert_state(login: str) -> Dict[str, Any]:
+    try:
+        return get_db().get_prop_alert_state(login)
+    except Exception as exc:
+        logger.warning("Could not read prop alert state for %s (%s) - assuming none.", login, exc)
+        return {}
+
+
+def save_prop_alert_state(login: str, state: Dict[str, Any]) -> bool:
+    try:
+        get_db().save_prop_alert_state(login, state)
+        return True
+    except Exception as exc:
+        logger.warning("Could not save prop alert state for %s: %s", login, exc)
+        return False
+
+
+def get_user_prop_alerts(user_id: int) -> Dict[str, Any]:
+    try:
+        return get_db().get_user_prop_alerts(int(user_id))
+    except Exception as exc:
+        logger.warning("Could not read prop alert settings for %s (%s) - using defaults.",
+                       user_id, exc)
+        return {"enabled": True, "daily_threshold": 80.0, "overall_threshold": 80.0}
+
+
+def set_user_prop_alerts(user_id: int, enabled: Optional[bool] = None,
+                         daily_threshold: Optional[float] = None,
+                         overall_threshold: Optional[float] = None) -> Dict[str, Any]:
+    try:
+        return get_db().set_user_prop_alerts(
+            int(user_id), enabled=enabled, daily_threshold=daily_threshold,
+            overall_threshold=overall_threshold)
+    except Exception as exc:
+        logger.warning("Could not save prop alert settings for %s: %s", user_id, exc)
+        return get_user_prop_alerts(user_id)
 
 
 def is_admin(user_id) -> bool:
