@@ -719,6 +719,104 @@ find_terminal_exe() {
 find "${1}/drive_c" -maxdepth 6 -name 'terminal64.exe' -type f 2>/dev/null | head -1
 }
 
+HW_LOG="${HW_LOG:-/var/log/heysolo-hidewine.log}"
+HW_DIAG_SECS="${HW_DIAG_SECS:-45}"
+
+hw_log_init() {
+mkdir -p "$(dirname "$HW_LOG")" 2>/dev/null || true
+if ! ( : >> "$HW_LOG" ) 2>/dev/null; then
+HW_LOG="/tmp/heysolo-hidewine.log"
+( : >> "$HW_LOG" ) 2>/dev/null || HW_LOG="/dev/null"
+fi
+chmod 644 "$HW_LOG" 2>/dev/null || true
+}
+
+hlog() {
+local lvl="$1"; shift
+local msg="$*"
+printf '[%s] [%-4s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$lvl" "$msg" >> "$HW_LOG" 2>/dev/null || true
+case "$lvl" in
+ERR)  err "  $msg" ;;
+WARN) warn "  $msg" ;;
+OK)   ok "  $msg" ;;
+STEP) echo -e "  ${CYAN}→ ${msg}${NC}" ;;
+INFO) echo -e "  ${DIM}${msg}${NC}" ;;
+DBG)  [[ "${HW_DEBUG:-0}" == "1" ]] && echo -e "    ${DIM}· ${msg}${NC}" ;;
+esac
+return 0
+}
+
+hw_run() {
+local label="$1"; shift
+local out rc
+out="$("$@" 2>&1)"; rc=$?
+hlog DBG "cmd[${label}] rc=${rc} :: $*"
+if [[ -n "$out" ]]; then
+while IFS= read -r line; do hlog DBG "    ${label}| ${line}"; done <<< "$out"
+fi
+return "$rc"
+}
+
+hw_sha() {
+command -v sha256sum >/dev/null 2>&1 && sha256sum "$1" 2>/dev/null | awk '{print $1}' && return 0
+echo "n/a"
+}
+
+hw_file_facts() {
+local f="$1" tag="$2"
+if [[ ! -e "$f" ]]; then hlog DBG "${tag}: MISSING ${f}"; return 1; fi
+hlog DBG "${tag}: path=${f}"
+hlog DBG "${tag}: stat=$(stat -c 'size=%s owner=%U:%G mode=%a mtime=%y' "$f" 2>/dev/null)"
+hlog DBG "${tag}: sha256=$(hw_sha "$f")"
+return 0
+}
+
+hw_terminal_log_path() {
+local slug="$1" home
+home="$(getent passwd "${MT5_USER}" 2>/dev/null | cut -d: -f6)"
+home="${home:-/home/${MT5_USER}}"
+echo "${home}/.heysolo/logs/${slug}.log"
+}
+
+hw_write_inplace() {
+local src="$1" dst="$2"
+if cat "$src" > "$dst" 2>/dev/null; then return 0; fi
+return 1
+}
+
+hw_apply_bytes() {
+local src="$1" dst="$2"
+if command -v python3 >/dev/null 2>&1; then
+python3 - "$src" "$dst" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+data = open(src, 'rb').read()
+pairs = [(b'wine_get_host_version', b'hack_get_host_version'),
+         (b'wine_get_build_id',     b'hack_get_build_id'),
+         (b'wine_get_version',      b'hack_get_version')]
+total = 0
+for a, b in pairs:
+    if len(a) != len(b):
+        sys.exit(90)
+    n = data.count(a)
+    if n:
+        data = data.replace(a, b)
+        total += n
+    print("replaced %s -> %s : %d" % (a.decode(), b.decode(), n))
+open(dst, 'wb').write(data)
+print("hits=%d bytes=%d" % (total, len(data)))
+sys.exit(0 if total else 91)
+PY
+return $?
+fi
+if command -v perl >/dev/null 2>&1; then
+perl -0777 -pe 's/wine_get_host_version/hack_get_host_version/g; s/wine_get_build_id/hack_get_build_id/g; s/wine_get_version/hack_get_version/g' "$src" > "$dst" 2>/dev/null
+return $?
+fi
+LC_ALL=C sed -e 's/wine_get_host_version/hack_get_host_version/g' -e 's/wine_get_build_id/hack_get_build_id/g' -e 's/wine_get_version/hack_get_version/g' "$src" > "$dst" 2>/dev/null
+return $?
+}
+
 hide_wine_state() {
 local exe
 exe="$(find_terminal_exe "$1")"
@@ -734,39 +832,230 @@ fi
 
 hide_wine_binary_patch() {
 local wineprefix="$1" slug="$2"
-local exe
+local exe bkp tmp own mode size_before size_after rc hits
+hw_log_init
+hlog STEP "=== PATCH START slug=${slug} prefix=${wineprefix} ==="
+hlog DBG "wine=$(wine_version_string 2>/dev/null) euid=${EUID} log=${HW_LOG}"
+
 exe="$(find_terminal_exe "$wineprefix")"
 if [[ -z "$exe" ]]; then
-err "terminal64.exe not found under ${wineprefix}/drive_c for ${slug}"
+hlog ERR "terminal64.exe not found under ${wineprefix}/drive_c for ${slug}"
 return 1
 fi
 echo
 info "${slug}: ${exe}"
+hw_file_facts "$exe" "before"
+
+own="$(stat -c '%U:%G' "$exe" 2>/dev/null)"
+mode="$(stat -c '%a' "$exe" 2>/dev/null)"
+size_before="$(stat -c '%s' "$exe" 2>/dev/null)"
+hlog INFO "owner=${own} mode=${mode} size=${size_before}"
+
+if [[ ! -w "$(dirname "$exe")" ]]; then
+hlog WARN "directory not writable: $(dirname "$exe")"
+fi
+
 if ! grep -qa 'wine_get_version' "$exe" 2>/dev/null; then
 if grep -qa 'hack_get_version' "$exe" 2>/dev/null; then
-ok "  already patched (hack_get_version present)"
+hlog OK "already patched (hack_get_version present)"
 return 0
 fi
-warn "  no wine_get_version string in this binary - nothing to patch"
+hlog WARN "no wine_get_version string in this binary - nothing to patch"
 return 0
 fi
-local bkp="${exe}.orig-wine-detect"
+hlog DBG "wine_get_version occurrences: $(grep -oa 'wine_get_version' "$exe" 2>/dev/null | wc -l)"
+
+if exe_is_running "$exe"; then
+hlog ERR "this terminal looks like it is running - stop only this one, then retry"
+hlog DBG "running pids: $(pgrep -u "${MT5_USER}" -f 'terminal64.exe' 2>/dev/null | tr '\n' ' ')"
+return 1
+fi
+
+bkp="${exe}.orig-wine-detect"
 if [[ ! -f "$bkp" ]]; then
-cp -a "$exe" "$bkp" || { err "  backup failed - aborting"; return 1; }
-info "  backup: ${bkp}"
+if cp -a "$exe" "$bkp" 2>/dev/null; then
+hlog OK "backup created: ${bkp}"
+else
+hlog ERR "backup failed - aborting (disk full? permissions?)"
+hlog DBG "df: $(df -h "$(dirname "$exe")" 2>/dev/null | tail -1)"
+return 1
+fi
+else
+hlog INFO "backup already exists: ${bkp}"
+fi
+hw_file_facts "$bkp" "backup"
+
+tmp="$(mktemp "${exe}.hwtmp.XXXXXX" 2>/dev/null)"
+if [[ -z "$tmp" ]]; then
+hlog ERR "cannot create temp file next to the binary"
+return 1
+fi
+
+hw_apply_bytes "$bkp" "$tmp" >> "$HW_LOG" 2>&1
+rc=$?
+hlog DBG "byte-rewrite rc=${rc}"
+if (( rc == 90 )); then
+hlog ERR "replacement string length mismatch - refusing to resize the binary"
+rm -f "$tmp"; return 1
+fi
+if (( rc != 0 && rc != 91 )); then
+hlog ERR "byte rewrite failed (rc=${rc}) - nothing changed"
+rm -f "$tmp"; return 1
+fi
+
+size_after="$(stat -c '%s' "$tmp" 2>/dev/null)"
+hlog DBG "size check: before=${size_before} after=${size_after}"
+if [[ "$size_before" != "$size_after" ]]; then
+hlog ERR "size changed (${size_before} -> ${size_after}) - aborting, binary untouched"
+rm -f "$tmp"; return 1
+fi
+if grep -qa 'wine_get_version' "$tmp" 2>/dev/null; then
+hlog ERR "patched copy still contains wine_get_version - aborting, binary untouched"
+rm -f "$tmp"; return 1
+fi
+
+if ! hw_write_inplace "$tmp" "$exe"; then
+hlog ERR "in-place write failed - restoring from backup"
+cat "$bkp" > "$exe" 2>/dev/null
+rm -f "$tmp"; return 1
+fi
+rm -f "$tmp"
+
+chown "$own" "$exe" 2>/dev/null || hlog WARN "chown ${own} failed"
+chmod "$mode" "$exe" 2>/dev/null || hlog WARN "chmod ${mode} failed"
+hw_file_facts "$exe" "after"
+
+if grep -qa 'wine_get_version' "$exe" 2>/dev/null; then
+hlog ERR "patch did not stick - restoring backup"
+cat "$bkp" > "$exe" 2>/dev/null
+chown "$own" "$exe" 2>/dev/null; chmod "$mode" "$exe" 2>/dev/null
+return 1
+fi
+if [[ "$(stat -c '%U:%G' "$exe" 2>/dev/null)" != "$own" ]]; then
+hlog ERR "ownership drifted to $(stat -c '%U:%G' "$exe" 2>/dev/null) - the terminal will not start; fixing"
+chown "$own" "$exe" 2>/dev/null
+fi
+hlog OK "patched - MT5 can no longer resolve wine_get_version"
+hlog INFO "size/owner/mode preserved: $(stat -c '%s bytes %U:%G %a' "$exe" 2>/dev/null)"
+hlog STEP "=== PATCH DONE slug=${slug} ==="
+return 0
+}
+
+hide_wine_restore_one() {
+local wineprefix="$1" slug="$2"
+local exe bkp own mode
+hw_log_init
+hlog STEP "=== RESTORE START slug=${slug} ==="
+exe="$(find_terminal_exe "$wineprefix")"
+if [[ -z "$exe" ]]; then hlog ERR "terminal64.exe not found for ${slug}"; return 1; fi
+bkp="${exe}.orig-wine-detect"
+echo
+info "${slug}: ${exe}"
+if [[ ! -f "$bkp" ]]; then
+hlog ERR "no backup found (${bkp}) - cannot restore; reinstall the terminal instead"
+return 1
 fi
 if exe_is_running "$exe"; then
-warn "  this terminal looks like it is running - stop only this one, then retry"
+hlog ERR "terminal is running - stop it first"
 return 1
 fi
-sed -i 's/wine_get_version/hack_get_version/g; s/wine_get_host_version/hack_get_host_version/g; s/wine_get_build_id/hack_get_build_id/g' "$exe" 2>/dev/null
+own="$(stat -c '%U:%G' "$bkp" 2>/dev/null)"; own="${own:-${MT5_USER}:${MT5_USER}}"
+mode="$(stat -c '%a' "$bkp" 2>/dev/null)"; mode="${mode:-755}"
+hw_file_facts "$exe" "before-restore"
+hw_file_facts "$bkp" "backup"
+if ! cat "$bkp" > "$exe" 2>/dev/null; then
+hlog ERR "restore write failed"
+return 1
+fi
+chown "$own" "$exe" 2>/dev/null || hlog WARN "chown ${own} failed"
+chmod "$mode" "$exe" 2>/dev/null || hlog WARN "chmod ${mode} failed"
+hw_file_facts "$exe" "after-restore"
 if grep -qa 'wine_get_version' "$exe" 2>/dev/null; then
-err "  patch did not stick - restoring backup"
-cp -a "$bkp" "$exe"
-return 1
-fi
-ok "  patched - MT5 can no longer resolve wine_get_version"
+hlog OK "original terminal64.exe restored (${own} ${mode})"
+hlog STEP "=== RESTORE DONE slug=${slug} ==="
 return 0
+fi
+hlog WARN "restored, but wine_get_version is still absent - backup may itself be patched"
+return 0
+}
+
+hide_wine_restore_all() {
+local slug exe wineprefix termpath n_ok=0 n_fail=0
+if [[ ! -s "$TERMINALS_FILE" ]]; then err "No terminals registered."; return 1; fi
+while IFS='|' read -r slug exe wineprefix termpath; do
+[[ -z "${slug:-}" || -z "${wineprefix:-}" ]] && continue
+if hide_wine_restore_one "$wineprefix" "$slug"; then ((n_ok++)); else ((n_fail++)); fi
+done < "$TERMINALS_FILE"
+echo; header
+ok "Restored ${n_ok}, failed ${n_fail}."
+header
+}
+
+hide_wine_diagnose() {
+local wineprefix="$1" slug="$2"
+local exe tlog rc pid_alive out
+hw_log_init
+exe="$(find_terminal_exe "$wineprefix")"
+if [[ -z "$exe" ]]; then hlog ERR "terminal64.exe not found for ${slug}"; return 1; fi
+tlog="$(hw_terminal_log_path "$slug")"
+echo; header
+title "DIAGNOSE ${slug}"
+header
+hlog STEP "=== DIAGNOSE START slug=${slug} ==="
+hlog INFO "exe: ${exe}"
+hlog INFO "state: $(hide_wine_state "$wineprefix")"
+hw_file_facts "$exe" "exe"
+hw_file_facts "${exe}.orig-wine-detect" "backup"
+hlog DBG "wine: $(wine_version_string 2>/dev/null)"
+hlog DBG "prefix owner: $(stat -c '%U:%G' "$wineprefix" 2>/dev/null)"
+hlog DBG "mt5user can read exe: $(runuser -u "${MT5_USER}" -- test -r "$exe" 2>/dev/null && echo yes || echo NO)"
+hlog DBG "mt5user can exec exe: $(runuser -u "${MT5_USER}" -- test -x "$exe" 2>/dev/null && echo yes || echo NO)"
+
+if exe_is_running "$exe"; then
+hlog WARN "terminal is currently running - stop it for a clean diagnose"
+fi
+ensure_display >/dev/null 2>&1 || hlog WARN "no display on :1 - launch test may fail"
+
+hlog STEP "launching in foreground for ${HW_DIAG_SECS}s, capturing wine output..."
+echo "----- wine stdout/stderr begin -----" >> "$HW_LOG"
+timeout "${HW_DIAG_SECS}" runuser -u "${MT5_USER}" -- bash -lc "export DISPLAY=:1 WINEDEBUG='err+all,warn+module' WINEDLLOVERRIDES='winemenubuilder.exe=d' WINEPREFIX='${wineprefix}'; wine '${exe}'" >> "$HW_LOG" 2>&1
+rc=$?
+echo "----- wine stdout/stderr end (rc=${rc}) -----" >> "$HW_LOG"
+hlog DBG "launch exit code: ${rc}"
+if (( rc == 124 )); then
+hlog OK "still alive after ${HW_DIAG_SECS}s - the terminal does start (rc=124 = timeout, that is good)"
+else
+hlog ERR "terminal exited by itself with code ${rc} - this is the failure"
+fi
+
+echo
+title "last 40 lines of the wine output:"
+tail -n 40 "$HW_LOG" 2>/dev/null | sed -n '/wine stdout/,$p' | head -60
+if [[ -f "$tlog" ]]; then
+echo
+title "last 25 lines of ${tlog}:"
+tail -n 25 "$tlog" 2>/dev/null
+else
+hlog WARN "no launcher log at ${tlog} yet"
+fi
+echo
+info "full log: ${HW_LOG}"
+hlog STEP "=== DIAGNOSE DONE slug=${slug} ==="
+}
+
+hide_wine_show_log() {
+hw_log_init
+echo; header
+title "HIDE-WINE LOG  ${DIM}${HW_LOG}${NC}"
+header
+if [[ ! -s "$HW_LOG" ]]; then
+warn "Log is empty - nothing has run yet."
+return 0
+fi
+tail -n "${1:-120}" "$HW_LOG"
+echo
+header
+info "full file: ${HW_LOG}  (live: tail -f ${HW_LOG})"
 }
 
 hide_wine_confirm() {
@@ -786,6 +1075,20 @@ local slug="$1" wineprefix
 wineprefix=$(awk -F'|' -v s="$slug" '$1==s{print $3; exit}' "$TERMINALS_FILE" 2>/dev/null)
 if [[ -z "$wineprefix" ]]; then err "Terminal not found: $slug"; return 1; fi
 hide_wine_binary_patch "$wineprefix" "$slug"
+}
+
+hide_wine_restore_slug() {
+local slug="$1" wineprefix
+wineprefix=$(awk -F'|' -v s="$slug" '$1==s{print $3; exit}' "$TERMINALS_FILE" 2>/dev/null)
+if [[ -z "$wineprefix" ]]; then err "Terminal not found: $slug"; return 1; fi
+hide_wine_restore_one "$wineprefix" "$slug"
+}
+
+hide_wine_diagnose_slug() {
+local slug="$1" wineprefix
+wineprefix=$(awk -F'|' -v s="$slug" '$1==s{print $3; exit}' "$TERMINALS_FILE" 2>/dev/null)
+if [[ -z "$wineprefix" ]]; then err "Terminal not found: $slug"; return 1; fi
+hide_wine_diagnose "$wineprefix" "$slug"
 }
 
 hide_wine_binary_patch_all() {
@@ -811,13 +1114,14 @@ header
 if (( n_fail == 0 )); then
 ok "Done on ${n_ok} terminal(s). Restart them, then check the Journal tab."
 else
-warn "${n_ok} done, ${n_fail} failed."
+warn "${n_ok} done, ${n_fail} failed - see ${HW_LOG}"
 fi
 header
 }
 
-hide_wine_binary_patch_pick() {
+hw_pick_terminal() {
 local i=1 slug exe wineprefix termpath idx
+HW_PICK_SLUG=""; HW_PICK_PREFIX=""
 declare -a HW_LIST=()
 echo
 while IFS='|' read -r slug exe wineprefix termpath; do
@@ -838,14 +1142,30 @@ if [[ ! "$idx" =~ ^[0-9]+$ ]] || (( idx < 1 || idx > ${#HW_LIST[@]} )); then
 err "Invalid selection."
 return 1
 fi
-IFS='|' read -r slug wineprefix <<< "${HW_LIST[$((idx-1))]}"
+IFS='|' read -r HW_PICK_SLUG HW_PICK_PREFIX <<< "${HW_LIST[$((idx-1))]}"
 echo
-info "Selected: ${BOLD}${slug}${NC}"
+info "Selected: ${BOLD}${HW_PICK_SLUG}${NC}"
+return 0
+}
+
+hide_wine_binary_patch_pick() {
+hw_pick_terminal || return 1
 hide_wine_confirm || return 1
-if hide_wine_binary_patch "$wineprefix" "$slug"; then
+if hide_wine_binary_patch "$HW_PICK_PREFIX" "$HW_PICK_SLUG"; then
 echo
-ok "Restart ${slug} only, then check its Journal tab."
+ok "Restart ${HW_PICK_SLUG} only, then check its Journal tab."
+info "If it does not start: option 4 (diagnose) shows exactly where it dies."
 fi
+}
+
+hide_wine_restore_pick() {
+hw_pick_terminal || return 1
+hide_wine_restore_one "$HW_PICK_PREFIX" "$HW_PICK_SLUG"
+}
+
+hide_wine_diagnose_pick() {
+hw_pick_terminal || return 1
+hide_wine_diagnose "$HW_PICK_PREFIX" "$HW_PICK_SLUG"
 }
 
 hide_wine_menu() {
@@ -853,15 +1173,21 @@ if [[ ! -s "$TERMINALS_FILE" ]]; then
 err "No terminals registered."
 return 1
 fi
+hw_log_init
 local CH
 echo
 header
 title "HIDE WINE FROM MT5 - terminal64.exe binary patch"
 header
 echo -e "  wine: ${BOLD}$(wine_version_string)${NC}"
+echo -e "  log:  ${DIM}${HW_LOG}${NC}"
 echo
-echo -e "  ${BOLD}1)${NC} All terminals"
-echo -e "  ${BOLD}2)${NC} Pick one terminal from the list"
+echo -e "  ${BOLD}1)${NC} Patch all terminals"
+echo -e "  ${BOLD}2)${NC} Patch one terminal from the list"
+echo -e "  ${BOLD}3)${NC} Restore original terminal64.exe ${DIM}(undo the patch)${NC}"
+echo -e "  ${BOLD}4)${NC} Diagnose a terminal ${DIM}(launch it, capture the full wine log)${NC}"
+echo -e "  ${BOLD}5)${NC} Show log ${DIM}(last 120 lines)${NC}"
+echo -e "  ${BOLD}6)${NC} Toggle verbose debug  ${DIM}[currently: ${HW_DEBUG:-0}]${NC}"
 echo -e "  ${BOLD}0)${NC} Cancel"
 echo
 read -rp "Choice [${BOLD}1${NC}]: " CH || CH=""
@@ -869,6 +1195,13 @@ CH="${CH:-1}"
 case "${CH// /}" in
 1) echo; hide_wine_confirm || return 1; HW_SKIP_CONFIRM=1 hide_wine_binary_patch_all ;;
 2) hide_wine_binary_patch_pick ;;
+3) hide_wine_restore_pick ;;
+4) hide_wine_diagnose_pick ;;
+5) hide_wine_show_log 120 ;;
+6)
+if [[ "${HW_DEBUG:-0}" == "1" ]]; then HW_DEBUG=0; info "Verbose debug OFF"; else HW_DEBUG=1; info "Verbose debug ON"; fi
+export HW_DEBUG
+;;
 0) info "Cancelled." ;;
 *) err "Invalid selection." ;;
 esac
@@ -892,7 +1225,7 @@ echo -e "  ${BOLD}4)${NC} Show status"
 echo -e "  ${BOLD}5)${NC} Apply compliance to SPECIFIC terminal"
 echo -e "  ${BOLD}6)${NC} Test compliance on SPECIFIC terminal"
 echo -e "  ${BOLD}7)${NC} Change Windows version/build profile"
-echo -e "  ${BOLD}H)${NC} Hide Wine from MT5 (patch terminal64.exe)  ${DIM}(one terminal or all - non-staging Wine only)${NC}"
+echo -e "  ${BOLD}H)${NC} Hide Wine from MT5 (patch terminal64.exe)  ${DIM}(patch / restore / diagnose + log)${NC}"
 echo -e "  ${BOLD}0)${NC} Back to main menu"
 echo
 header
@@ -985,6 +1318,11 @@ echo "  status            - Show compliance status for all terminals"
 echo "  version [n|build] - Pick a Windows profile (preset number or build, e.g. 19045)"
 echo "  hidewine [slug]   - Patch terminal64.exe (no slug = menu: all or pick one)"
 echo "  hidewine all      - Patch every terminal"
+echo "  hidewine restore [slug|all] - Undo the patch from the .orig-wine-detect backup"
+echo "  hidewine diagnose <slug>    - Launch the terminal and capture the full wine log"
+echo "  hidewine log [n]  - Show the hide-wine log (default 120 lines)"
+echo
+echo "Hide-wine log: /var/log/heysolo-hidewine.log   (HW_DEBUG=1 for verbose output)"
 echo
 echo "Windows version is customizable - presets, or set it inline:"
 echo "  sudo bash wine-compliance.sh version 19045      # Windows 10 Pro 22H2"
@@ -1052,6 +1390,14 @@ hidewine)
 case "${2:-}" in
 "") hide_wine_menu ;;
 all) HW_SKIP_CONFIRM=1 hide_wine_binary_patch_all ;;
+restore)
+if [[ -n "${3:-}" && "${3}" != "all" ]]; then hide_wine_restore_slug "$3"; else hide_wine_restore_all; fi
+;;
+diagnose|diag)
+if [[ -z "${3:-}" ]]; then err "Usage: hidewine diagnose <slug>"; exit 1; fi
+hide_wine_diagnose_slug "$3"
+;;
+log|logs) hide_wine_show_log "${3:-120}" ;;
 *) HW_SKIP_CONFIRM=1 hide_wine_apply_one "$2" ;;
 esac
 ;;
