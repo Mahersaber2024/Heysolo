@@ -986,16 +986,28 @@ return 1
 fi
 
 bkp="${exe}.orig-wine-detect"
+if [[ -f "$bkp" ]]; then
+if grep -qa 'wine_get_version' "$bkp" 2>/dev/null; then
+hlog DBG "backup exists and is original (has wine_get_version)"
+else
+hlog WARN "backup exists but is stale/corrupted (no wine_get_version) - will recreate from exe"
+rm -f "$bkp"
+fi
+fi
 if [[ ! -f "$bkp" ]]; then
+if ! grep -qa 'wine_get_version' "$exe" 2>/dev/null; then
+hlog ERR "exe is patched but no valid backup - cannot re-patch safely; restore with unpatched copy or reinstall"
+return 1
+fi
 if cp -a "$exe" "$bkp" 2>/dev/null; then
-hlog OK "backup created: ${bkp}"
+hlog OK "backup created from exe: ${bkp}"
 else
 hlog ERR "backup failed - aborting (disk full? permissions?)"
 hlog DBG "df: $(df -h "$(dirname "$exe")" 2>/dev/null | tail -1)"
 return 1
 fi
 else
-hlog INFO "backup already exists: ${bkp}"
+hlog INFO "backup already valid: ${bkp}"
 fi
 hw_file_facts "$bkp" "backup"
 
