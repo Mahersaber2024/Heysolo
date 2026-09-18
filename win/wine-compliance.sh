@@ -830,6 +830,120 @@ printf '%s' "${DIM}not patched${NC}"
 fi
 }
 
+hw_string_table() {
+local f="$1"
+if command -v python3 >/dev/null 2>&1; then
+python3 - "$f" <<'PYSCAN'
+import sys
+path = sys.argv[1]
+pairs = [(b'wine_get_version', b'hack_get_version'),
+         (b'wine_get_host_version', b'hack_get_host_version'),
+         (b'wine_get_build_id', b'hack_get_build_id')]
+data = open(path, 'rb').read()
+for a, b in pairs:
+    offs = []
+    i = data.find(a)
+    while i != -1 and len(offs) < 5:
+        offs.append(i)
+        i = data.find(a, i + 1)
+    txt = ' '.join('0x%X' % o for o in offs) or '-'
+    print("STR|%s|%s|%d|%d|%s" % (a.decode(), b.decode(), data.count(a), data.count(b), txt))
+PYSCAN
+return 0
+fi
+local a b
+for a in wine_get_version wine_get_host_version wine_get_build_id; do
+b="hack_${a#wine_}"
+printf 'STR|%s|%s|%s|%s|%s\n' "$a" "$b" \
+"$(grep -oa "$a" "$f" 2>/dev/null | wc -l)" \
+"$(grep -oa "$b" "$f" 2>/dev/null | wc -l)" "-"
+done
+}
+
+hw_preview() {
+local wineprefix="$1" slug="$2" mode="${3:-patch}"
+local exe bkp own mode_bits size state winever
+exe="$(find_terminal_exe "$wineprefix")"
+if [[ -z "$exe" ]]; then err "terminal64.exe not found under ${wineprefix}/drive_c"; return 1; fi
+bkp="${exe}.orig-wine-detect"
+own="$(stat -c '%U:%G' "$exe" 2>/dev/null)"
+mode_bits="$(stat -c '%a' "$exe" 2>/dev/null)"
+size="$(stat -c '%s' "$exe" 2>/dev/null)"
+winever="$(wine_version_string 2>/dev/null)"
+echo
+header
+if [[ "$mode" == "restore" ]]; then
+title "PREVIEW - RESTORE  ${BOLD}${slug}${NC}"
+else
+title "PREVIEW - WHAT WILL CHANGE  ${BOLD}${slug}${NC}"
+fi
+header
+echo
+echo -e "  ${BOLD}terminal${NC}   ${slug}"
+echo -e "  ${BOLD}exe${NC}        ${exe}"
+echo -e "  ${BOLD}size${NC}       ${size} bytes   ${BOLD}owner${NC} ${own}   ${BOLD}mode${NC} ${mode_bits}"
+echo -e "  ${BOLD}wine here${NC}  ${winever}   ${DIM}(this is what MT5 currently detects)${NC}"
+if [[ -f "$bkp" ]]; then
+echo -e "  ${BOLD}backup${NC}     ${GREEN}present${NC}  $(stat -c '%s bytes, %y' "$bkp" 2>/dev/null)"
+else
+echo -e "  ${BOLD}backup${NC}     ${YELLOW}none yet - one will be created${NC}"
+fi
+state="$(hide_wine_state "$wineprefix")"
+echo -e "  ${BOLD}state now${NC}  ${state}"
+echo
+if [[ "$mode" == "restore" ]]; then
+if [[ ! -f "$bkp" ]]; then
+err "  No backup to restore from - nothing can be undone here."
+header
+return 1
+fi
+echo -e "  ${BOLD}Strings that will come BACK into the binary:${NC}"
+echo
+printf "    %-24s %-4s %-24s %-4s\n" "FROM (in file now)" "hits" "TO (after restore)" "hits"
+printf "    %s\n" "---------------------------------------------------------------------"
+while IFS='|' read -r tag from to nfrom nto offs; do
+[[ "$tag" == "STR" ]] || continue
+[[ "$nto" == "0" ]] && continue
+printf "    %-24s ${BOLD}%-4s${NC} ${GREEN}%-24s${NC} %-4s\n" "$to" "$nto" "$from" "$nto"
+done < <(hw_string_table "$exe")
+echo
+echo -e "  ${BOLD}Result${NC}     MT5 will detect Wine again ${DIM}(wine_get_version resolvable)${NC}"
+echo -e "  ${BOLD}Restored${NC}   byte-for-byte from ${bkp}, owner ${own} kept"
+header
+return 0
+fi
+if ! grep -qa 'wine_get_version' "$exe" 2>/dev/null; then
+if grep -qa 'hack_get_version' "$exe" 2>/dev/null; then
+ok "  Already patched - no wine_* export names left to rename. Nothing to do."
+header
+return 2
+fi
+warn "  This binary has no wine_get_version string at all - nothing to patch."
+header
+return 2
+fi
+echo -e "  ${BOLD}Byte-level rename (same length, size never changes):${NC}"
+echo
+printf "    %-24s %-4s %-24s %s\n" "FROM (found now)" "hits" "TO (after patch)" "offsets"
+printf "    %s\n" "---------------------------------------------------------------------------"
+while IFS='|' read -r tag from to nfrom nto offs; do
+[[ "$tag" == "STR" ]] || continue
+if [[ "$nfrom" == "0" ]]; then
+printf "    ${DIM}%-24s %-4s %-24s %s${NC}\n" "$from" "0" "$to" "not present - skipped"
+else
+printf "    %-24s ${BOLD}%-4s${NC} ${GREEN}%-24s${NC} %s\n" "$from" "$nfrom" "$to" "${offs}"
+fi
+done < <(hw_string_table "$exe")
+echo
+echo -e "  ${BOLD}Before${NC}     MT5 calls ${RED}wine_get_version${NC} -> resolves -> Journal shows ${RED}${winever}${NC}"
+echo -e "  ${BOLD}After${NC}      MT5 calls ${RED}wine_get_version${NC} -> ${GREEN}not found${NC} -> Journal shows ${GREEN}Windows ${WIN10_RELEASE} build ${WIN10_BUILD}${NC}"
+echo
+echo -e "  ${BOLD}Unchanged${NC}  file size (${size}), owner (${own}), permissions (${mode_bits})"
+echo -e "  ${BOLD}Undo${NC}       option 3 in this menu, or: hidewine restore ${slug}"
+header
+return 0
+}
+
 hide_wine_binary_patch() {
 local wineprefix="$1" slug="$2"
 local exe bkp tmp own mode size_before size_after rc hits
@@ -1150,6 +1264,11 @@ return 0
 
 hide_wine_binary_patch_pick() {
 hw_pick_terminal || return 1
+hw_preview "$HW_PICK_PREFIX" "$HW_PICK_SLUG" patch
+case $? in
+2) return 0 ;;
+1) return 1 ;;
+esac
 hide_wine_confirm || return 1
 if hide_wine_binary_patch "$HW_PICK_PREFIX" "$HW_PICK_SLUG"; then
 echo
@@ -1160,6 +1279,12 @@ fi
 
 hide_wine_restore_pick() {
 hw_pick_terminal || return 1
+hw_preview "$HW_PICK_PREFIX" "$HW_PICK_SLUG" restore || return 1
+local ans=""
+if [[ -t 0 ]]; then
+read -rp "$(echo -e "Type ${BOLD}yes${NC} to restore: ")" ans || ans=""
+[[ "${ans,,}" == "yes" ]] || { warn "Cancelled - no changes made."; return 1; }
+fi
 hide_wine_restore_one "$HW_PICK_PREFIX" "$HW_PICK_SLUG"
 }
 
