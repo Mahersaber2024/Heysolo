@@ -234,6 +234,11 @@ link_shared_common(){
 
   mkdir -p "${mq_dir}"
   mkdir -p "${SHARED_MT5_COMMON_DIR}/Files"
+  local sub
+  for sub in TelegramBridge TelegramBridge/Outbox TelegramBridge/Photos \
+             TelegramBridge/Control AccountStatus PropDashboard; do
+    mkdir -p "${SHARED_MT5_COMMON_DIR}/Files/${sub}"
+  done
 
   if [[ -d "${common_link}" && ! -L "${common_link}" ]]; then
     info "Merging existing Common\\Files from $(basename "${wineprefix}") into the shared folder..."
@@ -246,6 +251,8 @@ link_shared_common(){
   ln -sfn "${SHARED_MT5_COMMON_DIR}" "${common_link}"
   chown -h "${MT5_USER}:${MT5_USER}" "${common_link}" 2>/dev/null || true
   chown -R "${MT5_USER}:${MT5_USER}" "${SHARED_MT5_COMMON_DIR}" 2>/dev/null || true
+  find "${SHARED_MT5_COMMON_DIR}" -type d -exec chmod 2775 {} + 2>/dev/null || true
+  find "${SHARED_MT5_COMMON_DIR}" -type f -exec chmod 0664 {} + 2>/dev/null || true
 }
 
 link_shared_common_all(){
@@ -2937,40 +2944,127 @@ fit_new_window_to_workarea(){
   as_mt5 "wmctrl -ir ${wid} -e 0,0,0,${sw},${wh}" 2>/dev/null || true
 }
 
+term_log_path(){
+  local slug="$1" home
+  home="$(getent passwd "${MT5_USER}" 2>/dev/null | cut -d: -f6)"
+  home="${home:-/home/${MT5_USER}}"
+  echo "${home}/.heysolo/logs/${slug}.log"
+}
+
+term_log_prepare(){
+  local slug="$1" f d
+  f="$(term_log_path "${slug}")"; d="$(dirname "${f}")"
+  mkdir -p "${d}" 2>/dev/null || true
+  touch "${f}" 2>/dev/null || true
+  chown -R "${MT5_USER}:${MT5_USER}" "${d}" 2>/dev/null || true
+  chmod 644 "${f}" 2>/dev/null || true
+  echo "${f}"
+}
+
+term_log(){
+  local slug="$1"; shift
+  local f; f="$(term_log_path "${slug}")"
+  printf '[%s] [mt5.sh] %s\n' "$(date '+%F %T')" "$*" >> "${f}" 2>/dev/null || true
+  chown "${MT5_USER}:${MT5_USER}" "${f}" 2>/dev/null || true
+}
+
+term_log_env(){
+  local slug="$1" wineprefix="$2" termpath="$3" mode="$4"
+  term_log "${slug}" "---------- start attempt (${mode}) ----------"
+  term_log "${slug}" "exe: ${termpath}"
+  term_log "${slug}" "exe stat: $(stat -c 'size=%s owner=%U:%G mode=%a mtime=%y' "${termpath}" 2>/dev/null)"
+  if [[ -f "${termpath}.orig-wine-detect" ]]; then
+    term_log "${slug}" "hide-wine backup present: $(stat -c 'size=%s mtime=%y' "${termpath}.orig-wine-detect" 2>/dev/null)"
+    if grep -qa 'hack_get_version' "${termpath}" 2>/dev/null; then
+      term_log "${slug}" "hide-wine state: PATCHED"
+    else
+      term_log "${slug}" "hide-wine state: restored/original"
+    fi
+  else
+    term_log "${slug}" "hide-wine state: never patched"
+  fi
+  term_log "${slug}" "prefix: ${wineprefix} (owner $(stat -c '%U:%G' "${wineprefix}" 2>/dev/null))"
+  term_log "${slug}" "readable by ${MT5_USER}: $(runuser -u "${MT5_USER}" -- test -r "${termpath}" 2>/dev/null && echo yes || echo NO)"
+  term_log "${slug}" "executable by ${MT5_USER}: $(runuser -u "${MT5_USER}" -- test -x "${termpath}" 2>/dev/null && echo yes || echo NO)"
+  term_log "${slug}" "display :${DISPLAY_NUM} socket: $([[ -S /tmp/.X11-unix/X${DISPLAY_NUM} ]] && echo present || echo MISSING)"
+  term_log "${slug}" "wine: $(command -v wine >/dev/null 2>&1 && wine --version 2>/dev/null || echo 'wine NOT FOUND')"
+  term_log "${slug}" "free disk: $(df -h "${wineprefix}" 2>/dev/null | tail -1)"
+  term_log "${slug}" "stale screen sessions: $(as_mt5 "screen -ls" 2>/dev/null | grep -cE "\.${slug}[[:space:]]" || true)"
+}
+
+term_start_verify(){
+  local slug="$1" termpath="$2" log="$3" waited=0 alive=0
+  while (( waited < 15 )); do
+    if pgrep -f "${termpath}" >/dev/null 2>&1; then alive=1; break; fi
+    if as_mt5 "screen -ls" 2>/dev/null | grep -qE "\.${slug}[[:space:]]"; then alive=1; break; fi
+    sleep 1; waited=$((waited+1))
+  done
+  if (( alive == 1 )); then
+    term_log "${slug}" "OK: process/session up after ${waited}s"
+    term_log "${slug}" "pids: $(pgrep -f "${termpath}" 2>/dev/null | tr '\n' ' ')"
+    return 0
+  fi
+  term_log "${slug}" "FAILED: no terminal64.exe process and no screen session after ${waited}s"
+  warn "${slug}: did not come up. Last lines of its log:"
+  tail -n 20 "${log}" 2>/dev/null | sed 's/^/    /'
+  echo
+  info "full log: ${log}"
+  info "for a full wine trace: sudo MT5_START_DEBUG=1 <this menu> start it again"
+  return 1
+}
+
 start_terminal(){
   local slug="$1" wineprefix="$2" termpath="${3:-}"
   [[ -z "$termpath" ]] && termpath=$(resolve_terminal_exe "${wineprefix}")
   if [[ -z "$termpath" ]]; then
     warn "${slug}: terminal64.exe not found (was the wizard completed?)."
+    term_log "${slug}" "FAILED: terminal64.exe not found under ${wineprefix}"
     return 1
   fi
-  local visible
+  local visible log winedbg
+  log="$(term_log_prepare "${slug}")"
+  if [[ "${MT5_START_DEBUG:-0}" == "1" ]]; then
+    winedbg="WINEDEBUG=err+all,warn+module"
+  else
+    winedbg="WINEDEBUG=-all,err+all"
+  fi
   if declare -F terminal_desktop_visible >/dev/null 2>&1; then
     visible=$(terminal_desktop_visible "${slug}")
   else
     visible=1
   fi
   if [[ "${visible}" == "0" ]]; then
-
+    term_log_env "${slug}" "${wineprefix}" "${termpath}" "background"
     as_mt5 "screen -dmS ${slug} bash -c '
-      export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
-      wine \"${termpath}\"'"
+      export DISPLAY=:${DISPLAY_NUM} WINEDLLOVERRIDES=winemenubuilder.exe,mscoree,mshtml=d ${winedbg} WINEPREFIX=${wineprefix};
+      echo \"[\$(date +%F\ %T)] [wine] launching (background)\" >> \"${log}\";
+      wine \"${termpath}\" >> \"${log}\" 2>&1;
+      echo \"[\$(date +%F\ %T)] [wine] exited with code \$?\" >> \"${log}\"'"
     if declare -F desktop_hide_background_terminal >/dev/null 2>&1; then
       ( desktop_hide_background_terminal "${termpath}" & )
     fi
+    term_start_verify "${slug}" "${termpath}" "${log}" || return 1
     return 0
   fi
 
   if [[ "${WINE_VDESKTOP:-0}" == "1" ]]; then
+    term_log_env "${slug}" "${wineprefix}" "${termpath}" "virtual desktop"
     as_mt5 "screen -dmS ${slug} bash -c '
-      export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
-      wine explorer /desktop=${slug},${WORK_RES_WH:-${SCREEN_RES%x*}} \"${termpath}\"'"
+      export DISPLAY=:${DISPLAY_NUM} WINEDLLOVERRIDES=winemenubuilder.exe,mscoree,mshtml=d ${winedbg} WINEPREFIX=${wineprefix};
+      echo \"[\$(date +%F\ %T)] [wine] launching (vdesktop)\" >> \"${log}\";
+      wine explorer /desktop=${slug},${WORK_RES_WH:-${SCREEN_RES%x*}} \"${termpath}\" >> \"${log}\" 2>&1;
+      echo \"[\$(date +%F\ %T)] [wine] exited with code \$?\" >> \"${log}\"'"
   else
+    term_log_env "${slug}" "${wineprefix}" "${termpath}" "normal window"
     as_mt5 "screen -dmS ${slug} bash -c '
-      export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
-      wine \"${termpath}\"'"
+      export DISPLAY=:${DISPLAY_NUM} WINEDLLOVERRIDES=winemenubuilder.exe,mscoree,mshtml=d ${winedbg} WINEPREFIX=${wineprefix};
+      echo \"[\$(date +%F\ %T)] [wine] launching (normal window)\" >> \"${log}\";
+      wine \"${termpath}\" >> \"${log}\" 2>&1;
+      echo \"[\$(date +%F\ %T)] [wine] exited with code \$?\" >> \"${log}\"'"
   fi
   ( fit_new_window_to_workarea "${slug}" "${termpath}" & )
+  term_start_verify "${slug}" "${termpath}" "${log}" || return 1
+  return 0
 }
 
 graceful_stop_terminal(){
