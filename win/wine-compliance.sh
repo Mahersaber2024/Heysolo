@@ -703,10 +703,39 @@ done < "$TERMINALS_FILE"
 header
 }
 
+exe_is_running() {
+local exe="$1" dir base p pid
+dir="$(dirname "$exe")"; base="$(basename "$exe")"
+for p in /proc/[0-9]*; do
+pid="${p#/proc/}"
+[[ "$pid" == "$$" ]] && continue
+grep -Fq -- "$exe" "${p}/maps" 2>/dev/null && return 0
+done
+if pgrep -u "${MT5_USER}" -a -f "$base" 2>/dev/null | grep -Fq -- "$dir"; then return 0; fi
+return 1
+}
+
+find_terminal_exe() {
+find "${1}/drive_c" -maxdepth 6 -name 'terminal64.exe' -type f 2>/dev/null | head -1
+}
+
+hide_wine_state() {
+local exe
+exe="$(find_terminal_exe "$1")"
+if [[ -z "$exe" ]]; then printf '%s' "${DIM}no terminal64.exe${NC}"; return 0; fi
+if grep -qa 'hack_get_version' "$exe" 2>/dev/null; then
+printf '%s' "${GREEN}patched${NC}"
+elif [[ -f "${exe}.orig-wine-detect" ]]; then
+printf '%s' "${YELLOW}restored${NC}"
+else
+printf '%s' "${DIM}not patched${NC}"
+fi
+}
+
 hide_wine_binary_patch() {
 local wineprefix="$1" slug="$2"
 local exe
-exe=$(find "${wineprefix}/drive_c" -maxdepth 6 -name 'terminal64.exe' -type f 2>/dev/null | head -1)
+exe="$(find_terminal_exe "$wineprefix")"
 if [[ -z "$exe" ]]; then
 err "terminal64.exe not found under ${wineprefix}/drive_c for ${slug}"
 return 1
@@ -726,8 +755,8 @@ if [[ ! -f "$bkp" ]]; then
 cp -a "$exe" "$bkp" || { err "  backup failed - aborting"; return 1; }
 info "  backup: ${bkp}"
 fi
-if pgrep -f "$(basename "$exe")" >/dev/null 2>&1; then
-warn "  terminal64.exe looks like it is running - stop the terminals first, then retry"
+if exe_is_running "$exe"; then
+warn "  this terminal looks like it is running - stop only this one, then retry"
 return 1
 fi
 sed -i 's/wine_get_version/hack_get_version/g; s/wine_get_host_version/hack_get_host_version/g; s/wine_get_build_id/hack_get_build_id/g' "$exe" 2>/dev/null
@@ -740,24 +769,38 @@ ok "  patched - MT5 can no longer resolve wine_get_version"
 return 0
 }
 
+hide_wine_confirm() {
+warn "This edits terminal64.exe in place (a .orig-wine-detect backup is kept)."
+warn "Only needed when Wine is NOT a staging build. Stop the affected terminal(s) first."
+echo
+local ans=""
+[[ -t 0 ]] || return 0
+read -rp "$(echo -e "Type ${BOLD}yes${NC} to proceed: ")" ans || ans=""
+[[ "${ans,,}" == "yes" ]] && return 0
+warn "Cancelled - no changes made."
+return 1
+}
+
+hide_wine_apply_one() {
+local slug="$1" wineprefix
+wineprefix=$(awk -F'|' -v s="$slug" '$1==s{print $3; exit}' "$TERMINALS_FILE" 2>/dev/null)
+if [[ -z "$wineprefix" ]]; then err "Terminal not found: $slug"; return 1; fi
+hide_wine_binary_patch "$wineprefix" "$slug"
+}
+
 hide_wine_binary_patch_all() {
 if [[ ! -s "$TERMINALS_FILE" ]]; then
 err "No terminals registered."
 return 1
 fi
+if [[ "${HW_SKIP_CONFIRM:-0}" != "1" ]]; then
 echo
 header
 title "HIDE WINE FROM MT5 - terminal64.exe binary patch"
 header
-warn "This edits terminal64.exe in place (a .orig-wine-detect backup is kept)."
-warn "Only needed when Wine is NOT a staging build. Stop the terminals first."
-echo
-local ans=""
-if [[ -t 0 ]]; then
-read -rp "$(echo -e "Type ${BOLD}yes${NC} to proceed: ")" ans || ans=""
-[[ "${ans,,}" == "yes" ]] || { warn "Cancelled - no changes made."; return 1; }
+hide_wine_confirm || return 1
 fi
-local n_ok=0 n_fail=0
+local slug exe wineprefix termpath n_ok=0 n_fail=0
 while IFS='|' read -r slug exe wineprefix termpath; do
 [[ -z "${slug:-}" ]] && continue
 [[ -z "${wineprefix:-}" ]] && continue
@@ -766,11 +809,69 @@ done < "$TERMINALS_FILE"
 echo
 header
 if (( n_fail == 0 )); then
-ok "Done on ${n_ok} terminal(s). Restart the terminals, then check the Journal tab."
+ok "Done on ${n_ok} terminal(s). Restart them, then check the Journal tab."
 else
 warn "${n_ok} done, ${n_fail} failed."
 fi
 header
+}
+
+hide_wine_binary_patch_pick() {
+local i=1 slug exe wineprefix termpath idx
+declare -a HW_LIST=()
+echo
+while IFS='|' read -r slug exe wineprefix termpath; do
+[[ -z "${slug:-}" ]] && continue
+[[ -z "${wineprefix:-}" ]] && continue
+HW_LIST+=("${slug}|${wineprefix}")
+printf "  ${BOLD}%2d)${NC} %-28s [%b]\n" "$i" "$slug" "$(hide_wine_state "$wineprefix")"
+((i++))
+done < "$TERMINALS_FILE"
+if (( ${#HW_LIST[@]} == 0 )); then
+err "No terminals with a wine prefix."
+return 1
+fi
+echo
+read -rp "Which terminal? (number) [${BOLD}1${NC}]: " idx || idx=""
+idx="${idx:-1}"
+if [[ ! "$idx" =~ ^[0-9]+$ ]] || (( idx < 1 || idx > ${#HW_LIST[@]} )); then
+err "Invalid selection."
+return 1
+fi
+IFS='|' read -r slug wineprefix <<< "${HW_LIST[$((idx-1))]}"
+echo
+info "Selected: ${BOLD}${slug}${NC}"
+hide_wine_confirm || return 1
+if hide_wine_binary_patch "$wineprefix" "$slug"; then
+echo
+ok "Restart ${slug} only, then check its Journal tab."
+fi
+}
+
+hide_wine_menu() {
+if [[ ! -s "$TERMINALS_FILE" ]]; then
+err "No terminals registered."
+return 1
+fi
+local CH
+echo
+header
+title "HIDE WINE FROM MT5 - terminal64.exe binary patch"
+header
+echo -e "  wine: ${BOLD}$(wine_version_string)${NC}"
+echo
+echo -e "  ${BOLD}1)${NC} All terminals"
+echo -e "  ${BOLD}2)${NC} Pick one terminal from the list"
+echo -e "  ${BOLD}0)${NC} Cancel"
+echo
+read -rp "Choice [${BOLD}1${NC}]: " CH || CH=""
+CH="${CH:-1}"
+case "${CH// /}" in
+1) echo; hide_wine_confirm || return 1; HW_SKIP_CONFIRM=1 hide_wine_binary_patch_all ;;
+2) hide_wine_binary_patch_pick ;;
+0) info "Cancelled." ;;
+*) err "Invalid selection." ;;
+esac
 }
 
 main_menu() {
@@ -791,7 +892,7 @@ echo -e "  ${BOLD}4)${NC} Show status"
 echo -e "  ${BOLD}5)${NC} Apply compliance to SPECIFIC terminal"
 echo -e "  ${BOLD}6)${NC} Test compliance on SPECIFIC terminal"
 echo -e "  ${BOLD}7)${NC} Change Windows version/build profile"
-echo -e "  ${BOLD}H)${NC} Hide Wine from MT5 (patch terminal64.exe)  ${DIM}(non-staging Wine only)${NC}"
+echo -e "  ${BOLD}H)${NC} Hide Wine from MT5 (patch terminal64.exe)  ${DIM}(one terminal or all - non-staging Wine only)${NC}"
 echo -e "  ${BOLD}0)${NC} Back to main menu"
 echo
 header
@@ -811,7 +912,7 @@ fi
 read -rp "Press Enter to continue..." _
 ;;
 4) show_status; read -rp "Press Enter to continue..." _ ;;
-h|H) hide_wine_binary_patch_all; read -rp "Press Enter to continue..." _ ;;
+h|H) hide_wine_menu; read -rp "Press Enter to continue..." _ ;;
 5)
 echo
 if [[ ! -s "$TERMINALS_FILE" ]]; then
@@ -873,7 +974,7 @@ done
 }
 
 usage() {
-echo "Usage: wine-compliance.sh [menu|apply|test|revert|status|version] [slug]"
+echo "Usage: wine-compliance.sh [menu|apply|test|revert|status|version|hidewine] [slug]"
 echo
 echo "Commands:"
 echo "  menu              - Interactive menu (default)"
@@ -882,6 +983,8 @@ echo "  test [slug]       - Test compliance on all or specific terminal"
 echo "  revert [slug]     - Revert compliance from all or specific terminal"
 echo "  status            - Show compliance status for all terminals"
 echo "  version [n|build] - Pick a Windows profile (preset number or build, e.g. 19045)"
+echo "  hidewine [slug]   - Patch terminal64.exe (no slug = menu: all or pick one)"
+echo "  hidewine all      - Patch every terminal"
 echo
 echo "Windows version is customizable - presets, or set it inline:"
 echo "  sudo bash wine-compliance.sh version 19045      # Windows 10 Pro 22H2"
@@ -946,7 +1049,11 @@ status)
 show_status
 ;;
 hidewine)
-hide_wine_binary_patch_all
+case "${2:-}" in
+"") hide_wine_menu ;;
+all) HW_SKIP_CONFIRM=1 hide_wine_binary_patch_all ;;
+*) HW_SKIP_CONFIRM=1 hide_wine_apply_one "$2" ;;
+esac
 ;;
 version|profile)
 if [[ -n "${2:-}" ]]; then
