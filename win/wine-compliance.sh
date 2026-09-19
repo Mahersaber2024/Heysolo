@@ -219,6 +219,8 @@ Windows Registry Editor Version 5.00
 [HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Tcpip\Parameters]
 "Hostname"="DESKTOP-7QK4L2M"
 "NV Hostname"="DESKTOP-7QK4L2M"
+[HKEY_CURRENT_USER\Software\Wine]
+"HideWineExports"="Y"
 [HKEY_CURRENT_USER\Software\Wine\Debug]
 "RelayExclude"="ntdll.LdrInit;kernel32.48;kernel32.49"
 "RelayFromExclude"="wineboot;winemenubuilder"
@@ -264,6 +266,8 @@ CUR_PRODUCT=$(reg_get_raw "$sysreg" "$ntsec" "ProductName")
 CUR_RELEASE=$(reg_get_raw "$sysreg" "$ntsec" "ReleaseId")
 CUR_EDITION=$(reg_get_raw "$sysreg" "$ntsec" "EditionID")
 CUR_WINVER=$(reg_get_raw "$usrreg" "$appsec" "Version")
+CUR_HIDE=$(reg_get_raw "$usrreg" "$appsec" "HideWineExports")
+[[ -z "$CUR_HIDE" ]] && CUR_HIDE=$(reg_get_raw "$usrreg" 'Software\\Wine' "HideWineExports")
 }
 
 diff_row() {
@@ -290,6 +294,7 @@ local changes=0
 [[ "$CUR_RELEASE"  != "$WIN10_RELEASE" ]] && ((changes++))
 [[ "$CUR_EDITION"  != "$WIN10_EDITION" ]] && ((changes++))
 [[ "$CUR_WINVER"   != "$WIN10_WINVER"  ]] && ((changes++))
+[[ "$CUR_HIDE"     != "Y"              ]] && ((changes++))
 echo
 echo -e "  ${BOLD}${slug}${NC} ${DIM}(${wineprefix})${NC}"
 printf "  %-22s %-32s     %s\n" "FIELD" "CURRENT (real registry)" "WILL BECOME"
@@ -300,6 +305,7 @@ diff_row "ProductName"        "$CUR_PRODUCT"  "$WIN10_PRODUCT"
 diff_row "ReleaseId"          "$CUR_RELEASE"  "$WIN10_RELEASE"
 diff_row "EditionID"          "$CUR_EDITION"  "$WIN10_EDITION"
 diff_row "terminal64 Version" "$CUR_WINVER"   "$WIN10_WINVER"
+diff_row "HideWineExports"    "$CUR_HIDE"     "Y"
 echo
 if (( changes == 0 )); then
 ok "  ${slug}: nothing to change - already matches the profile"
@@ -323,8 +329,13 @@ else
 warn "${n_changes} registry value(s) will be overwritten across the terminals above."
 fi
 info "Nothing has been changed yet. This was a read-only look at the real Wine registry."
-warn "This only rewrites the reported Windows version. MT5 will still print \"on Wine ... Linux ...\"."
-info "To drop that suffix: run the terminal64.exe binary patch (option H)."
+if wine_is_staging; then
+ok "Wine is a staging build ($(wine_version_string)) - HideWineExports will work, the \"on Wine ...\" suffix will disappear."
+else
+warn "Wine is NOT a staging build ($(wine_version_string)) - HideWineExports is IGNORED by plain Wine."
+warn "The build number will change, but MT5 will still print \"on Wine ... Linux ...\"."
+info "To drop that suffix: install wine-staging, or run the terminal64.exe binary patch (option H)."
+fi
 header
 echo
 local ans=""
@@ -414,11 +425,12 @@ info "Nothing else was changed. Registry backup kept in ${bk}"
 return 1
 fi
 
-step 6 $total "Setting terminal64.exe AppDefaults (Windows version + DLL overrides)" "$t0"
+step 6 $total "Setting terminal64.exe AppDefaults (version + DLL overrides)" "$t0"
 cat > "/tmp/wine-appdefaults-$$.reg" <<EOF
 Windows Registry Editor Version 5.00
 [HKEY_CURRENT_USER\Software\Wine\AppDefaults\terminal64.exe]
 "Version"="${WIN10_WINVER}"
+"HideWineExports"="Y"
 [HKEY_CURRENT_USER\Software\Wine\AppDefaults\terminal64.exe\DllOverrides]
 "*winemenubuilder.exe"=""
 "*mscoree"=""
@@ -502,13 +514,29 @@ else
 err "terminal64.exe DLL overrides NOT SET"
 ((issues++))
 fi
-info "Test 3b: Windows version override for terminal64.exe..."
+
+info "Test 3b: Wine version override for terminal64.exe..."
 local ver_override
 ver_override=$(reg_get_raw "${wineprefix}/user.reg" 'Software\\Wine\\AppDefaults\\terminal64.exe' "Version")
 if [[ "$ver_override" == "${WIN10_WINVER}" ]]; then
 ok "terminal64.exe version override: ${ver_override}"
 else
 err "terminal64.exe version override: ${ver_override:-NOT SET} (expected: ${WIN10_WINVER})"
+((issues++))
+fi
+
+info "Test 3c: Wine exports hidden (the \"on Wine ...\" suffix)..."
+local hide_val
+hide_val=$(reg_get_raw "${wineprefix}/user.reg" 'Software\\Wine\\AppDefaults\\terminal64.exe' "HideWineExports")
+[[ -z "$hide_val" ]] && hide_val=$(reg_get_raw "${wineprefix}/user.reg" 'Software\\Wine' "HideWineExports")
+if [[ "${hide_val^^}" == "Y" ]]; then
+if wine_is_staging; then
+ok "HideWineExports=Y and Wine is staging - suffix should be gone"
+else
+warn "HideWineExports=Y but Wine is not staging ($(wine_version_string)) - suffix will remain"
+fi
+else
+err "HideWineExports: ${hide_val:-NOT SET} (expected: Y)"
 ((issues++))
 fi
 
@@ -608,7 +636,10 @@ ok "Compliance applied to ${success} terminal(s)"
 else
 warn "Compliance applied to ${success} terminal(s), ${failed} failed"
 fi
-info "MT5 will still print \"on Wine ... Linux ...\" - use the terminal64.exe binary patch (option H) to drop it."
+if ! wine_is_staging; then
+warn "Wine is NOT a staging build ($(wine_version_string)) - HideWineExports is IGNORED by plain Wine."
+info "To drop that suffix: install wine-staging, or run the terminal64.exe binary patch (option H)."
+fi
 header
 info "Restart terminals to apply changes:"
 echo "  sudo heysolo  ->  R1, R2, etc."
