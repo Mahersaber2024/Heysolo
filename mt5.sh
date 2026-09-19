@@ -434,6 +434,7 @@ MT5_HOME="/home/${MT5_USER}"
 ASSET_DIR="${MT5_HOME}/.heysolo"
 ICON_DIR="${ASSET_DIR}/icons"
 BIN_DIR="${ASSET_DIR}/bin"
+ACTIVE_FILE="${ASSET_DIR}/active_slug"
 DESKTOP_DIR="${MT5_HOME}/Desktop"
 WALLPAPER_PATH="${ASSET_DIR}/wallpaper.png"
 PCMAN_PROFILE="heysolo"
@@ -1474,22 +1475,21 @@ suppress_inactive_terminals(){
   [[ -r "${REGISTRY}" ]] || return 0
   command -v wmctrl >/dev/null 2>&1 || return 0
   command -v xdotool >/dev/null 2>&1 || return 0
-  local active_win active_pid active_prefix o_slug o_exe o_prefix o_path pids p wid
-  active_win=$(xdotool getactivewindow 2>/dev/null)
-  [[ -n "${active_win}" ]] || return 0
-  active_pid=$(xdotool getwindowpid "${active_win}" 2>/dev/null)
-  [[ -n "${active_pid}" ]] || return 0
-  active_prefix=$(tr '\0' '\n' < "/proc/${active_pid}/environ" 2>/dev/null | sed -n 's/^WINEPREFIX=//p')
+  [[ -s "${ACTIVE_FILE}" ]] || return 0
+  local active_slug active_prefix o_slug o_exe o_prefix o_path pids p wid
+  active_slug=$(cat "${ACTIVE_FILE}" 2>/dev/null)
+  [[ -n "${active_slug}" ]] || return 0
+  active_prefix=$(awk -F'|' -v s="${active_slug}" '$1==s{print $3}' "${REGISTRY}" 2>/dev/null | tail -n1)
   [[ -n "${active_prefix}" ]] || return 0
   while IFS='|' read -r o_slug o_exe o_prefix o_path; do
     [[ -n "${o_slug}" ]] || continue
+    [[ "${o_slug}" == "${active_slug}" ]] && continue
     [[ -n "${o_prefix}" ]] || continue
     [[ "${o_prefix}" == "${active_prefix}" ]] && continue
     pids=$(pids_for_prefix "${o_prefix}")
     [[ -n "${pids}" ]] || continue
     for p in ${pids}; do
       for wid in $(xdotool search --pid "${p}" 2>/dev/null); do
-        [[ "${wid}" == "${active_win}" ]] && continue
         wmctrl -ir "${wid}" -b add,hidden >/dev/null 2>&1 || true
       done
     done
@@ -1692,47 +1692,6 @@ desktop_setup_all(){
   else
     ok "Desktop background + taskbar are ready (icons come in Step 2)."
   fi
-}
-
-desktop_restore_window(){
-  if ! as_mt5 "command -v wmctrl" >/dev/null 2>&1; then
-    info "wmctrl is not installed yet - installing it..."
-    apt-get update -y >/dev/null 2>&1 || true
-    apt-get install -y wmctrl >/dev/null 2>&1 || true
-    if ! as_mt5 "command -v wmctrl" >/dev/null 2>&1; then
-      err "Could not install wmctrl."; press_enter; return 0
-    fi
-  fi
-  echo
-  header
-  title "OPEN WINDOWS (including minimized)"
-  header
-  local list
-  list=$(as_mt5 "DISPLAY=:${DISPLAY_NUM} wmctrl -l" 2>/dev/null || true)
-  if [[ -z "$list" ]]; then
-    warn "No windows found (is the display running?)."
-    press_enter; return 0
-  fi
-  local i=1 line wid title_part
-  declare -a WIDS=()
-  while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-    wid=$(awk '{print $1}' <<< "$line")
-    title_part=$(awk '{for(i=1;i<=3;i++)$i=""; sub(/^ +/,"")}1' <<< "$line")
-    [[ -z "$title_part" ]] && title_part="(no title)"
-    WIDS+=("$wid")
-    printf "  %2d) %s\n" "$i" "$title_part"
-    i=$((i+1))
-  done <<< "$list"
-  echo
-  read -rp "Bring which window to front? number (Enter to skip): " WIDX
-  if [[ "${WIDX:-}" =~ ^[0-9]+$ ]] && (( WIDX >= 1 && WIDX <= ${#WIDS[@]} )); then
-    local w="${WIDS[$((WIDX-1))]}"
-    as_mt5 "DISPLAY=:${DISPLAY_NUM} wmctrl -ir '${w}' -b remove,hidden" 2>/dev/null || true
-    as_mt5 "DISPLAY=:${DISPLAY_NUM} wmctrl -ia '${w}'" 2>/dev/null || true
-    ok "Restored. Refresh your VNC viewer to see it."
-  fi
-  press_enter
 }
 
 desktop_doctor(){
@@ -2917,6 +2876,18 @@ install_selected(){
   desktop_sync_icons
 }
 
+show_terminal_window(){
+  local slug="$1" wid="${2:-}"
+  [[ -n "${wid}" ]] || return 0
+  as_mt5 "wmctrl -ir ${wid} -b remove,hidden" 2>/dev/null || true
+  as_mt5 "wmctrl -ir ${wid} -b remove,shaded" 2>/dev/null || true
+  as_mt5 "xdotool windowmap ${wid}" 2>/dev/null || true
+  as_mt5 "wmctrl -ia ${wid}" 2>/dev/null || true
+  as_mt5 "xdotool windowraise ${wid}" 2>/dev/null || true
+  as_mt5 "xdotool windowactivate ${wid}" 2>/dev/null || true
+  as_mt5 "mkdir -p '$(dirname "${ACTIVE_FILE}")' 2>/dev/null; echo '${slug}' > '${ACTIVE_FILE}'" 2>/dev/null || true
+}
+
 fit_new_window_to_workarea(){
   # One-time only on first open: size to the work area so the taskbar stays visible.
   # Do NOT loop this — repeated geometry under Wine shrinks the window.
@@ -2942,75 +2913,7 @@ fit_new_window_to_workarea(){
   as_mt5 "wmctrl -ir ${wid} -b remove,fullscreen" 2>/dev/null || true
   as_mt5 "wmctrl -ir ${wid} -b remove,maximized_vert,maximized_horz" 2>/dev/null || true
   as_mt5 "wmctrl -ir ${wid} -e 0,0,0,${sw},${wh}" 2>/dev/null || true
-}
-
-term_log_path(){
-  local slug="$1" home
-  home="$(getent passwd "${MT5_USER}" 2>/dev/null | cut -d: -f6)"
-  home="${home:-/home/${MT5_USER}}"
-  echo "${home}/.heysolo/logs/${slug}.log"
-}
-
-term_log_prepare(){
-  local slug="$1" f d
-  f="$(term_log_path "${slug}")"; d="$(dirname "${f}")"
-  mkdir -p "${d}" 2>/dev/null || true
-  touch "${f}" 2>/dev/null || true
-  chown -R "${MT5_USER}:${MT5_USER}" "${d}" 2>/dev/null || true
-  chmod 644 "${f}" 2>/dev/null || true
-  echo "${f}"
-}
-
-term_log(){
-  local slug="$1"; shift
-  local f; f="$(term_log_path "${slug}")"
-  printf '[%s] [mt5.sh] %s\n' "$(date '+%F %T')" "$*" >> "${f}" 2>/dev/null || true
-  chown "${MT5_USER}:${MT5_USER}" "${f}" 2>/dev/null || true
-}
-
-term_log_env(){
-  local slug="$1" wineprefix="$2" termpath="$3" mode="$4"
-  term_log "${slug}" "---------- start attempt (${mode}) ----------"
-  term_log "${slug}" "exe: ${termpath}"
-  term_log "${slug}" "exe stat: $(stat -c 'size=%s owner=%U:%G mode=%a mtime=%y' "${termpath}" 2>/dev/null)"
-  if [[ -f "${termpath}.orig-wine-detect" ]]; then
-    term_log "${slug}" "hide-wine backup present: $(stat -c 'size=%s mtime=%y' "${termpath}.orig-wine-detect" 2>/dev/null)"
-    if grep -qa 'hack_get_version' "${termpath}" 2>/dev/null; then
-      term_log "${slug}" "hide-wine state: PATCHED"
-    else
-      term_log "${slug}" "hide-wine state: restored/original"
-    fi
-  else
-    term_log "${slug}" "hide-wine state: never patched"
-  fi
-  term_log "${slug}" "prefix: ${wineprefix} (owner $(stat -c '%U:%G' "${wineprefix}" 2>/dev/null))"
-  term_log "${slug}" "readable by ${MT5_USER}: $(runuser -u "${MT5_USER}" -- test -r "${termpath}" 2>/dev/null && echo yes || echo NO)"
-  term_log "${slug}" "executable by ${MT5_USER}: $(runuser -u "${MT5_USER}" -- test -x "${termpath}" 2>/dev/null && echo yes || echo NO)"
-  term_log "${slug}" "display :${DISPLAY_NUM} socket: $([[ -S /tmp/.X11-unix/X${DISPLAY_NUM} ]] && echo present || echo MISSING)"
-  term_log "${slug}" "wine: $(command -v wine >/dev/null 2>&1 && wine --version 2>/dev/null || echo 'wine NOT FOUND')"
-  term_log "${slug}" "free disk: $(df -h "${wineprefix}" 2>/dev/null | tail -1)"
-  term_log "${slug}" "stale screen sessions: $(as_mt5 "screen -ls" 2>/dev/null | grep -cE "\.${slug}[[:space:]]" || true)"
-}
-
-term_start_verify(){
-  local slug="$1" termpath="$2" log="$3" waited=0 alive=0
-  while (( waited < 15 )); do
-    if pgrep -f "${termpath}" >/dev/null 2>&1; then alive=1; break; fi
-    if as_mt5 "screen -ls" 2>/dev/null | grep -qE "\.${slug}[[:space:]]"; then alive=1; break; fi
-    sleep 1; waited=$((waited+1))
-  done
-  if (( alive == 1 )); then
-    term_log "${slug}" "OK: process/session up after ${waited}s"
-    term_log "${slug}" "pids: $(pgrep -f "${termpath}" 2>/dev/null | tr '\n' ' ')"
-    return 0
-  fi
-  term_log "${slug}" "FAILED: no terminal64.exe process and no screen session after ${waited}s"
-  warn "${slug}: did not come up. Last lines of its log:"
-  tail -n 20 "${log}" 2>/dev/null | sed 's/^/    /'
-  echo
-  info "full log: ${log}"
-  info "for a full wine trace: sudo MT5_START_DEBUG=1 <this menu> start it again"
-  return 1
+  show_terminal_window "${slug}" "${wid}"
 }
 
 start_terminal(){
@@ -3018,53 +2921,35 @@ start_terminal(){
   [[ -z "$termpath" ]] && termpath=$(resolve_terminal_exe "${wineprefix}")
   if [[ -z "$termpath" ]]; then
     warn "${slug}: terminal64.exe not found (was the wizard completed?)."
-    term_log "${slug}" "FAILED: terminal64.exe not found under ${wineprefix}"
     return 1
   fi
-  local visible log winedbg
-  log="$(term_log_prepare "${slug}")"
-  if [[ "${MT5_START_DEBUG:-0}" == "1" ]]; then
-    winedbg="WINEDEBUG=err+all,warn+module"
-  else
-    winedbg="WINEDEBUG=-all,err+all"
-  fi
+  local visible
   if declare -F terminal_desktop_visible >/dev/null 2>&1; then
     visible=$(terminal_desktop_visible "${slug}")
   else
     visible=1
   fi
   if [[ "${visible}" == "0" ]]; then
-    term_log_env "${slug}" "${wineprefix}" "${termpath}" "background"
+
     as_mt5 "screen -dmS ${slug} bash -c '
-      export DISPLAY=:${DISPLAY_NUM} WINEDLLOVERRIDES=winemenubuilder.exe,mscoree,mshtml=d ${winedbg} WINEPREFIX=${wineprefix};
-      echo \"[\$(date +%F\ %T)] [wine] launching (background)\" >> \"${log}\";
-      wine \"${termpath}\" >> \"${log}\" 2>&1;
-      echo \"[\$(date +%F\ %T)] [wine] exited with code \$?\" >> \"${log}\"'"
+      export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
+      wine \"${termpath}\"'"
     if declare -F desktop_hide_background_terminal >/dev/null 2>&1; then
       ( desktop_hide_background_terminal "${termpath}" & )
     fi
-    term_start_verify "${slug}" "${termpath}" "${log}" || return 1
     return 0
   fi
 
   if [[ "${WINE_VDESKTOP:-0}" == "1" ]]; then
-    term_log_env "${slug}" "${wineprefix}" "${termpath}" "virtual desktop"
     as_mt5 "screen -dmS ${slug} bash -c '
-      export DISPLAY=:${DISPLAY_NUM} WINEDLLOVERRIDES=winemenubuilder.exe,mscoree,mshtml=d ${winedbg} WINEPREFIX=${wineprefix};
-      echo \"[\$(date +%F\ %T)] [wine] launching (vdesktop)\" >> \"${log}\";
-      wine explorer /desktop=${slug},${WORK_RES_WH:-${SCREEN_RES%x*}} \"${termpath}\" >> \"${log}\" 2>&1;
-      echo \"[\$(date +%F\ %T)] [wine] exited with code \$?\" >> \"${log}\"'"
+      export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
+      wine explorer /desktop=${slug},${WORK_RES_WH:-${SCREEN_RES%x*}} \"${termpath}\"'"
   else
-    term_log_env "${slug}" "${wineprefix}" "${termpath}" "normal window"
     as_mt5 "screen -dmS ${slug} bash -c '
-      export DISPLAY=:${DISPLAY_NUM} WINEDLLOVERRIDES=winemenubuilder.exe,mscoree,mshtml=d ${winedbg} WINEPREFIX=${wineprefix};
-      echo \"[\$(date +%F\ %T)] [wine] launching (normal window)\" >> \"${log}\";
-      wine \"${termpath}\" >> \"${log}\" 2>&1;
-      echo \"[\$(date +%F\ %T)] [wine] exited with code \$?\" >> \"${log}\"'"
+      export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
+      wine \"${termpath}\"'"
   fi
   ( fit_new_window_to_workarea "${slug}" "${termpath}" & )
-  term_start_verify "${slug}" "${termpath}" "${log}" || return 1
-  return 0
 }
 
 graceful_stop_terminal(){
@@ -3143,8 +3028,8 @@ manage_one_terminal(){
   fi
   echo
   echo -e " ${BOLD}$(desktop_pretty_name "$slug")${NC}  ->  status: ${st}   Desktop: ${desk}"
-  echo " 1) Start   2) Stop   3) Restart   4) Status (all screens)   5) Bring window to front"
-  echo " 6) Toggle desktop visibility (currently ${desk})   7) Back"
+  echo " 1) Start   2) Stop   3) Restart   4) Status (all screens)"
+  echo " 5) Toggle desktop visibility (currently ${desk})   6) Back"
   read -rp "Choice: " ACT || ACT=""
   case "$ACT" in
     1) start_terminal "$slug" "$wineprefix" "$termpath" && ok "${slug} started." ;;
@@ -3154,8 +3039,7 @@ manage_one_terminal(){
        sleep 3
        start_terminal "$slug" "$wineprefix" "$termpath" && ok "${slug} restarted." ;;
     4) as_mt5 "screen -ls" || true ;;
-    5) desktop_restore_window; return ;;
-    6) if declare -F set_terminal_desktop_visible >/dev/null 2>&1; then
+    5) if declare -F set_terminal_desktop_visible >/dev/null 2>&1; then
          local new_val="1"; [[ "$desk" == "ON" ]] && new_val="0"
          set_terminal_desktop_visible "$slug" "$new_val"
          warn "Applies next time ${slug} is (re)started - stop then start it (or Restart) now to apply immediately."
@@ -3169,7 +3053,7 @@ manage_one_terminal(){
        else
          warn "Desktop visibility helper is unavailable."
        fi ;;
-    7) return ;;
+    6) return ;;
     *) warn "Invalid." ;;
   esac
   press_enter
@@ -3239,8 +3123,6 @@ report_desktop_icon_health(){
   echo
   echo " Meanwhile you can always open a terminal without any icon:"
   echo "    su - ${MT5_USER} -c '/home/${MT5_USER}/.heysolo/bin/mt5-<slug>.sh'"
-  echo " and recover a minimized window over SSH with:"
-  echo "    sudo bash ${desk_cmd} restore"
   header
   return 0
 }
@@ -3519,11 +3401,10 @@ case "${1:-menu}" in
                  desktop_hide_desktop_window
                  ok "Taskbar cleaned - the 'desktop 1' button is gone." ;;
       start)     desktop_start ;;
-      restore)   desktop_restore_window ;;
       visible)   [[ -n "${2:-}" && -n "${3:-}" ]] || { echo "Usage: sudo bash $0 desktop visible <slug> <0|1>"; exit 1; }
                  set_terminal_desktop_visible "$2" "$3"
                  ok "${2}: desktop visibility set to ${3}." ;;
-      *) echo "Usage: sudo bash $0 desktop [all|packages|wallpaper|icons|taskbar|titles|clipboard|clean|start|restore|visible <slug> <0|1>|doctor]"; exit 1 ;;
+      *) echo "Usage: sudo bash $0 desktop [all|packages|wallpaper|icons|taskbar|titles|clipboard|clean|start|visible <slug> <0|1>|doctor]"; exit 1 ;;
     esac
     HEYSOLO_CLEAN_EXIT=1 ;;
   menu|"") main_menu ;;

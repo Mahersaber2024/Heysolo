@@ -9,6 +9,9 @@ DEFAULT_INSTALL_DIR="/opt/heysolo/bot"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 STATE_FILE="/etc/${SERVICE_NAME}.install_dir"
 SETTINGS_FILE="heysolo_settings.json"
+MT5_USER="mt5user"
+SHARED_COMMON_FILES="/home/${MT5_USER}/.heysolo-common/Files"
+BRIDGE_DIRS=(TelegramBridge TelegramBridge/Outbox TelegramBridge/Photos TelegramBridge/Control AccountStatus PropDashboard)
 
 if [[ -t 1 ]]; then
 RED='\033[0;31m'
@@ -407,8 +410,29 @@ run_db_setup_script(){
     fi
 }
 
+prepare_bridge_dirs(){
+    local base owner d
+    for base in "${SHARED_COMMON_FILES}" "${COMMON_FILES_DIR:-}"; do
+        [[ -n "${base}" ]] || continue
+        [[ -d "${base}" ]] || continue
+        owner="${MT5_USER}"
+        id "${owner}" &>/dev/null || owner="$(stat -c '%U' "${base}" 2>/dev/null)"
+        for d in "${BRIDGE_DIRS[@]}"; do
+            mkdir -p "${base}/${d}" 2>/dev/null || true
+        done
+        if [[ -n "${owner}" && "${owner}" != "root" ]]; then
+            chown -R "${owner}:${owner}" "${base}" 2>/dev/null || true
+        fi
+        find "${base}" -type d -exec chmod 2775 {} + 2>/dev/null || true
+        find "${base}" -type f -exec chmod 0664 {} + 2>/dev/null || true
+        ok "Bridge folders under ${base} are writable by ${owner:-root} and the bot."
+    done
+}
+
 create_service(){
     info "Creating systemd service..."
+
+    prepare_bridge_dirs
 
     if [[ ! -f "${INSTALL_DIR}/db/database.py" ]]; then
         warn "db/database.py is missing - the bot will fall back to a local JSON store."
@@ -430,6 +454,7 @@ User=root
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/venv/bin/python3 ${INSTALL_DIR}/heysolo_bot.py
 Environment=PYTHONUNBUFFERED=1
+UMask=0002
 Restart=on-failure
 RestartSec=10
 

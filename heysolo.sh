@@ -153,7 +153,7 @@ done
 fi
 echo
 say "  ${CYAN}TERMINALS${NC}  [${BOLD}1..9${NC}] start/stop   [${BOLD}R1${NC}] restart   [${BOLD}D1${NC}] desktop on/off   [${BOLD}K1${NC}] remove"
-say "             [${BOLD}A${NC}] start all    [${BOLD}Z${NC}] stop all   [${BOLD}V${NC}] vnc on/off       [${BOLD}W${NC}] window to front"
+say "             [${BOLD}A${NC}] start all    [${BOLD}Z${NC}] stop all   [${BOLD}V${NC}] vnc on/off"
 echo
 say "  ${CYAN}SETUP${NC}      [${BOLD}P${NC}] prepare server   [${BOLD}I${NC}] install/add terminal   [${BOLD}M${NC}] sync MQL5 files"
 say "             [${BOLD}S${NC}] wine compliance  ${DIM}standardize Windows environment for MT5${NC}"
@@ -244,7 +244,6 @@ sleep 1
 if vnc_up; then ok "VNC on - connect to localhost:${VNC_PORT} through the ssh tunnel above."; else err "VNC did not start - check ~/.vnc/passwd exists for ${MT5_USER}."; fi
 fi
 sleep 1 ;;
-w)  if declare -F desktop_restore_window >/dev/null 2>&1; then desktop_restore_window; else warn "desktop module missing"; fi ;;
 p)  run_mt5 step1; pause ;;
 i)  run_mt5 step2; pause ;;
 s)  if [[ -s "${SCRIPTS_DIR}/win/wine-compliance.sh" ]]; then
