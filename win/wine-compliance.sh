@@ -635,30 +635,6 @@ ok "Compliance reverted from ${success} terminal(s)"
 header
 }
 
-show_status() {
-echo
-header
-title "WINE COMPLIANCE STATUS"
-header
-if [[ ! -s "$TERMINALS_FILE" ]]; then
-warn "No terminals registered."
-return
-fi
-while IFS='|' read -r slug exe wineprefix termpath; do
-[[ -z "${slug:-}" ]] && continue
-local status="NOT CONFIGURED"
-local status_color="$RED"
-if [[ -f "$COMPLIANCE_STATE_FILE" ]]; then
-if grep -q "^${slug}|" "$COMPLIANCE_STATE_FILE" 2>/dev/null; then
-status="CONFIGURED"
-status_color="$GREEN"
-fi
-fi
-printf "  %-30s [%b%-13s%b]\n" "$slug" "$status_color" "$status" "$NC"
-done < "$TERMINALS_FILE"
-header
-}
-
 exe_is_running() {
 local exe="$1" dir base p pid
 dir="$(dirname "$exe")"; base="$(basename "$exe")"
@@ -1314,10 +1290,8 @@ echo
 echo -e "  ${BOLD}1)${NC} Apply compliance to ALL terminals   ${DIM}(default - just press Enter)${NC}"
 echo -e "  ${BOLD}2)${NC} Test compliance on ALL terminals"
 echo -e "  ${BOLD}3)${NC} Revert compliance from ALL terminals"
-echo -e "  ${BOLD}4)${NC} Show status"
-echo -e "  ${BOLD}5)${NC} Apply compliance to SPECIFIC terminal"
-echo -e "  ${BOLD}6)${NC} Test compliance on SPECIFIC terminal"
-echo -e "  ${BOLD}7)${NC} Change Windows version/build profile"
+echo -e "  ${BOLD}4)${NC} Apply compliance to SPECIFIC terminal"
+echo -e "  ${BOLD}5)${NC} Change Windows version/build profile"
 echo -e "  ${BOLD}H)${NC} Hide Wine from MT5 (patch terminal64.exe)  ${DIM}(patch / restore / diagnose + log)${NC}"
 echo -e "  ${BOLD}0)${NC} Back to main menu"
 echo
@@ -1337,9 +1311,8 @@ revert_compliance_all
 fi
 read -rp "Press Enter to continue..." _
 ;;
-4) show_status; read -rp "Press Enter to continue..." _ ;;
 h|H) hide_wine_menu; read -rp "Press Enter to continue..." _ ;;
-5)
+4)
 echo
 if [[ ! -s "$TERMINALS_FILE" ]]; then
 err "No terminals registered."
@@ -1366,33 +1339,7 @@ err "Invalid selection."
 fi
 read -rp "Press Enter to continue..." _
 ;;
-6)
-echo
-if [[ ! -s "$TERMINALS_FILE" ]]; then
-err "No terminals registered."
-read -rp "Press Enter to continue..." _
-continue
-fi
-local i=1
-declare -a SLUGS=()
-while IFS='|' read -r slug exe wineprefix termpath; do
-[[ -z "${slug:-}" ]] && continue
-SLUGS+=("$slug|$wineprefix")
-printf "  %2d) %s\n" "$i" "$slug"
-((i++))
-done < "$TERMINALS_FILE"
-echo
-read -rp "Which terminal? (number) [${BOLD}1${NC}]: " idx || idx=""
-idx="${idx:-1}"
-if [[ "$idx" =~ ^[0-9]+$ ]] && (( idx >= 1 && idx <= ${#SLUGS[@]} )); then
-IFS='|' read -r slug wineprefix <<< "${SLUGS[$((idx-1))]}"
-test_compliance_on_prefix "$wineprefix" "$slug"
-else
-err "Invalid selection."
-fi
-read -rp "Press Enter to continue..." _
-;;
-7) choose_profile; read -rp "Press Enter to continue..." _ ;;
+5) choose_profile; read -rp "Press Enter to continue..." _ ;;
 0) exit 0 ;;
 *) warn "Invalid option."; sleep 1 ;;
 esac
@@ -1400,14 +1347,13 @@ done
 }
 
 usage() {
-echo "Usage: wine-compliance.sh [menu|apply|test|revert|status|version|hidewine] [slug]"
+echo "Usage: wine-compliance.sh [menu|apply|test|revert|version|hidewine] [slug]"
 echo
 echo "Commands:"
 echo "  menu              - Interactive menu (default)"
 echo "  apply [slug]      - Apply compliance to all or specific terminal"
-echo "  test [slug]       - Test compliance on all or specific terminal"
+echo "  test              - Test compliance on all terminals"
 echo "  revert [slug]     - Revert compliance from all or specific terminal"
-echo "  status            - Show compliance status for all terminals"
 echo "  version [n|build] - Pick a Windows profile (preset number or build, e.g. 19045)"
 echo "  hidewine [slug]   - Patch terminal64.exe (no slug = menu: all or pick one)"
 echo "  hidewine all      - Patch every terminal"
@@ -1449,18 +1395,7 @@ apply_compliance_all
 fi
 ;;
 test)
-if [[ -n "${2:-}" ]]; then
-slug="$2"
-wineprefix=$(awk -F'|' -v s="$slug" '$1==s{print $3; exit}' "$TERMINALS_FILE" 2>/dev/null)
-if [[ -n "$wineprefix" ]]; then
-test_compliance_on_prefix "$wineprefix" "$slug"
-else
-err "Terminal not found: $slug"
-exit 1
-fi
-else
 test_compliance_all
-fi
 ;;
 revert)
 if [[ -n "${2:-}" ]]; then
@@ -1475,9 +1410,6 @@ fi
 else
 revert_compliance_all
 fi
-;;
-status)
-show_status
 ;;
 hidewine)
 case "${2:-}" in
