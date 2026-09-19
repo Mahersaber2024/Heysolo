@@ -335,8 +335,16 @@ if wine_is_staging; then
 ok "Wine is a staging build ($(wine_version_string)) - HideWineExports will work, the \"on Wine ...\" suffix will disappear."
 else
 warn "Wine is NOT a staging build ($(wine_version_string)) - HideWineExports is IGNORED by plain Wine."
-warn "The build number will change, but MT5 will still print \"on Wine ... Linux ...\"."
+warn "MT5 will still print \"on Wine ... Linux ...\"."
 info "To drop that suffix: install wine-staging, or run the terminal64.exe binary patch (option H)."
+fi
+local bps
+bps="$(bp_state)"
+if [[ "$bps" == "ok" ]]; then
+ok "Wine's ${WIN10_WINVER} version table already reports ${WIN10_BUILD} - MT5 will show that build."
+elif [[ "$bps" == build:* ]]; then
+warn "Wine's ${WIN10_WINVER} version table reports ${bps#build:}. MT5 reads THAT number, not the registry, so it will show ${bps#build:} instead of ${WIN10_BUILD}."
+info "To make MT5 show ${WIN10_BUILD}: menu option B (or: wine-compliance.sh buildpatch)."
 fi
 header
 echo
@@ -358,6 +366,29 @@ pid="${envfile#/proc/}"; pid="${pid%/environ}"
 echo "$pid"
 fi
 done
+}
+
+wreg_get() {
+local wineprefix="$1" key="$2" val="$3"
+as_mt5 "WINEPREFIX='${wineprefix}' wine reg query '${key}' /v ${val}" 2>/dev/null | tr -d '\r' | awk -v v="$val" '$1==v { sub(/^[[:space:]]*[^[:space:]]+[[:space:]]+REG_[A-Z_]+[[:space:]]+/, ""); print; exit }'
+}
+
+effective_build() {
+local wineprefix="$1" winver="$2" out
+cat > "/tmp/wine-effver-$$.reg" <<EOF
+Windows Registry Editor Version 5.00
+[HKEY_CURRENT_USER\\Software\\Wine\\AppDefaults\\cmd.exe]
+"Version"="${winver}"
+EOF
+as_mt5 "WINEPREFIX='${wineprefix}' wine regedit /S '/tmp/wine-effver-$$.reg'" >/dev/null 2>&1
+out=$(as_mt5 "WINEPREFIX='${wineprefix}' wine cmd /c ver" 2>/dev/null | tr -d '\r' | grep -oP '10\.0\.\K[0-9]+' | head -1)
+cat > "/tmp/wine-effver-$$.reg" <<EOF
+Windows Registry Editor Version 5.00
+[-HKEY_CURRENT_USER\\Software\\Wine\\AppDefaults\\cmd.exe]
+EOF
+as_mt5 "WINEPREFIX='${wineprefix}' wine regedit /S '/tmp/wine-effver-$$.reg'" >/dev/null 2>&1
+rm -f "/tmp/wine-effver-$$.reg"
+echo "$out"
 }
 
 apply_compliance_to_prefix() {
@@ -433,22 +464,35 @@ fi
 
 rm -f "$reg_file" "/tmp/wine-appdefaults-$$.reg"
 
-step 8 $total "Verifying the import (reg query CurrentBuild)" "$t0"
-local win_build
-win_build=$(as_mt5 "WINEPREFIX='${wineprefix}' wine reg query \"HKLM\Software\Microsoft\Windows NT\CurrentVersion\" /v CurrentBuild" 2>/dev/null | grep -oP '\d+' | tail -1)
+step 8 $total "Verifying the import (registry + the build MT5 will actually see)" "$t0"
+local win_build win_prod win_appver eff_build reg_ok=1
+win_build=$(wreg_get "$wineprefix" 'HKLM\Software\Microsoft\Windows NT\CurrentVersion' CurrentBuild)
+win_prod=$(wreg_get "$wineprefix" 'HKLM\Software\Microsoft\Windows NT\CurrentVersion' ProductName)
+win_appver=$(wreg_get "$wineprefix" 'HKCU\Software\Wine\AppDefaults\terminal64.exe' Version)
+[[ "$win_build" == "$WIN10_BUILD" ]] || reg_ok=0
+[[ "$win_prod" == "$WIN10_PRODUCT" ]] || reg_ok=0
+[[ "${win_appver,,}" == "${WIN10_WINVER,,}" ]] || reg_ok=0
+eff_build=$(effective_build "$wineprefix" "$WIN10_WINVER")
 
 local total_time=$(( $(date +%s) - t0 ))
-if [[ ${import1_ok} -eq 1 && ${import2_ok} -eq 1 && "${win_build}" == "${WIN10_BUILD}" ]]; then
+info "    registry : CurrentBuild=${win_build:-NOT SET}  ProductName=${win_prod:-NOT SET}  terminal64.exe Version=${win_appver:-NOT SET}"
+info "    MT5 sees : build ${eff_build:-unknown}  (profile wants ${WIN10_BUILD})"
+if [[ ${import1_ok} -eq 1 && ${import2_ok} -eq 1 && ${reg_ok} -eq 1 ]]; then
 mkdir -p "$(dirname "$COMPLIANCE_STATE_FILE")"
 grep -v "^${slug}|" "$COMPLIANCE_STATE_FILE" > "${COMPLIANCE_STATE_FILE}.tmp" 2>/dev/null || true
-echo "${slug}|${wineprefix}|$(date +%s)" >> "$COMPLIANCE_STATE_FILE"
+echo "${slug}|${wineprefix}|$(date +%s)" >> "${COMPLIANCE_STATE_FILE}.tmp"
 mv "${COMPLIANCE_STATE_FILE}.tmp" "$COMPLIANCE_STATE_FILE" 2>/dev/null || true
-ok "Compliance applied to ${slug} (verified: build ${win_build}, took ${total_time}s)"
-log "Compliance applied to ${slug} (${wineprefix}), verified build ${win_build}, took ${total_time}s"
+if [[ "$eff_build" == "$WIN10_BUILD" ]]; then
+ok "Compliance applied to ${slug} (verified end-to-end: build ${eff_build}, took ${total_time}s)"
+else
+warn "Registry applied to ${slug}, but Wine itself reports build ${eff_build:-unknown} for ${WIN10_WINVER} - MT5 will show that, not ${WIN10_BUILD} (took ${total_time}s)"
+info "    To make MT5 show ${WIN10_BUILD}:  sudo bash wine-compliance.sh buildpatch   (or menu option B)"
+fi
+log "Compliance applied to ${slug} (${wineprefix}) registry build=${win_build} product=${win_prod} appver=${win_appver} effective=${eff_build:-unknown} took=${total_time}s"
 return 0
 else
-err "Compliance import failed for ${slug} after ${total_time}s - registry shows build '${win_build:-NOT SET}' (expected ${WIN10_BUILD}). Check that wine/regedit works for this prefix."
-log "Compliance apply FAILED for ${slug} (${wineprefix}) - import1=${import1_ok} import2=${import2_ok} build=${win_build:-NOT SET} took=${total_time}s"
+err "Compliance import failed for ${slug} after ${total_time}s (regedit ok: ${import1_ok}/${import2_ok}; registry build '${win_build:-NOT SET}' expected ${WIN10_BUILD}; product '${win_prod:-NOT SET}' expected '${WIN10_PRODUCT}'; terminal64.exe Version '${win_appver:-NOT SET}' expected ${WIN10_WINVER})."
+log "Compliance apply FAILED for ${slug} (${wineprefix}) - import1=${import1_ok} import2=${import2_ok} build=${win_build:-NOT SET} product=${win_prod:-NOT SET} appver=${win_appver:-NOT SET} took=${total_time}s"
 return 1
 fi
 }
@@ -530,6 +574,16 @@ if [[ -z "$wine_debug" ]]; then
 ok "WINEDEBUG not set (good)"
 else
 warn "WINEDEBUG is set: ${wine_debug}"
+fi
+
+info "Test 7: Build MT5 will actually see (Wine version table)..."
+local eff_build
+eff_build=$(effective_build "$wineprefix" "$WIN10_WINVER")
+if [[ "$eff_build" == "$WIN10_BUILD" ]]; then
+ok "Effective build: ${eff_build} (expected: ${WIN10_BUILD})"
+else
+err "Effective build: ${eff_build:-unknown} (expected: ${WIN10_BUILD}) - run buildpatch"
+((issues++))
 fi
 
 echo
@@ -1344,6 +1398,215 @@ export HW_DEBUG
 esac
 }
 
+bp_py() {
+command -v python3 >/dev/null 2>&1 || return 127
+python3 - "$@" <<'PY'
+import re, struct, sys
+mode, path, winver, want = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+out = sys.argv[5] if len(sys.argv) > 5 else None
+data = open(path, 'rb').read()
+rx = re.compile(rb'(?=\x0a\x00\x00\x00\x00\x00\x00\x00(..)\x00\x00\x02\x00\x00\x00)', re.S)
+hits = []
+for m in rx.finditer(data):
+    b = struct.unpack('<H', m.group(1))[0]
+    if 10000 <= b <= 40000:
+        hits.append((m.start() + 8, b))
+want11 = (winver == 'win11')
+cls = [h for h in hits if (h[1] >= 22000) == want11]
+for off, b in hits:
+    print("HIT|0x%X|%d|%s" % (off, b, 'win11' if b >= 22000 else 'win10'))
+if mode == 'scan':
+    print("CLASS|%d|%s" % (len(cls), cls[0][1] if len(cls) == 1 else '-'))
+    sys.exit(0 if len(cls) == 1 else 2)
+if len(cls) != 1:
+    sys.exit(2)
+if not (10000 <= want <= 40000) or (want >= 22000) != want11:
+    sys.exit(3)
+off, cur = cls[0]
+if cur == want:
+    print("SAME|%d" % cur)
+    sys.exit(10)
+buf = bytearray(data)
+buf[off:off + 2] = struct.pack('<H', want)
+open(out, 'wb').write(bytes(buf))
+print("PATCH|0x%X|%d|%d" % (off, cur, want))
+sys.exit(0)
+PY
+}
+
+bp_find_ntdll() {
+local w root
+w="$(as_mt5 "command -v wine" 2>/dev/null | tr -d '\r' | head -1)"
+[[ -z "$w" ]] && w="$(command -v wine 2>/dev/null)"
+[[ -n "$w" ]] && w="$(readlink -f "$w" 2>/dev/null)"
+if [[ -z "${WINE_ROOT:-}" && -z "$w" ]]; then return 0; fi
+root="${WINE_ROOT:-$(dirname "$(dirname "$w")")}"
+find "$root" -maxdepth 7 -type f -name ntdll.dll -path '*-windows/*' 2>/dev/null | sort -u
+}
+
+bp_state() {
+local files f out cls
+files="$(bp_find_ntdll)"
+f="$(printf '%s\n' "$files" | grep -m1 'x86_64-windows')"
+[[ -z "$f" ]] && f="$(printf '%s\n' "$files" | head -1)"
+if [[ -z "$f" ]]; then echo unknown; return 0; fi
+out="$(bp_py scan "$f" "$WIN10_WINVER" "$WIN10_BUILD" 2>/dev/null)"
+cls="$(printf '%s\n' "$out" | awk -F'|' '$1=="CLASS" && $2==1 {print $3}')"
+if [[ -z "$cls" ]]; then echo unknown
+elif [[ "$cls" == "$WIN10_BUILD" ]]; then echo ok
+else echo "build:${cls}"; fi
+}
+
+bp_backup_stale() {
+local f="$1" bkp="$2"
+[[ "$(stat -c %s "$bkp" 2>/dev/null)" != "$(stat -c %s "$f" 2>/dev/null)" ]] && return 0
+(( $(cmp -l "$bkp" "$f" 2>/dev/null | wc -l) > 8 )) && return 0
+return 1
+}
+
+buildpatch_status() {
+local files f out
+files="$(bp_find_ntdll)"
+echo
+header
+title "WINE WINDOWS BUILD TABLE"
+header
+echo -e "  wine:    ${BOLD}$(wine_version_string)${NC}"
+echo -e "  profile: ${BOLD}$(current_profile_line)${NC}  ${DIM}(${WIN10_WINVER} entry -> ${WIN10_BUILD})${NC}"
+if [[ -z "$files" ]]; then
+warn "Could not find Wine's ntdll.dll (set WINE_ROOT=/path/to/wine to point at it)."
+return 1
+fi
+while IFS= read -r f; do
+[[ -z "$f" ]] && continue
+out="$(bp_py scan "$f" "$WIN10_WINVER" "$WIN10_BUILD" 2>&1)"
+echo -e "  ${BOLD}${f}${NC}"
+printf '%s\n' "$out" | awk -F'|' '$1=="HIT"{printf "    %s entry: build %s  (offset %s)\n",$4,$3,$2}'
+if [[ -f "${f}.orig-build" ]]; then echo -e "    ${DIM}backup: ${f}.orig-build${NC}"; else echo -e "    ${DIM}no backup - never patched${NC}"; fi
+done <<< "$files"
+header
+}
+
+buildpatch_apply() {
+if ! command -v python3 >/dev/null 2>&1; then err "python3 is required for the build patch."; return 1; fi
+local files f out tmp bkp rc ans="" done_n=0 fail_n=0 same_n=0
+files="$(bp_find_ntdll)"
+if [[ -z "$files" ]]; then
+err "Could not find Wine's ntdll.dll. Set WINE_ROOT=/path/to/wine (the folder holding bin/ and lib/) and retry."
+return 1
+fi
+echo
+header
+title "PATCH WINE'S WINDOWS BUILD TABLE"
+header
+echo -e "  profile: ${BOLD}$(current_profile_line)${NC}"
+echo -e "  Wine's built-in ${BOLD}${WIN10_WINVER}${NC} entry will report build ${BOLD}${WIN10_BUILD}${NC} to every program running as ${WIN10_WINVER}."
+echo -e "  ${DIM}A backup is kept next to each file as *.orig-build - undo with: wine-compliance.sh buildpatch restore${NC}"
+echo -e "  ${DIM}A Wine package upgrade replaces these files, so re-run this after upgrading Wine.${NC}"
+while IFS= read -r f; do [[ -n "$f" ]] && echo "    $f"; done <<< "$files"
+if [[ -t 0 ]]; then
+echo
+read -rp "$(echo -e "Press ${BOLD}Enter${NC} to patch, or type ${BOLD}n${NC} to cancel: ")" ans || ans=""
+if [[ "${ans,,}" == "n" || "${ans,,}" == "no" ]]; then warn "Cancelled - nothing changed."; return 1; fi
+fi
+echo
+while IFS= read -r f; do
+[[ -z "$f" ]] && continue
+bkp="${f}.orig-build"
+if [[ -f "$bkp" ]] && bp_backup_stale "$f" "$bkp"; then
+info "  Wine was updated since the last backup - refreshing the backup of ${f}"
+rm -f "$bkp"
+fi
+if [[ ! -f "$bkp" ]]; then
+if ! cp -a "$f" "$bkp" 2>/dev/null; then err "  backup failed, skipping ${f}"; ((fail_n++)); continue; fi
+fi
+tmp="$(mktemp "${f}.bptmp.XXXXXX" 2>/dev/null)"
+if [[ -z "$tmp" ]]; then err "  cannot write next to ${f}"; ((fail_n++)); continue; fi
+out="$(bp_py patch "$f" "$WIN10_WINVER" "$WIN10_BUILD" "$tmp" 2>&1)"; rc=$?
+case "$rc" in
+0)
+chown --reference="$f" "$tmp" 2>/dev/null
+chmod --reference="$f" "$tmp" 2>/dev/null
+if [[ "$(stat -c %s "$tmp")" != "$(stat -c %s "$f")" ]]; then
+err "  size changed - aborting for ${f}"; rm -f "$tmp"; ((fail_n++)); continue
+fi
+if ! mv -f "$tmp" "$f" 2>/dev/null; then err "  could not replace ${f}"; rm -f "$tmp"; ((fail_n++)); continue; fi
+if [[ "$(bp_py scan "$f" "$WIN10_WINVER" "$WIN10_BUILD" 2>/dev/null | awk -F'|' '$1=="CLASS" && $2==1 {print $3}')" == "$WIN10_BUILD" ]]; then
+ok "  patched ${f}  ($(printf '%s' "$out" | awk -F'|' '$1=="PATCH"{print $3" -> "$4}'))"
+((done_n++))
+else
+err "  patch did not stick - restoring ${f}"
+cp -a "$bkp" "$f" 2>/dev/null
+((fail_n++))
+fi
+;;
+10) rm -f "$tmp"; info "  already ${WIN10_BUILD}: ${f}"; ((same_n++)) ;;
+2) rm -f "$tmp"; warn "  ntdll layout not recognised (need exactly one ${WIN10_WINVER} entry) - left untouched: ${f}"
+printf '%s\n' "$out" | awk -F'|' '$1=="HIT"{printf "      found %s entry: build %s (offset %s)\n",$4,$3,$2}'
+((fail_n++)) ;;
+3) rm -f "$tmp"; err "  build ${WIN10_BUILD} is not valid for ${WIN10_WINVER} (win10: 10000-21999, win11: 22000-40000)"; ((fail_n++)) ;;
+*) rm -f "$tmp"; err "  patch failed for ${f} (rc=${rc})"; ((fail_n++)) ;;
+esac
+done <<< "$files"
+echo
+header
+if (( fail_n == 0 )); then
+ok "Build table ready: ${done_n} patched, ${same_n} already correct"
+info "Restart the terminals so MT5 reloads it:  sudo heysolo  ->  R1, R2, ..."
+else
+warn "${done_n} patched, ${same_n} already correct, ${fail_n} problem(s) - see messages above"
+fi
+header
+(( fail_n == 0 ))
+}
+
+buildpatch_restore() {
+local files f bkp tmp n=0
+files="$(bp_find_ntdll)"
+if [[ -z "$files" ]]; then err "Could not find Wine's ntdll.dll (set WINE_ROOT=/path/to/wine)."; return 1; fi
+while IFS= read -r f; do
+[[ -z "$f" ]] && continue
+bkp="${f}.orig-build"
+if [[ ! -f "$bkp" ]]; then info "  no backup for ${f} - nothing to restore"; continue; fi
+if bp_backup_stale "$f" "$bkp"; then warn "  Wine was updated after the backup was made - ${f} is already the new original, left alone"; continue; fi
+tmp="$(mktemp "${f}.bptmp.XXXXXX" 2>/dev/null)"
+if [[ -n "$tmp" ]] && cp -a "$bkp" "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null; then
+ok "  restored ${f}"
+((n++))
+else
+rm -f "$tmp" 2>/dev/null
+err "  restore failed for ${f}"
+fi
+done <<< "$files"
+info "Restored ${n} file(s). Restart the terminals to take effect."
+}
+
+buildpatch_menu() {
+local CH
+echo
+header
+title "WINDOWS BUILD PATCH - Wine's built-in version table"
+header
+echo -e "  wine:    ${BOLD}$(wine_version_string)${NC}"
+echo -e "  profile: ${BOLD}$(current_profile_line)${NC}"
+echo -e "  ${DIM}MT5 reads its Windows build from Wine's table, not from the registry.${NC}"
+echo
+echo -e "  ${BOLD}1)${NC} Patch Wine so ${WIN10_WINVER} reports build ${WIN10_BUILD}"
+echo -e "  ${BOLD}2)${NC} Show status"
+echo -e "  ${BOLD}3)${NC} Restore original ntdll.dll ${DIM}(undo)${NC}"
+echo -e "  ${BOLD}0)${NC} Cancel"
+echo
+read -rp "Choice [${BOLD}1${NC}]: " CH || CH=""
+CH="${CH:-1}"
+case "${CH// /}" in
+1) buildpatch_apply ;;
+2) buildpatch_status ;;
+3) buildpatch_restore ;;
+0) info "Cancelled." ;;
+*) err "Invalid selection." ;;
+esac
+}
+
 main_menu() {
 while true; do
 clear 2>/dev/null || true
@@ -1362,6 +1625,7 @@ echo -e "  ${BOLD}4)${NC} Show status"
 echo -e "  ${BOLD}5)${NC} Apply compliance to SPECIFIC terminal"
 echo -e "  ${BOLD}6)${NC} Test compliance on SPECIFIC terminal"
 echo -e "  ${BOLD}7)${NC} Change Windows version/build profile"
+echo -e "  ${BOLD}B)${NC} Make MT5 show the profile build (patch Wine's version table)  ${DIM}(patch / status / restore)${NC}"
 echo -e "  ${BOLD}H)${NC} Hide Wine from MT5 (patch terminal64.exe)  ${DIM}(patch / restore / diagnose + log)${NC}"
 echo -e "  ${BOLD}0)${NC} Back to main menu"
 echo
@@ -1383,6 +1647,7 @@ read -rp "Press Enter to continue..." _
 ;;
 4) show_status; read -rp "Press Enter to continue..." _ ;;
 h|H) hide_wine_menu; read -rp "Press Enter to continue..." _ ;;
+b|B) buildpatch_menu; read -rp "Press Enter to continue..." _ ;;
 5)
 echo
 if [[ ! -s "$TERMINALS_FILE" ]]; then
@@ -1444,7 +1709,7 @@ done
 }
 
 usage() {
-echo "Usage: wine-compliance.sh [menu|apply|test|revert|status|version|hidewine] [slug]"
+echo "Usage: wine-compliance.sh [menu|apply|test|revert|status|version|buildpatch|hidewine] [slug]"
 echo
 echo "Commands:"
 echo "  menu              - Interactive menu (default)"
@@ -1453,6 +1718,7 @@ echo "  test [slug]       - Test compliance on all or specific terminal"
 echo "  revert [slug]     - Revert compliance from all or specific terminal"
 echo "  status            - Show compliance status for all terminals"
 echo "  version [n|build] - Pick a Windows profile (preset number or build, e.g. 19045)"
+echo "  buildpatch [status|restore] - Make Wine's ntdll report the profile build (MT5 reads it from there)"
 echo "  hidewine [slug]   - Patch terminal64.exe (no slug = menu: all or pick one)"
 echo "  hidewine all      - Patch every terminal"
 echo "  hidewine restore [slug|all] - Undo the patch from the .orig-wine-detect backup"
@@ -1523,6 +1789,15 @@ fi
 status)
 show_status
 ;;
+buildpatch|build)
+case "${2:-}" in
+"") buildpatch_menu ;;
+apply) buildpatch_apply ;;
+status) buildpatch_status ;;
+restore) buildpatch_restore ;;
+*) usage; exit 1 ;;
+esac
+;;
 hidewine)
 case "${2:-}" in
 "") hide_wine_menu ;;
@@ -1541,8 +1816,15 @@ esac
 version|profile)
 if [[ -n "${2:-}" ]]; then
 if [[ "$2" =~ ^[0-9]{4,6}$ ]]; then
+matched=0
+for idx in "${!WIN_PRESETS[@]}"; do
+IFS='|' read -r _l pb _r <<< "${WIN_PRESETS[$idx]}"
+if [[ "$pb" == "$2" ]]; then set_profile_from_preset $((idx+1)); matched=1; break; fi
+done
+if (( matched == 0 )); then
 WIN10_BUILD="$2"
 if (( WIN10_BUILD >= 22000 )); then WIN10_WINVER="win11"; else WIN10_WINVER="win10"; fi
+fi
 save_profile; ok "Profile set: $(current_profile_line)"
 elif set_profile_from_preset "$2"; then
 save_profile; ok "Profile set: $(current_profile_line)"
