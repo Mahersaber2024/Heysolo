@@ -435,7 +435,7 @@ rm -f "$reg_file" "/tmp/wine-appdefaults-$$.reg"
 
 step 8 $total "Verifying the import (reg query CurrentBuild)" "$t0"
 local win_build
-win_build=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query \"HKLM\Software\Microsoft\Windows NT\CurrentVersion\" /v CurrentBuild" 2>/dev/null | grep -oP '\d+' | tail -1)
+win_build=$(as_mt5 "WINEPREFIX='${wineprefix}' wine reg query \"HKLM\Software\Microsoft\Windows NT\CurrentVersion\" /v CurrentBuild" 2>/dev/null | grep -oP '\d+' | tail -1)
 
 local total_time=$(( $(date +%s) - t0 ))
 if [[ ${import1_ok} -eq 1 && ${import2_ok} -eq 1 && "${win_build}" == "${WIN10_BUILD}" ]]; then
@@ -469,7 +469,7 @@ ensure_display || { err "No usable display for ${slug} - aborting test."; return
 
 info "Test 1: Windows version in registry..."
 local win_version
-win_version=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query \"HKLM\Software\Microsoft\Windows NT\CurrentVersion\" /v CurrentBuild" 2>/dev/null | grep -oP '\d+' | tail -1)
+win_version=$(as_mt5 "WINEPREFIX='${wineprefix}' wine reg query \"HKLM\Software\Microsoft\Windows NT\CurrentVersion\" /v CurrentBuild" 2>/dev/null | grep -oP '\d+' | tail -1)
 if [[ "$win_version" == "$WIN10_BUILD" ]]; then
 ok "Windows build: ${win_version} (expected: ${WIN10_BUILD})"
 else
@@ -479,7 +479,7 @@ fi
 
 info "Test 2: Product name..."
 local product_name
-product_name=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query \"HKLM\Software\Microsoft\Windows NT\CurrentVersion\" /v ProductName" 2>/dev/null | sed -n 's/.*REG_SZ[[:space:]]*//p' | tr -d '\r')
+product_name=$(as_mt5 "WINEPREFIX='${wineprefix}' wine reg query \"HKLM\Software\Microsoft\Windows NT\CurrentVersion\" /v ProductName" 2>/dev/null | sed -n 's/.*REG_SZ[[:space:]]*//p' | tr -d '\r')
 if [[ "$product_name" == *"$WIN10_PRODUCT"* ]]; then
 ok "Product name: ${product_name}"
 else
@@ -489,7 +489,7 @@ fi
 
 info "Test 3: Non-standard registry keys..."
 local wine_keys
-wine_keys=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query HKLM\Software\Wine" 2>/dev/null)
+wine_keys=$(as_mt5 "WINEPREFIX='${wineprefix}' wine reg query \"HKLM\Software\Wine\"" 2>/dev/null)
 if [[ -z "$wine_keys" ]]; then
 ok "No non-standard registry keys found"
 else
@@ -499,11 +499,11 @@ fi
 
 info "Test 4: DLL overrides for terminal64.exe..."
 local dll_override
-dll_override=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query \"HKCU\Software\Wine\AppDefaults\terminal64.exe\" /v Version" 2>/dev/null | sed -n 's/.*REG_SZ[[:space:]]*//p' | tr -d '\r')
-if [[ "$dll_override" == "win10" ]]; then
+dll_override=$(as_mt5 "WINEPREFIX='${wineprefix}' wine reg query \"HKCU\Software\Wine\AppDefaults\terminal64.exe\" /v Version" 2>/dev/null | sed -n 's/.*REG_SZ[[:space:]]*//p' | tr -d '\r')
+if [[ "$dll_override" == "$WIN10_WINVER" ]]; then
 ok "terminal64.exe version override: ${dll_override}"
 else
-err "terminal64.exe version override: ${dll_override:-NOT SET} (expected: win10)"
+err "terminal64.exe version override: ${dll_override:-NOT SET} (expected: ${WIN10_WINVER})"
 ((issues++))
 fi
 
@@ -560,7 +560,7 @@ as_mt5 "WINEPREFIX='${wineprefix}' wine regedit /S '/tmp/wine-revert-$$.reg'" >/
 rm -f "/tmp/wine-revert-$$.reg"
 
 local leftover
-leftover=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query \"HKCU\Software\Wine\AppDefaults\terminal64.exe\" /v Version" 2>/dev/null | sed -n 's/.*REG_SZ[[:space:]]*//p' | tr -d '\r')
+leftover=$(as_mt5 "WINEPREFIX='${wineprefix}' wine reg query \"HKCU\Software\Wine\AppDefaults\terminal64.exe\" /v Version" 2>/dev/null | sed -n 's/.*REG_SZ[[:space:]]*//p' | tr -d '\r')
 
 if [[ -z "${leftover}" ]]; then
 if [[ -f "$COMPLIANCE_STATE_FILE" ]]; then
