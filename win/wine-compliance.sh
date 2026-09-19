@@ -10,24 +10,24 @@ LOG_FILE="/var/log/wine-compliance.log"
 PROFILE_FILE="${STATE_DIR}/compliance-profile.conf"
 
 WIN_PRESETS=(
-"Windows 11 Pro 25H2         |26200|25H2|Microsoft Windows 11 Pro|Professional|win11|26100.ge_release.240331-1435"
-"Windows 11 Pro 24H2         |26100|24H2|Microsoft Windows 11 Pro|Professional|win11|26100.ge_release.240331-1435"
-"Windows 10 Pro 22H2         |19045|22H2|Microsoft Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
-"Windows 10 Pro 21H2         |19044|21H2|Microsoft Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
-"Windows 10 Pro 21H1         |19043|21H1|Microsoft Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
-"Windows 10 Pro 20H2         |19042|20H2|Microsoft Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
-"Windows 10 Pro 2004         |19041|2004|Microsoft Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
-"Windows 10 Enterprise 22H2  |19045|22H2|Microsoft Windows 10 Enterprise|Enterprise|win10|19041.vb_release.191206-1406"
-"Windows 10 Home 22H2        |19045|22H2|Microsoft Windows 10 Home|Core|win10|19041.vb_release.191206-1406"
-"Windows 11 Pro 23H2         |22631|23H2|Microsoft Windows 11 Pro|Professional|win11|22621.ni_release.220506-1250"
-"Windows 11 Pro 22H2         |22621|22H2|Microsoft Windows 11 Pro|Professional|win11|22621.ni_release.220506-1250"
+"Windows 11 Pro 25H2         |26200|25H2|Windows 11 Pro|Professional|win11|26100.ge_release.240331-1435"
+"Windows 11 Pro 24H2         |26100|24H2|Windows 11 Pro|Professional|win11|26100.ge_release.240331-1435"
+"Windows 10 Pro 22H2         |19045|22H2|Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
+"Windows 10 Pro 21H2         |19044|21H2|Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
+"Windows 10 Pro 21H1         |19043|21H1|Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
+"Windows 10 Pro 20H2         |19042|20H2|Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
+"Windows 10 Pro 2004         |19041|2004|Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
+"Windows 10 Enterprise 22H2  |19045|22H2|Windows 10 Enterprise|Enterprise|win10|19041.vb_release.191206-1406"
+"Windows 10 Home 22H2        |19045|22H2|Windows 10 Home|Core|win10|19041.vb_release.191206-1406"
+"Windows 11 Pro 23H2         |22631|23H2|Windows 11 Pro|Professional|win11|22621.ni_release.220506-1250"
+"Windows 11 Pro 22H2         |22621|22H2|Windows 11 Pro|Professional|win11|22621.ni_release.220506-1250"
 )
 DEFAULT_PRESET=1
 
 WIN10_VERSION="10.0"
 WIN10_BUILD="26200"
 WIN10_RELEASE="25H2"
-WIN10_PRODUCT="Microsoft Windows 11 Pro"
+WIN10_PRODUCT="Windows 11 Pro"
 WIN10_EDITION="Professional"
 WIN10_WINVER="win11"
 WIN10_BUILDLAB="26100.ge_release.240331-1435"
@@ -218,8 +218,6 @@ Windows Registry Editor Version 5.00
 "NV Hostname"="DESKTOP-7QK4L2M"
 [-HKEY_LOCAL_MACHINE\Software\Wine]
 [-HKEY_CURRENT_USER\Software\Wine]
-[HKEY_CURRENT_USER\Software\Wine]
-"HideWineExports"="Y"
 [HKEY_CURRENT_USER\Software\Wine\Debug]
 "RelayExclude"="ntdll.LdrInit;kernel32.48;kernel32.49"
 "RelayFromExclude"="wineboot;winemenubuilder"
@@ -262,8 +260,6 @@ local appsec='Software\\Wine\\AppDefaults\\terminal64.exe'
 CUR_BUILD=$(reg_get_raw "$sysreg" "$ntsec" "CurrentBuild")
 CUR_PRODUCT=$(reg_get_raw "$sysreg" "$ntsec" "ProductName")
 CUR_RELEASE=$(reg_get_raw "$sysreg" "$ntsec" "ReleaseId")
-CUR_HIDE=$(reg_get_raw "$usrreg" "$appsec" "HideWineExports")
-[[ -z "$CUR_HIDE" ]] && CUR_HIDE=$(reg_get_raw "$usrreg" 'Software\\Wine' "HideWineExports")
 }
 
 diff_row() {
@@ -287,7 +283,6 @@ local changes=0
 [[ "$CUR_BUILD"    != "$WIN10_BUILD"   ]] && ((changes++))
 [[ "$CUR_PRODUCT"  != "$WIN10_PRODUCT" ]] && ((changes++))
 [[ "$CUR_RELEASE"  != "$WIN10_RELEASE" ]] && ((changes++))
-[[ "$CUR_HIDE"     != "Y"              ]] && ((changes++))
 echo
 echo -e "  ${BOLD}${slug}${NC} ${DIM}(${wineprefix})${NC}"
 printf "  %-22s %-32s     %s\n" "FIELD" "CURRENT (real registry)" "WILL BECOME"
@@ -295,7 +290,6 @@ printf "  %s\n" "---------------------------------------------------------------
 diff_row "CurrentBuild"       "$CUR_BUILD"    "$WIN10_BUILD"
 diff_row "ProductName"        "$CUR_PRODUCT"  "$WIN10_PRODUCT"
 diff_row "ReleaseId"          "$CUR_RELEASE"  "$WIN10_RELEASE"
-diff_row "HideWineExports"    "$CUR_HIDE"     "Y"
 echo
 if (( changes == 0 )); then
 ok "  ${slug}: nothing to change - already matches the profile"
@@ -319,13 +313,8 @@ else
 warn "${n_changes} registry value(s) will be overwritten across the terminals above."
 fi
 info "Nothing has been changed yet. This was a read-only look at the real Wine registry."
-if wine_is_staging; then
-ok "Wine is a staging build ($(wine_version_string)) - HideWineExports will work, the \"on Wine ...\" suffix will disappear."
-else
-warn "Wine is NOT a staging build ($(wine_version_string)) - HideWineExports is IGNORED by plain Wine."
-warn "The build number will change, but MT5 will still print \"on Wine ... Linux ...\"."
-info "To drop that suffix: install wine-staging, or run the terminal64.exe binary patch (option H)."
-fi
+warn "This only rewrites the reported Windows version. MT5 will still print \"on Wine ... Linux ...\"."
+info "To drop that suffix: run the terminal64.exe binary patch (option H)."
 header
 echo
 local ans=""
@@ -405,8 +394,6 @@ rm -f "${wineprefix}"/drive_c/windows/system32/wine*.dll 2>/dev/null || true
 step 7 $total "Setting terminal64.exe AppDefaults (DLL overrides)" "$t0"
 cat > "/tmp/wine-appdefaults-$$.reg" <<EOF
 Windows Registry Editor Version 5.00
-[HKEY_CURRENT_USER\Software\Wine\AppDefaults\terminal64.exe]
-"HideWineExports"="Y"
 [HKEY_CURRENT_USER\Software\Wine\AppDefaults\terminal64.exe\DllOverrides]
 "*winemenubuilder.exe"=""
 "*mscoree"=""
@@ -495,23 +482,7 @@ err "terminal64.exe DLL overrides NOT SET"
 fi
 info "  (the Wine version override is intentionally left at the prefix default)"
 
-info "Test 5: Wine exports hidden (the \"on Wine ...\" suffix)..."
-local hide_val
-hide_val=$(reg_get_raw "${wineprefix}/user.reg" 'Software\\Wine\\AppDefaults\\terminal64.exe' "HideWineExports")
-[[ -z "$hide_val" ]] && hide_val=$(reg_get_raw "${wineprefix}/user.reg" 'Software\\Wine' "HideWineExports")
-if [[ "${hide_val^^}" == "Y" ]]; then
-if wine_is_staging; then
-ok "HideWineExports=Y and Wine is staging - suffix should be gone"
-else
-warn "HideWineExports=Y but Wine is not staging ($(wine_version_string)) - suffix will remain"
-((issues++))
-fi
-else
-err "HideWineExports: ${hide_val:-NOT SET} (expected: Y)"
-((issues++))
-fi
-
-info "Test 6: Environment variables..."
+info "Test 5: Environment variables..."
 local wine_debug
 wine_debug=$(as_mt5 "WINEPREFIX='${wineprefix}' env | grep WINEDEBUG" 2>/dev/null)
 if [[ -z "$wine_debug" ]]; then
@@ -548,7 +519,7 @@ as_mt5 "WINEPREFIX='${wineprefix}' wine regedit /S '/tmp/wine-revert-$$.reg'" >/
 rm -f "/tmp/wine-revert-$$.reg"
 
 local leftover
-leftover=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query \"HKCU\Software\Wine\AppDefaults\terminal64.exe\" /v HideWineExports" 2>/dev/null | sed -n 's/.*REG_SZ[[:space:]]*//p' | tr -d '\r')
+leftover=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query \"HKCU\Software\Wine\AppDefaults\terminal64.exe\DllOverrides\"" 2>/dev/null | tr -d '\r')
 
 if [[ -z "${leftover}" ]]; then
 if [[ -f "$COMPLIANCE_STATE_FILE" ]]; then
@@ -559,7 +530,7 @@ ok "Compliance reverted from ${slug}"
 log "Compliance reverted from ${slug}"
 return 0
 else
-err "Revert failed for ${slug} - terminal64.exe AppDefaults is still present (HideWineExports='${leftover}')."
+err "Revert failed for ${slug} - terminal64.exe AppDefaults is still present."
 log "Compliance revert FAILED for ${slug} (${wineprefix}) - leftover=${leftover}"
 return 1
 fi
@@ -607,10 +578,7 @@ ok "Compliance applied to ${success} terminal(s)"
 else
 warn "Compliance applied to ${success} terminal(s), ${failed} failed"
 fi
-if ! wine_is_staging; then
-warn "Wine is NOT a staging build ($(wine_version_string)) - HideWineExports is IGNORED by plain Wine."
-info "To drop that suffix: install wine-staging, or run the terminal64.exe binary patch (option H)."
-fi
+info "MT5 will still print \"on Wine ... Linux ...\" - use the terminal64.exe binary patch (option H) to drop it."
 header
 info "Restart terminals to apply changes:"
 echo "  sudo heysolo  ->  R1, R2, etc."
@@ -1174,7 +1142,7 @@ info "full file: ${HW_LOG}  (live: tail -f ${HW_LOG})"
 
 hide_wine_confirm() {
 warn "This edits terminal64.exe in place (a .orig-wine-detect backup is kept)."
-warn "Only needed when Wine is NOT a staging build. Stop the affected terminal(s) first."
+warn "Stop the affected terminal(s) first."
 echo
 local ans=""
 [[ -t 0 ]] || return 0
