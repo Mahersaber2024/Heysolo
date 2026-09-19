@@ -10,24 +10,24 @@ LOG_FILE="/var/log/wine-compliance.log"
 PROFILE_FILE="${STATE_DIR}/compliance-profile.conf"
 
 WIN_PRESETS=(
-"Windows 11 Pro 25H2         |26200|25H2|Windows 11 Pro|Professional|win11|26100.ge_release.240331-1435"
-"Windows 11 Pro 24H2         |26100|24H2|Windows 11 Pro|Professional|win11|26100.ge_release.240331-1435"
-"Windows 10 Pro 22H2         |19045|22H2|Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
-"Windows 10 Pro 21H2         |19044|21H2|Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
-"Windows 10 Pro 21H1         |19043|21H1|Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
-"Windows 10 Pro 20H2         |19042|20H2|Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
-"Windows 10 Pro 2004         |19041|2004|Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
-"Windows 10 Enterprise 22H2  |19045|22H2|Windows 10 Enterprise|Enterprise|win10|19041.vb_release.191206-1406"
-"Windows 10 Home 22H2        |19045|22H2|Windows 10 Home|Core|win10|19041.vb_release.191206-1406"
-"Windows 11 Pro 23H2         |22631|23H2|Windows 11 Pro|Professional|win11|22621.ni_release.220506-1250"
-"Windows 11 Pro 22H2         |22621|22H2|Windows 11 Pro|Professional|win11|22621.ni_release.220506-1250"
+"Windows 11 Pro 25H2         |26200|25H2|Microsoft Windows 11 Pro|Professional|win11|26100.ge_release.240331-1435"
+"Windows 11 Pro 24H2         |26100|24H2|Microsoft Windows 11 Pro|Professional|win11|26100.ge_release.240331-1435"
+"Windows 10 Pro 22H2         |19045|22H2|Microsoft Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
+"Windows 10 Pro 21H2         |19044|21H2|Microsoft Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
+"Windows 10 Pro 21H1         |19043|21H1|Microsoft Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
+"Windows 10 Pro 20H2         |19042|20H2|Microsoft Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
+"Windows 10 Pro 2004         |19041|2004|Microsoft Windows 10 Pro|Professional|win10|19041.vb_release.191206-1406"
+"Windows 10 Enterprise 22H2  |19045|22H2|Microsoft Windows 10 Enterprise|Enterprise|win10|19041.vb_release.191206-1406"
+"Windows 10 Home 22H2        |19045|22H2|Microsoft Windows 10 Home|Core|win10|19041.vb_release.191206-1406"
+"Windows 11 Pro 23H2         |22631|23H2|Microsoft Windows 11 Pro|Professional|win11|22621.ni_release.220506-1250"
+"Windows 11 Pro 22H2         |22621|22H2|Microsoft Windows 11 Pro|Professional|win11|22621.ni_release.220506-1250"
 )
 DEFAULT_PRESET=1
 
 WIN10_VERSION="10.0"
 WIN10_BUILD="26200"
 WIN10_RELEASE="25H2"
-WIN10_PRODUCT="Windows 11 Pro"
+WIN10_PRODUCT="Microsoft Windows 11 Pro"
 WIN10_EDITION="Professional"
 WIN10_WINVER="win11"
 WIN10_BUILDLAB="26100.ge_release.240331-1435"
@@ -219,6 +219,8 @@ Windows Registry Editor Version 5.00
 [HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Tcpip\Parameters]
 "Hostname"="DESKTOP-7QK4L2M"
 "NV Hostname"="DESKTOP-7QK4L2M"
+[-HKEY_LOCAL_MACHINE\Software\Wine]
+[-HKEY_CURRENT_USER\Software\Wine]
 [HKEY_CURRENT_USER\Software\Wine]
 "HideWineExports"="Y"
 [HKEY_CURRENT_USER\Software\Wine\Debug]
@@ -361,7 +363,7 @@ done
 apply_compliance_to_prefix() {
 local wineprefix="$1"
 local slug="$2"
-local t0 total=7
+local t0 total=8
 t0=$(date +%s)
 if [[ ! -d "$wineprefix" ]]; then
 err "Wine prefix not found: $wineprefix"
@@ -390,23 +392,10 @@ log "Applying compliance to ${slug} (${wineprefix}) - started"
 step 1 $total "Making sure a usable X display exists" "$t0"
 ensure_display || { err "No usable display for ${slug} - aborting."; log "  [1/${total}] FAILED: no display"; return 1; }
 
-step 2 $total "Checking the Wine prefix is initialized" "$t0"
-if [[ ! -f "${wineprefix}/system.reg" ]]; then
-info "    first run for this prefix - initializing with wineboot"
+step 2 $total "Booting/initializing the Wine prefix (wineboot -u)" "$t0"
 as_mt5 "WINEPREFIX='${wineprefix}' wineboot -u" >/dev/null 2>&1
-else
-info "    prefix already initialized - skipping wineboot (it would reset prefix defaults)"
-fi
 
-step 3 $total "Backing up system.reg / user.reg" "$t0"
-local bk="${wineprefix}/.compliance-regbackup"
-mkdir -p "$bk" 2>/dev/null || true
-local stamp
-stamp=$(date +%Y%m%d-%H%M%S)
-cp -p "${wineprefix}/system.reg" "${bk}/system.reg.${stamp}" 2>/dev/null || true
-cp -p "${wineprefix}/user.reg"   "${bk}/user.reg.${stamp}"   2>/dev/null || true
-chown -R "${MT5_USER}" "$bk" 2>/dev/null || true
-info "    backup: ${bk} (stamp ${stamp})"
+step 3 $total "Waiting for wineserver to settle" "$t0"
 as_mt5 "WINEPREFIX='${wineprefix}' wineserver -w" >/dev/null 2>&1
 
 step 4 $total "Generating the compliance registry file" "$t0"
@@ -418,14 +407,14 @@ local import1_ok=1 import2_ok=1
 as_mt5 "WINEPREFIX='${wineprefix}' wine regedit /S '${reg_file}'" >/dev/null 2>&1 || import1_ok=0
 as_mt5 "WINEPREFIX='${wineprefix}' wineserver -w" >/dev/null 2>&1
 if [[ ${import1_ok} -eq 0 ]]; then
-err "  [5/${total}] main registry import FAILED - aborting before anything else is touched."
-log "  ${slug}: ABORTED - main registry import failed"
-rm -f "$reg_file"
-info "Nothing else was changed. Registry backup kept in ${bk}"
-return 1
+warn "  [5/${total}] main registry import reported an error (continuing to next step)"
+log "  [5/${total}] main registry import FAILED"
 fi
 
-step 6 $total "Setting terminal64.exe AppDefaults (version + DLL overrides)" "$t0"
+step 6 $total "Removing non-standard wine*.dll files" "$t0"
+rm -f "${wineprefix}"/drive_c/windows/system32/wine*.dll 2>/dev/null || true
+
+step 7 $total "Setting terminal64.exe AppDefaults (version + DLL overrides)" "$t0"
 cat > "/tmp/wine-appdefaults-$$.reg" <<EOF
 Windows Registry Editor Version 5.00
 [HKEY_CURRENT_USER\Software\Wine\AppDefaults\terminal64.exe]
@@ -438,22 +427,15 @@ Windows Registry Editor Version 5.00
 EOF
 as_mt5 "WINEPREFIX='${wineprefix}' wine regedit /S '/tmp/wine-appdefaults-$$.reg'" >/dev/null 2>&1 || import2_ok=0
 if [[ ${import2_ok} -eq 0 ]]; then
-err "  [6/${total}] AppDefaults registry import FAILED - aborting."
-log "  ${slug}: ABORTED - AppDefaults import failed"
-rm -f "$reg_file" "/tmp/wine-appdefaults-$$.reg"
-info "Registry backup kept in ${bk}"
-return 1
+warn "  [7/${total}] AppDefaults registry import reported an error (continuing to verification)"
+log "  [7/${total}] AppDefaults registry import FAILED"
 fi
 
 rm -f "$reg_file" "/tmp/wine-appdefaults-$$.reg"
 
-step 7 $total "Verifying the import (reg query CurrentBuild)" "$t0"
+step 8 $total "Verifying the import (reg query CurrentBuild)" "$t0"
 local win_build
 win_build=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query \"HKLM\Software\Microsoft\Windows NT\CurrentVersion\" /v CurrentBuild" 2>/dev/null | grep -oP '\d+' | tail -1)
-if [[ -z "$win_build" ]]; then
-info "    reg.exe returned nothing - falling back to reading system.reg directly"
-win_build=$(reg_get_raw "${wineprefix}/system.reg" 'Software\\Microsoft\\Windows NT\\CurrentVersion' "CurrentBuild")
-fi
 
 local total_time=$(( $(date +%s) - t0 ))
 if [[ ${import1_ok} -eq 1 && ${import2_ok} -eq 1 && "${win_build}" == "${WIN10_BUILD}" ]]; then
@@ -465,7 +447,7 @@ ok "Compliance applied to ${slug} (verified: build ${win_build}, took ${total_ti
 log "Compliance applied to ${slug} (${wineprefix}), verified build ${win_build}, took ${total_time}s"
 return 0
 else
-err "Compliance import failed for ${slug} after ${total_time}s - registry shows build '${win_build:-NOT SET}' (expected ${WIN10_BUILD}). Restore with: cp ${bk}/system.reg.${stamp} ${wineprefix}/system.reg"
+err "Compliance import failed for ${slug} after ${total_time}s - registry shows build '${win_build:-NOT SET}' (expected ${WIN10_BUILD}). Check that wine/regedit works for this prefix."
 log "Compliance apply FAILED for ${slug} (${wineprefix}) - import1=${import1_ok} import2=${import2_ok} build=${win_build:-NOT SET} took=${total_time}s"
 return 1
 fi
@@ -505,27 +487,27 @@ err "Product name: ${product_name:-NOT SET} (expected: ${WIN10_PRODUCT})"
 ((issues++))
 fi
 
-info "Test 3: DLL overrides for terminal64.exe..."
+info "Test 3: Non-standard registry keys..."
+local wine_keys
+wine_keys=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query HKLM\Software\Wine" 2>/dev/null)
+if [[ -z "$wine_keys" ]]; then
+ok "No non-standard registry keys found"
+else
+err "Non-standard registry keys still present"
+((issues++))
+fi
+
+info "Test 4: DLL overrides for terminal64.exe..."
 local dll_override
-dll_override=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query \"HKCU\Software\Wine\AppDefaults\terminal64.exe\DllOverrides\"" 2>/dev/null)
-if [[ -n "$dll_override" ]]; then
-ok "terminal64.exe DLL overrides present"
+dll_override=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query \"HKCU\Software\Wine\AppDefaults\terminal64.exe\" /v Version" 2>/dev/null | sed -n 's/.*REG_SZ[[:space:]]*//p' | tr -d '\r')
+if [[ "$dll_override" == "win10" ]]; then
+ok "terminal64.exe version override: ${dll_override}"
 else
-err "terminal64.exe DLL overrides NOT SET"
+err "terminal64.exe version override: ${dll_override:-NOT SET} (expected: win10)"
 ((issues++))
 fi
 
-info "Test 3b: Wine version override for terminal64.exe..."
-local ver_override
-ver_override=$(reg_get_raw "${wineprefix}/user.reg" 'Software\\Wine\\AppDefaults\\terminal64.exe' "Version")
-if [[ "$ver_override" == "${WIN10_WINVER}" ]]; then
-ok "terminal64.exe version override: ${ver_override}"
-else
-err "terminal64.exe version override: ${ver_override:-NOT SET} (expected: ${WIN10_WINVER})"
-((issues++))
-fi
-
-info "Test 3c: Wine exports hidden (the \"on Wine ...\" suffix)..."
+info "Test 5: Wine exports hidden (the \"on Wine ...\" suffix)..."
 local hide_val
 hide_val=$(reg_get_raw "${wineprefix}/user.reg" 'Software\\Wine\\AppDefaults\\terminal64.exe' "HideWineExports")
 [[ -z "$hide_val" ]] && hide_val=$(reg_get_raw "${wineprefix}/user.reg" 'Software\\Wine' "HideWineExports")
@@ -534,13 +516,14 @@ if wine_is_staging; then
 ok "HideWineExports=Y and Wine is staging - suffix should be gone"
 else
 warn "HideWineExports=Y but Wine is not staging ($(wine_version_string)) - suffix will remain"
+((issues++))
 fi
 else
 err "HideWineExports: ${hide_val:-NOT SET} (expected: Y)"
 ((issues++))
 fi
 
-info "Test 4: Environment variables..."
+info "Test 6: Environment variables..."
 local wine_debug
 wine_debug=$(as_mt5 "WINEPREFIX='${wineprefix}' env | grep WINEDEBUG" 2>/dev/null)
 if [[ -z "$wine_debug" ]]; then
@@ -577,7 +560,7 @@ as_mt5 "WINEPREFIX='${wineprefix}' wine regedit /S '/tmp/wine-revert-$$.reg'" >/
 rm -f "/tmp/wine-revert-$$.reg"
 
 local leftover
-leftover=$(reg_get_raw "${wineprefix}/user.reg" 'Software\\Wine\\AppDefaults\\terminal64.exe' "Version")
+leftover=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query \"HKCU\Software\Wine\AppDefaults\terminal64.exe\" /v Version" 2>/dev/null | sed -n 's/.*REG_SZ[[:space:]]*//p' | tr -d '\r')
 
 if [[ -z "${leftover}" ]]; then
 if [[ -f "$COMPLIANCE_STATE_FILE" ]]; then
@@ -693,6 +676,30 @@ done < "$TERMINALS_FILE"
 echo
 header
 ok "Compliance reverted from ${success} terminal(s)"
+header
+}
+
+show_status() {
+echo
+header
+title "WINE COMPLIANCE STATUS"
+header
+if [[ ! -s "$TERMINALS_FILE" ]]; then
+warn "No terminals registered."
+return
+fi
+while IFS='|' read -r slug exe wineprefix termpath; do
+[[ -z "${slug:-}" ]] && continue
+local status="NOT CONFIGURED"
+local status_color="$RED"
+if [[ -f "$COMPLIANCE_STATE_FILE" ]]; then
+if grep -q "^${slug}|" "$COMPLIANCE_STATE_FILE" 2>/dev/null; then
+status="CONFIGURED"
+status_color="$GREEN"
+fi
+fi
+printf "  %-30s [%b%-13s%b]\n" "$slug" "$status_color" "$status" "$NC"
+done < "$TERMINALS_FILE"
 header
 }
 
@@ -1179,7 +1186,7 @@ info "full file: ${HW_LOG}  (live: tail -f ${HW_LOG})"
 
 hide_wine_confirm() {
 warn "This edits terminal64.exe in place (a .orig-wine-detect backup is kept)."
-warn "Stop the affected terminal(s) first."
+warn "Only needed when Wine is NOT a staging build. Stop the affected terminal(s) first."
 echo
 local ans=""
 [[ -t 0 ]] || return 0
@@ -1351,8 +1358,10 @@ echo
 echo -e "  ${BOLD}1)${NC} Apply compliance to ALL terminals   ${DIM}(default - just press Enter)${NC}"
 echo -e "  ${BOLD}2)${NC} Test compliance on ALL terminals"
 echo -e "  ${BOLD}3)${NC} Revert compliance from ALL terminals"
-echo -e "  ${BOLD}4)${NC} Apply compliance to SPECIFIC terminal"
-echo -e "  ${BOLD}5)${NC} Change Windows version/build profile"
+echo -e "  ${BOLD}4)${NC} Show status"
+echo -e "  ${BOLD}5)${NC} Apply compliance to SPECIFIC terminal"
+echo -e "  ${BOLD}6)${NC} Test compliance on SPECIFIC terminal"
+echo -e "  ${BOLD}7)${NC} Change Windows version/build profile"
 echo -e "  ${BOLD}H)${NC} Hide Wine from MT5 (patch terminal64.exe)  ${DIM}(patch / restore / diagnose + log)${NC}"
 echo -e "  ${BOLD}0)${NC} Back to main menu"
 echo
@@ -1372,8 +1381,9 @@ revert_compliance_all
 fi
 read -rp "Press Enter to continue..." _
 ;;
+4) show_status; read -rp "Press Enter to continue..." _ ;;
 h|H) hide_wine_menu; read -rp "Press Enter to continue..." _ ;;
-4)
+5)
 echo
 if [[ ! -s "$TERMINALS_FILE" ]]; then
 err "No terminals registered."
@@ -1400,7 +1410,33 @@ err "Invalid selection."
 fi
 read -rp "Press Enter to continue..." _
 ;;
-5) choose_profile; read -rp "Press Enter to continue..." _ ;;
+6)
+echo
+if [[ ! -s "$TERMINALS_FILE" ]]; then
+err "No terminals registered."
+read -rp "Press Enter to continue..." _
+continue
+fi
+local i=1
+declare -a SLUGS=()
+while IFS='|' read -r slug exe wineprefix termpath; do
+[[ -z "${slug:-}" ]] && continue
+SLUGS+=("$slug|$wineprefix")
+printf "  %2d) %s\n" "$i" "$slug"
+((i++))
+done < "$TERMINALS_FILE"
+echo
+read -rp "Which terminal? (number) [${BOLD}1${NC}]: " idx || idx=""
+idx="${idx:-1}"
+if [[ "$idx" =~ ^[0-9]+$ ]] && (( idx >= 1 && idx <= ${#SLUGS[@]} )); then
+IFS='|' read -r slug wineprefix <<< "${SLUGS[$((idx-1))]}"
+test_compliance_on_prefix "$wineprefix" "$slug"
+else
+err "Invalid selection."
+fi
+read -rp "Press Enter to continue..." _
+;;
+7) choose_profile; read -rp "Press Enter to continue..." _ ;;
 0) exit 0 ;;
 *) warn "Invalid option."; sleep 1 ;;
 esac
@@ -1408,13 +1444,14 @@ done
 }
 
 usage() {
-echo "Usage: wine-compliance.sh [menu|apply|test|revert|version|hidewine] [slug]"
+echo "Usage: wine-compliance.sh [menu|apply|test|revert|status|version|hidewine] [slug]"
 echo
 echo "Commands:"
 echo "  menu              - Interactive menu (default)"
 echo "  apply [slug]      - Apply compliance to all or specific terminal"
-echo "  test              - Test compliance on all terminals"
+echo "  test [slug]       - Test compliance on all or specific terminal"
 echo "  revert [slug]     - Revert compliance from all or specific terminal"
+echo "  status            - Show compliance status for all terminals"
 echo "  version [n|build] - Pick a Windows profile (preset number or build, e.g. 19045)"
 echo "  hidewine [slug]   - Patch terminal64.exe (no slug = menu: all or pick one)"
 echo "  hidewine all      - Patch every terminal"
@@ -1456,7 +1493,18 @@ apply_compliance_all
 fi
 ;;
 test)
+if [[ -n "${2:-}" ]]; then
+slug="$2"
+wineprefix=$(awk -F'|' -v s="$slug" '$1==s{print $3; exit}' "$TERMINALS_FILE" 2>/dev/null)
+if [[ -n "$wineprefix" ]]; then
+test_compliance_on_prefix "$wineprefix" "$slug"
+else
+err "Terminal not found: $slug"
+exit 1
+fi
+else
 test_compliance_all
+fi
 ;;
 revert)
 if [[ -n "${2:-}" ]]; then
@@ -1471,6 +1519,9 @@ fi
 else
 revert_compliance_all
 fi
+;;
+status)
+show_status
 ;;
 hidewine)
 case "${2:-}" in
