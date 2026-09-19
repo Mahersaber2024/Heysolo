@@ -343,8 +343,12 @@ bps="$(bp_state)"
 if [[ "$bps" == "ok" ]]; then
 ok "Wine's ${WIN10_WINVER} version table already reports ${WIN10_BUILD} - MT5 will show that build."
 elif [[ "$bps" == build:* ]]; then
-warn "Wine's ${WIN10_WINVER} version table reports ${bps#build:}. MT5 reads THAT number, not the registry, so it will show ${bps#build:} instead of ${WIN10_BUILD}."
-info "To make MT5 show ${WIN10_BUILD}: menu option B (or: wine-compliance.sh buildpatch)."
+warn "Wine's ${WIN10_WINVER} version table reports ${bps#build:}. MT5 reads THAT number, not the registry."
+if [[ "${COMPLIANCE_AUTO_BUILDPATCH:-1}" == "1" ]]; then
+info "Applying will also patch that table to ${WIN10_BUILD} automatically (backup kept, undo: buildpatch restore)."
+else
+info "Auto patch is off (COMPLIANCE_AUTO_BUILDPATCH=0). Use menu option B or: wine-compliance.sh buildpatch"
+fi
 fi
 header
 echo
@@ -473,6 +477,13 @@ win_appver=$(wreg_get "$wineprefix" 'HKCU\Software\Wine\AppDefaults\terminal64.e
 [[ "$win_prod" == "$WIN10_PRODUCT" ]] || reg_ok=0
 [[ "${win_appver,,}" == "${WIN10_WINVER,,}" ]] || reg_ok=0
 eff_build=$(effective_build "$wineprefix" "$WIN10_WINVER")
+if [[ ${reg_ok} -eq 1 && "$eff_build" =~ ^[0-9]+$ && "$eff_build" != "$WIN10_BUILD" && "${COMPLIANCE_AUTO_BUILDPATCH:-1}" == "1" && "${BP_AUTO_TRIED:-}" != "${WIN10_WINVER}:${WIN10_BUILD}" ]]; then
+info "    Wine's ${WIN10_WINVER} table reports ${eff_build} but the profile wants ${WIN10_BUILD} - patching Wine's version table now..."
+BP_ASSUME_YES=1 buildpatch_apply
+eff_build=$(effective_build "$wineprefix" "$WIN10_WINVER")
+info "    MT5 sees : build ${eff_build:-unknown}  (after build patch)"
+[[ "$eff_build" == "$WIN10_BUILD" ]] || BP_AUTO_TRIED="${WIN10_WINVER}:${WIN10_BUILD}"
+fi
 
 local total_time=$(( $(date +%s) - t0 ))
 info "    registry : CurrentBuild=${win_build:-NOT SET}  ProductName=${win_prod:-NOT SET}  terminal64.exe Version=${win_appver:-NOT SET}"
@@ -484,9 +495,14 @@ echo "${slug}|${wineprefix}|$(date +%s)" >> "${COMPLIANCE_STATE_FILE}.tmp"
 mv "${COMPLIANCE_STATE_FILE}.tmp" "$COMPLIANCE_STATE_FILE" 2>/dev/null || true
 if [[ "$eff_build" == "$WIN10_BUILD" ]]; then
 ok "Compliance applied to ${slug} (verified end-to-end: build ${eff_build}, took ${total_time}s)"
+info "    Restart this terminal so MT5 reloads the version:  sudo heysolo  ->  R1, R2, ..."
 else
-warn "Registry applied to ${slug}, but Wine itself reports build ${eff_build:-unknown} for ${WIN10_WINVER} - MT5 will show that, not ${WIN10_BUILD} (took ${total_time}s)"
-info "    To make MT5 show ${WIN10_BUILD}:  sudo bash wine-compliance.sh buildpatch   (or menu option B)"
+if [[ -z "$eff_build" ]]; then
+warn "Registry applied to ${slug}, but the build MT5 will see could not be determined (took ${total_time}s)"
+else
+warn "Registry applied to ${slug}, but Wine itself reports build ${eff_build} for ${WIN10_WINVER} - MT5 will show that, not ${WIN10_BUILD} (took ${total_time}s)"
+fi
+info "    See what the build patch found:  sudo bash /opt/heysolo/scripts/win/wine-compliance.sh buildpatch status"
 fi
 log "Compliance applied to ${slug} (${wineprefix}) registry build=${win_build} product=${win_prod} appver=${win_appver} effective=${eff_build:-unknown} took=${total_time}s"
 return 0
@@ -1504,7 +1520,7 @@ echo -e "  Wine's built-in ${BOLD}${WIN10_WINVER}${NC} entry will report build $
 echo -e "  ${DIM}A backup is kept next to each file as *.orig-build - undo with: wine-compliance.sh buildpatch restore${NC}"
 echo -e "  ${DIM}A Wine package upgrade replaces these files, so re-run this after upgrading Wine.${NC}"
 while IFS= read -r f; do [[ -n "$f" ]] && echo "    $f"; done <<< "$files"
-if [[ -t 0 ]]; then
+if [[ -t 0 && "${BP_ASSUME_YES:-0}" != "1" ]]; then
 echo
 read -rp "$(echo -e "Press ${BOLD}Enter${NC} to patch, or type ${BOLD}n${NC} to cancel: ")" ans || ans=""
 if [[ "${ans,,}" == "n" || "${ans,,}" == "no" ]]; then warn "Cancelled - nothing changed."; return 1; fi
