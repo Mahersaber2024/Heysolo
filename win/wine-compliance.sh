@@ -216,8 +216,6 @@ Windows Registry Editor Version 5.00
 [HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\Tcpip\Parameters]
 "Hostname"="DESKTOP-7QK4L2M"
 "NV Hostname"="DESKTOP-7QK4L2M"
-[-HKEY_LOCAL_MACHINE\Software\Wine]
-[-HKEY_CURRENT_USER\Software\Wine]
 [HKEY_CURRENT_USER\Software\Wine\Debug]
 "RelayExclude"="ntdll.LdrInit;kernel32.48;kernel32.49"
 "RelayFromExclude"="wineboot;winemenubuilder"
@@ -340,7 +338,7 @@ done
 apply_compliance_to_prefix() {
 local wineprefix="$1"
 local slug="$2"
-local t0 total=8
+local t0 total=7
 t0=$(date +%s)
 if [[ ! -d "$wineprefix" ]]; then
 err "Wine prefix not found: $wineprefix"
@@ -369,10 +367,23 @@ log "Applying compliance to ${slug} (${wineprefix}) - started"
 step 1 $total "Making sure a usable X display exists" "$t0"
 ensure_display || { err "No usable display for ${slug} - aborting."; log "  [1/${total}] FAILED: no display"; return 1; }
 
-step 2 $total "Booting/initializing the Wine prefix (wineboot -u)" "$t0"
+step 2 $total "Checking the Wine prefix is initialized" "$t0"
+if [[ ! -f "${wineprefix}/system.reg" ]]; then
+info "    first run for this prefix - initializing with wineboot"
 as_mt5 "WINEPREFIX='${wineprefix}' wineboot -u" >/dev/null 2>&1
+else
+info "    prefix already initialized - skipping wineboot (it would reset prefix defaults)"
+fi
 
-step 3 $total "Waiting for wineserver to settle" "$t0"
+step 3 $total "Backing up system.reg / user.reg" "$t0"
+local bk="${wineprefix}/.compliance-regbackup"
+mkdir -p "$bk" 2>/dev/null || true
+local stamp
+stamp=$(date +%Y%m%d-%H%M%S)
+cp -p "${wineprefix}/system.reg" "${bk}/system.reg.${stamp}" 2>/dev/null || true
+cp -p "${wineprefix}/user.reg"   "${bk}/user.reg.${stamp}"   2>/dev/null || true
+chown -R "${MT5_USER}" "$bk" 2>/dev/null || true
+info "    backup: ${bk} (stamp ${stamp})"
 as_mt5 "WINEPREFIX='${wineprefix}' wineserver -w" >/dev/null 2>&1
 
 step 4 $total "Generating the compliance registry file" "$t0"
@@ -384,14 +395,14 @@ local import1_ok=1 import2_ok=1
 as_mt5 "WINEPREFIX='${wineprefix}' wine regedit /S '${reg_file}'" >/dev/null 2>&1 || import1_ok=0
 as_mt5 "WINEPREFIX='${wineprefix}' wineserver -w" >/dev/null 2>&1
 if [[ ${import1_ok} -eq 0 ]]; then
-warn "  [5/${total}] main registry import reported an error (continuing to next step)"
-log "  [5/${total}] main registry import FAILED"
+err "  [5/${total}] main registry import FAILED - aborting before anything else is touched."
+log "  ${slug}: ABORTED - main registry import failed"
+rm -f "$reg_file"
+info "Nothing else was changed. Registry backup kept in ${bk}"
+return 1
 fi
 
-step 6 $total "Removing non-standard wine*.dll files" "$t0"
-rm -f "${wineprefix}"/drive_c/windows/system32/wine*.dll 2>/dev/null || true
-
-step 7 $total "Setting terminal64.exe AppDefaults (DLL overrides)" "$t0"
+step 6 $total "Setting terminal64.exe AppDefaults (DLL overrides)" "$t0"
 cat > "/tmp/wine-appdefaults-$$.reg" <<EOF
 Windows Registry Editor Version 5.00
 [HKEY_CURRENT_USER\Software\Wine\AppDefaults\terminal64.exe\DllOverrides]
@@ -401,15 +412,22 @@ Windows Registry Editor Version 5.00
 EOF
 as_mt5 "WINEPREFIX='${wineprefix}' wine regedit /S '/tmp/wine-appdefaults-$$.reg'" >/dev/null 2>&1 || import2_ok=0
 if [[ ${import2_ok} -eq 0 ]]; then
-warn "  [7/${total}] AppDefaults registry import reported an error (continuing to verification)"
-log "  [7/${total}] AppDefaults registry import FAILED"
+err "  [6/${total}] AppDefaults registry import FAILED - aborting."
+log "  ${slug}: ABORTED - AppDefaults import failed"
+rm -f "$reg_file" "/tmp/wine-appdefaults-$$.reg"
+info "Registry backup kept in ${bk}"
+return 1
 fi
 
 rm -f "$reg_file" "/tmp/wine-appdefaults-$$.reg"
 
-step 8 $total "Verifying the import (reg query CurrentBuild)" "$t0"
+step 7 $total "Verifying the import (reg query CurrentBuild)" "$t0"
 local win_build
 win_build=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query \"HKLM\Software\Microsoft\Windows NT\CurrentVersion\" /v CurrentBuild" 2>/dev/null | grep -oP '\d+' | tail -1)
+if [[ -z "$win_build" ]]; then
+info "    reg.exe returned nothing - falling back to reading system.reg directly"
+win_build=$(reg_get_raw "${wineprefix}/system.reg" 'Software\\Microsoft\\Windows NT\\CurrentVersion' "CurrentBuild")
+fi
 
 local total_time=$(( $(date +%s) - t0 ))
 if [[ ${import1_ok} -eq 1 && ${import2_ok} -eq 1 && "${win_build}" == "${WIN10_BUILD}" ]]; then
@@ -421,7 +439,7 @@ ok "Compliance applied to ${slug} (verified: build ${win_build}, took ${total_ti
 log "Compliance applied to ${slug} (${wineprefix}), verified build ${win_build}, took ${total_time}s"
 return 0
 else
-err "Compliance import failed for ${slug} after ${total_time}s - registry shows build '${win_build:-NOT SET}' (expected ${WIN10_BUILD}). Check that wine/regedit works for this prefix."
+err "Compliance import failed for ${slug} after ${total_time}s - registry shows build '${win_build:-NOT SET}' (expected ${WIN10_BUILD}). Restore with: cp ${bk}/system.reg.${stamp} ${wineprefix}/system.reg"
 log "Compliance apply FAILED for ${slug} (${wineprefix}) - import1=${import1_ok} import2=${import2_ok} build=${win_build:-NOT SET} took=${total_time}s"
 return 1
 fi
@@ -461,17 +479,7 @@ err "Product name: ${product_name:-NOT SET} (expected: ${WIN10_PRODUCT})"
 ((issues++))
 fi
 
-info "Test 3: Non-standard registry keys..."
-local wine_keys
-wine_keys=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query HKLM\Software\Wine" 2>/dev/null)
-if [[ -z "$wine_keys" ]]; then
-ok "No non-standard registry keys found"
-else
-err "Non-standard registry keys still present"
-((issues++))
-fi
-
-info "Test 4: DLL overrides for terminal64.exe..."
+info "Test 3: DLL overrides for terminal64.exe..."
 local dll_override
 dll_override=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query \"HKCU\Software\Wine\AppDefaults\terminal64.exe\DllOverrides\"" 2>/dev/null)
 if [[ -n "$dll_override" ]]; then
@@ -482,7 +490,7 @@ err "terminal64.exe DLL overrides NOT SET"
 fi
 info "  (the Wine version override is intentionally left at the prefix default)"
 
-info "Test 5: Environment variables..."
+info "Test 4: Environment variables..."
 local wine_debug
 wine_debug=$(as_mt5 "WINEPREFIX='${wineprefix}' env | grep WINEDEBUG" 2>/dev/null)
 if [[ -z "$wine_debug" ]]; then
