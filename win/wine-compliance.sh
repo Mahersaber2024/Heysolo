@@ -181,17 +181,14 @@ cat > "$reg_file" <<EOF
 Windows Registry Editor Version 5.00
 [HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion]
 "CurrentBuild"="${WIN10_BUILD}"
-"CurrentBuildNumber"="${WIN10_BUILD}"
 "CurrentVersion"="6.3"
 "ProductName"="${WIN10_PRODUCT}"
 "ReleaseId"="${WIN10_RELEASE}"
 "DisplayVersion"="${WIN10_RELEASE}"
-"EditionID"="${WIN10_EDITION}"
 "InstallationType"="Client"
 "BuildGUID"="ffffffff-ffff-ffff-ffff-ffffffffffff"
 "BuildLab"="${WIN10_BUILDLAB}"
 "BuildLabEx"="${WIN10_BUILD}.1.amd64fre.${WIN10_BUILDLAB#*.}"
-"CompositionEditionID"="${WIN10_EDITION}"
 "RegisteredOwner"="User"
 "RegisteredOrganization"=""
 "InstallDate"=dword:5f3b2c8d
@@ -263,11 +260,8 @@ local usrreg="${wineprefix}/user.reg"
 local ntsec='Software\\Microsoft\\Windows NT\\CurrentVersion'
 local appsec='Software\\Wine\\AppDefaults\\terminal64.exe'
 CUR_BUILD=$(reg_get_raw "$sysreg" "$ntsec" "CurrentBuild")
-CUR_BUILDNUM=$(reg_get_raw "$sysreg" "$ntsec" "CurrentBuildNumber")
 CUR_PRODUCT=$(reg_get_raw "$sysreg" "$ntsec" "ProductName")
 CUR_RELEASE=$(reg_get_raw "$sysreg" "$ntsec" "ReleaseId")
-CUR_EDITION=$(reg_get_raw "$sysreg" "$ntsec" "EditionID")
-CUR_WINVER=$(reg_get_raw "$usrreg" "$appsec" "Version")
 CUR_HIDE=$(reg_get_raw "$usrreg" "$appsec" "HideWineExports")
 [[ -z "$CUR_HIDE" ]] && CUR_HIDE=$(reg_get_raw "$usrreg" 'Software\\Wine' "HideWineExports")
 }
@@ -291,22 +285,16 @@ fi
 current_wine_values "$wineprefix"
 local changes=0
 [[ "$CUR_BUILD"    != "$WIN10_BUILD"   ]] && ((changes++))
-[[ "$CUR_BUILDNUM" != "$WIN10_BUILD"   ]] && ((changes++))
 [[ "$CUR_PRODUCT"  != "$WIN10_PRODUCT" ]] && ((changes++))
 [[ "$CUR_RELEASE"  != "$WIN10_RELEASE" ]] && ((changes++))
-[[ "$CUR_EDITION"  != "$WIN10_EDITION" ]] && ((changes++))
-[[ "$CUR_WINVER"   != "$WIN10_WINVER"  ]] && ((changes++))
 [[ "$CUR_HIDE"     != "Y"              ]] && ((changes++))
 echo
 echo -e "  ${BOLD}${slug}${NC} ${DIM}(${wineprefix})${NC}"
 printf "  %-22s %-32s     %s\n" "FIELD" "CURRENT (real registry)" "WILL BECOME"
 printf "  %s\n" "------------------------------------------------------------------------------"
 diff_row "CurrentBuild"       "$CUR_BUILD"    "$WIN10_BUILD"
-diff_row "CurrentBuildNumber" "$CUR_BUILDNUM" "$WIN10_BUILD"
 diff_row "ProductName"        "$CUR_PRODUCT"  "$WIN10_PRODUCT"
 diff_row "ReleaseId"          "$CUR_RELEASE"  "$WIN10_RELEASE"
-diff_row "EditionID"          "$CUR_EDITION"  "$WIN10_EDITION"
-diff_row "terminal64 Version" "$CUR_WINVER"   "$WIN10_WINVER"
 diff_row "HideWineExports"    "$CUR_HIDE"     "Y"
 echo
 if (( changes == 0 )); then
@@ -414,11 +402,10 @@ fi
 step 6 $total "Removing non-standard wine*.dll files" "$t0"
 rm -f "${wineprefix}"/drive_c/windows/system32/wine*.dll 2>/dev/null || true
 
-step 7 $total "Setting terminal64.exe AppDefaults (version + DLL overrides)" "$t0"
+step 7 $total "Setting terminal64.exe AppDefaults (DLL overrides)" "$t0"
 cat > "/tmp/wine-appdefaults-$$.reg" <<EOF
 Windows Registry Editor Version 5.00
 [HKEY_CURRENT_USER\Software\Wine\AppDefaults\terminal64.exe]
-"Version"="${WIN10_WINVER}"
 "HideWineExports"="Y"
 [HKEY_CURRENT_USER\Software\Wine\AppDefaults\terminal64.exe\DllOverrides]
 "*winemenubuilder.exe"=""
@@ -499,13 +486,14 @@ fi
 
 info "Test 4: DLL overrides for terminal64.exe..."
 local dll_override
-dll_override=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query \"HKCU\Software\Wine\AppDefaults\terminal64.exe\" /v Version" 2>/dev/null | sed -n 's/.*REG_SZ[[:space:]]*//p' | tr -d '\r')
-if [[ "$dll_override" == "win10" ]]; then
-ok "terminal64.exe version override: ${dll_override}"
+dll_override=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query \"HKCU\Software\Wine\AppDefaults\terminal64.exe\DllOverrides\"" 2>/dev/null)
+if [[ -n "$dll_override" ]]; then
+ok "terminal64.exe DLL overrides present"
 else
-err "terminal64.exe version override: ${dll_override:-NOT SET} (expected: win10)"
+err "terminal64.exe DLL overrides NOT SET"
 ((issues++))
 fi
+info "  (the Wine version override is intentionally left at the prefix default)"
 
 info "Test 5: Wine exports hidden (the \"on Wine ...\" suffix)..."
 local hide_val
@@ -560,7 +548,7 @@ as_mt5 "WINEPREFIX='${wineprefix}' wine regedit /S '/tmp/wine-revert-$$.reg'" >/
 rm -f "/tmp/wine-revert-$$.reg"
 
 local leftover
-leftover=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query \"HKCU\Software\Wine\AppDefaults\terminal64.exe\" /v Version" 2>/dev/null | sed -n 's/.*REG_SZ[[:space:]]*//p' | tr -d '\r')
+leftover=$(as_mt5 "WINEPREFIX='${wineprefix}' reg query \"HKCU\Software\Wine\AppDefaults\terminal64.exe\" /v HideWineExports" 2>/dev/null | sed -n 's/.*REG_SZ[[:space:]]*//p' | tr -d '\r')
 
 if [[ -z "${leftover}" ]]; then
 if [[ -f "$COMPLIANCE_STATE_FILE" ]]; then
@@ -571,7 +559,7 @@ ok "Compliance reverted from ${slug}"
 log "Compliance reverted from ${slug}"
 return 0
 else
-err "Revert failed for ${slug} - terminal64.exe version override is still '${leftover}'."
+err "Revert failed for ${slug} - terminal64.exe AppDefaults is still present (HideWineExports='${leftover}')."
 log "Compliance revert FAILED for ${slug} (${wineprefix}) - leftover=${leftover}"
 return 1
 fi
