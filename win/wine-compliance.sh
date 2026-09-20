@@ -240,6 +240,58 @@ wine_version_string() {
 as_mt5 "wine --version" 2>/dev/null | tr -d '\r' | head -1
 }
 
+host_kernel_string() {
+uname -sr 2>/dev/null
+}
+
+wine_full_string() {
+local v k
+v="$(wine_version_string 2>/dev/null)"
+v="${v#wine-}"
+v="${v%% *}"
+k="$(host_kernel_string)"
+printf 'Wine %s %s' "${v:-unknown}" "${k:-unknown}"
+}
+
+hw_latest_journal() {
+find "${1}/drive_c" -maxdepth 10 -type f -name '*.log' -path '*/[Ll]ogs/*' -not -path '*/MQL5/*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-
+}
+
+hw_journal_line() {
+local f="$1"
+[[ -n "$f" && -r "$f" ]] || return 1
+tr -d '\000\r' < "$f" | grep -a -i 'build' | grep -a -i -E 'windows|wine' | tail -n 1
+}
+
+hw_journal_verify() {
+local wineprefix="$1" slug="$2" exe f line
+exe="$(find_terminal_exe "$wineprefix")"
+f="$(hw_latest_journal "$wineprefix")"
+echo
+title "JOURNAL CHECK  ${BOLD}${slug}${NC}"
+if [[ -z "$f" ]]; then
+warn "  no Journal file found for ${slug} - start the terminal once, then check again."
+return 2
+fi
+if [[ -n "$exe" && ! "$f" -nt "$exe" ]]; then
+warn "  newest Journal is older than the patch - restart ${slug}, wait a few seconds, then check again."
+return 2
+fi
+line="$(hw_journal_line "$f")"
+if [[ -z "$line" ]]; then
+warn "  no OS line in the Journal yet - wait until the terminal has fully started, then check again."
+return 2
+fi
+echo -e "  ${BOLD}file${NC}   ${f}"
+echo -e "  ${BOLD}line${NC}   ${line}"
+if grep -qiE 'wine|linux' <<< "$line"; then
+err "  Journal still reveals Wine / Linux - patch incomplete or the terminal was not restarted."
+return 1
+fi
+ok "  Journal is clean - no Wine / Linux in the OS line."
+return 0
+}
+
 reg_get_raw() {
 local file="$1" section="$2" key="$3"
 [[ -f "$file" ]] || return 0
@@ -932,7 +984,7 @@ done
 
 hw_preview() {
 local wineprefix="$1" slug="$2" mode="${3:-patch}"
-local exe bkp own mode_bits size state winever
+local exe bkp own mode_bits size state winever wfull kern vh hh
 exe="$(find_terminal_exe "$wineprefix")"
 if [[ -z "$exe" ]]; then err "terminal64.exe not found under ${wineprefix}/drive_c"; return 1; fi
 bkp="${exe}.orig-wine-detect"
@@ -940,6 +992,8 @@ own="$(stat -c '%U:%G' "$exe" 2>/dev/null)"
 mode_bits="$(stat -c '%a' "$exe" 2>/dev/null)"
 size="$(stat -c '%s' "$exe" 2>/dev/null)"
 winever="$(wine_version_string 2>/dev/null)"
+wfull="$(wine_full_string)"
+kern="$(host_kernel_string)"
 echo
 header
 if [[ "$mode" == "restore" ]]; then
@@ -952,7 +1006,10 @@ echo
 echo -e "  ${BOLD}terminal${NC}   ${slug}"
 echo -e "  ${BOLD}exe${NC}        ${exe}"
 echo -e "  ${BOLD}size${NC}       ${size} bytes   ${BOLD}owner${NC} ${own}   ${BOLD}mode${NC} ${mode_bits}"
-echo -e "  ${BOLD}wine here${NC}  ${winever}   ${DIM}(this is what MT5 currently detects)${NC}"
+echo -e "  ${BOLD}wine here${NC}  ${winever}   ${DIM}(wine --version only - not the full text)${NC}"
+echo -e "  ${BOLD}MT5 sees${NC}   ${YELLOW}on ${wfull}${NC}   ${DIM}(full text MT5 prints in the Journal)${NC}"
+echo -e "  ${BOLD}made of${NC}    wine_get_version -> ${winever#wine-}    wine_get_host_version -> ${kern}"
+echo -e "  ${BOLD}profile${NC}    $(current_profile_line)"
 if [[ -f "$bkp" ]]; then
 echo -e "  ${BOLD}backup${NC}     ${GREEN}present${NC}  $(stat -c '%s bytes, %y' "$bkp" 2>/dev/null)"
 else
@@ -994,19 +1051,32 @@ return 2
 fi
 echo -e "  ${BOLD}Byte-level rename (same length, size never changes):${NC}"
 echo
-printf "    %-24s %-4s %-24s %s\n" "FROM (found now)" "hits" "TO (after patch)" "offsets"
-printf "    %s\n" "---------------------------------------------------------------------------"
+printf "    %-24s %-4s %-24s %-13s %s\n" "FROM (found now)" "hits" "TO (after patch)" "hides" "offsets"
+printf "    %s\n" "---------------------------------------------------------------------------------------"
+vh=0; hh=0
 while IFS='|' read -r tag from to nfrom nto offs; do
 [[ "$tag" == "STR" ]] || continue
+local part
+case "$from" in
+wine_get_version)      part="Wine part"; vh="$nfrom" ;;
+wine_get_host_version) part="Linux part"; hh="$nfrom" ;;
+*)                     part="build id" ;;
+esac
 if [[ "$nfrom" == "0" ]]; then
-printf "    ${DIM}%-24s %-4s %-24s %s${NC}\n" "$from" "0" "$to" "not present - skipped"
+printf "    ${DIM}%-24s %-4s %-24s %-13s %s${NC}\n" "$from" "0" "$to" "-" "not present - skipped"
 else
-printf "    %-24s ${BOLD}%-4s${NC} ${GREEN}%-24s${NC} %s\n" "$from" "$nfrom" "$to" "${offs}"
+printf "    %-24s ${BOLD}%-4s${NC} ${GREEN}%-24s${NC} %-13s %s\n" "$from" "$nfrom" "$to" "${part:0:13}" "${offs}"
 fi
 done < <(hw_string_table "$exe")
 echo
-echo -e "  ${BOLD}Before${NC}     MT5 calls ${RED}wine_get_version${NC} -> resolves -> Journal shows ${RED}${winever}${NC}"
-echo -e "  ${BOLD}After${NC}      MT5 calls ${RED}wine_get_version${NC} -> ${GREEN}not found${NC} -> Journal shows ${GREEN}Windows ${WIN10_RELEASE} build ${WIN10_BUILD}${NC}"
+echo -e "  ${BOLD}Before${NC}     Journal ends with: ${RED}on ${wfull}${NC}"
+if (( vh > 0 && hh > 0 )); then
+echo -e "  ${BOLD}After${NC}      MT5 cannot resolve either function -> ${GREEN}no 'Wine ${winever#wine-}' and no '${kern}'${NC}, Journal shows Windows build ${GREEN}${WIN10_BUILD}${NC} (${WIN10_RELEASE})"
+else
+if (( vh == 0 )); then echo -e "  ${BOLD}After${NC}      ${YELLOW}wine_get_version not in this binary - the 'Wine ${winever#wine-}' part will NOT be hidden${NC}"; fi
+if (( hh == 0 )); then echo -e "  ${BOLD}After${NC}      ${YELLOW}wine_get_host_version not in this binary - the '${kern}' part will NOT be hidden${NC}"; fi
+fi
+echo -e "  ${BOLD}Verify${NC}     restart the terminal, then option 7 (or: hidewine verify ${slug}) reads the real Journal line"
 echo
 echo -e "  ${BOLD}Unchanged${NC}  file size (${size}), owner (${own}), permissions (${mode_bits})"
 echo -e "  ${BOLD}Undo${NC}       option 3 in this menu, or: hidewine restore ${slug}"
@@ -1132,6 +1202,11 @@ hlog ERR "ownership drifted to $(stat -c '%U:%G' "$exe" 2>/dev/null) - the termi
 chown "$own" "$exe" 2>/dev/null
 fi
 hlog OK "patched - MT5 can no longer resolve wine_get_version"
+if grep -qaE 'wine_get_(host_version|build_id)' "$exe" 2>/dev/null; then
+hlog WARN "wine_get_host_version / wine_get_build_id still present - the Linux part may still show"
+else
+hlog OK "wine_get_host_version and wine_get_build_id also gone - Wine and Linux parts are both hidden"
+fi
 hlog INFO "size/owner/mode preserved: $(stat -c '%s bytes %U:%G %a' "$exe" 2>/dev/null)"
 hlog STEP "=== PATCH DONE slug=${slug} ==="
 return 0
@@ -1287,6 +1362,21 @@ if [[ -z "$wineprefix" ]]; then err "Terminal not found: $slug"; return 1; fi
 hide_wine_diagnose "$wineprefix" "$slug"
 }
 
+hide_wine_verify_slug() {
+local slug="$1" wineprefix
+wineprefix=$(awk -F'|' -v s="$slug" '$1==s{print $3; exit}' "$TERMINALS_FILE" 2>/dev/null)
+if [[ -z "$wineprefix" ]]; then err "Terminal not found: $slug"; return 1; fi
+hw_journal_verify "$wineprefix" "$slug"
+}
+
+hide_wine_verify_all() {
+local slug exe wineprefix termpath
+while IFS='|' read -r slug exe wineprefix termpath; do
+[[ -z "${slug:-}" || -z "${wineprefix:-}" ]] && continue
+hw_journal_verify "$wineprefix" "$slug"
+done < "$TERMINALS_FILE"
+}
+
 hide_wine_binary_patch_all() {
 if [[ ! -s "$TERMINALS_FILE" ]]; then
 err "No terminals registered."
@@ -1308,7 +1398,7 @@ done < "$TERMINALS_FILE"
 echo
 header
 if (( n_fail == 0 )); then
-ok "Done on ${n_ok} terminal(s). Restart them, then check the Journal tab."
+ok "Done on ${n_ok} terminal(s). Restart them, then run: hidewine verify"
 else
 warn "${n_ok} done, ${n_fail} failed - see ${HW_LOG}"
 fi
@@ -1355,6 +1445,7 @@ hide_wine_confirm || return 1
 if hide_wine_binary_patch "$HW_PICK_PREFIX" "$HW_PICK_SLUG"; then
 echo
 ok "Restart ${HW_PICK_SLUG} only, then check its Journal tab."
+info "After restarting it, option 7 checks that the Journal really shows no Wine / Linux."
 info "If it does not start: option 4 (diagnose) shows exactly where it dies."
 fi
 }
@@ -1375,6 +1466,11 @@ hw_pick_terminal || return 1
 hide_wine_diagnose "$HW_PICK_PREFIX" "$HW_PICK_SLUG"
 }
 
+hide_wine_verify_pick() {
+hw_pick_terminal || return 1
+hw_journal_verify "$HW_PICK_PREFIX" "$HW_PICK_SLUG"
+}
+
 hide_wine_menu() {
 if [[ ! -s "$TERMINALS_FILE" ]]; then
 err "No terminals registered."
@@ -1386,7 +1482,7 @@ echo
 header
 title "HIDE WINE FROM MT5 - terminal64.exe binary patch"
 header
-echo -e "  wine: ${BOLD}$(wine_version_string)${NC}"
+echo -e "  wine: ${BOLD}$(wine_version_string)${NC}   ${DIM}(MT5 sees: on $(wine_full_string))${NC}"
 echo -e "  log:  ${DIM}${HW_LOG}${NC}"
 echo
 echo -e "  ${BOLD}1)${NC} Patch all terminals"
@@ -1395,6 +1491,7 @@ echo -e "  ${BOLD}3)${NC} Restore original terminal64.exe ${DIM}(undo the patch)
 echo -e "  ${BOLD}4)${NC} Diagnose a terminal ${DIM}(launch it, capture the full wine log)${NC}"
 echo -e "  ${BOLD}5)${NC} Show log ${DIM}(last 120 lines)${NC}"
 echo -e "  ${BOLD}6)${NC} Toggle verbose debug  ${DIM}[currently: ${HW_DEBUG:-0}]${NC}"
+echo -e "  ${BOLD}7)${NC} Verify Journal after restart ${DIM}(reads the real OS line MT5 wrote)${NC}"
 echo -e "  ${BOLD}0)${NC} Cancel"
 echo
 read -rp "Choice [${BOLD}1${NC}]: " CH || CH=""
@@ -1405,6 +1502,7 @@ case "${CH// /}" in
 3) hide_wine_restore_pick ;;
 4) hide_wine_diagnose_pick ;;
 5) hide_wine_show_log 120 ;;
+7) hide_wine_verify_pick ;;
 6)
 if [[ "${HW_DEBUG:-0}" == "1" ]]; then HW_DEBUG=0; info "Verbose debug OFF"; else HW_DEBUG=1; info "Verbose debug ON"; fi
 export HW_DEBUG
@@ -1740,6 +1838,7 @@ echo "  hidewine all      - Patch every terminal"
 echo "  hidewine restore [slug|all] - Undo the patch from the .orig-wine-detect backup"
 echo "  hidewine diagnose <slug>    - Launch the terminal and capture the full wine log"
 echo "  hidewine log [n]  - Show the hide-wine log (default 120 lines)"
+echo "  hidewine verify [slug] - After a restart, read the real Journal OS line and check for Wine / Linux"
 echo
 echo "Hide-wine log: /var/log/heysolo-hidewine.log   (HW_DEBUG=1 for verbose output)"
 echo
@@ -1826,6 +1925,7 @@ if [[ -z "${3:-}" ]]; then err "Usage: hidewine diagnose <slug>"; exit 1; fi
 hide_wine_diagnose_slug "$3"
 ;;
 log|logs) hide_wine_show_log "${3:-120}" ;;
+verify|check) if [[ -n "${3:-}" ]]; then hide_wine_verify_slug "$3"; else hide_wine_verify_all; fi ;;
 *) HW_SKIP_CONFIRM=1 hide_wine_apply_one "$2" ;;
 esac
 ;;
