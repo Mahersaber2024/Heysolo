@@ -399,7 +399,7 @@ warn "Wine's ${WIN10_WINVER} version table reports ${bps#build:}. MT5 reads THAT
 if [[ "${COMPLIANCE_AUTO_BUILDPATCH:-1}" == "1" ]]; then
 info "Applying will also patch that table to ${WIN10_BUILD} automatically (backup kept, undo: buildpatch restore)."
 else
-info "Auto patch is off (COMPLIANCE_AUTO_BUILDPATCH=0). Use menu option B or: wine-compliance.sh buildpatch"
+info "Auto patch is off (COMPLIANCE_AUTO_BUILDPATCH=0). Use: wine-compliance.sh buildpatch"
 fi
 fi
 header
@@ -1076,10 +1076,10 @@ else
 if (( vh == 0 )); then echo -e "  ${BOLD}After${NC}      ${YELLOW}wine_get_version not in this binary - the 'Wine ${winever#wine-}' part will NOT be hidden${NC}"; fi
 if (( hh == 0 )); then echo -e "  ${BOLD}After${NC}      ${YELLOW}wine_get_host_version not in this binary - the '${kern}' part will NOT be hidden${NC}"; fi
 fi
-echo -e "  ${BOLD}Verify${NC}     restart the terminal, then option 7 (or: hidewine verify ${slug}) reads the real Journal line"
+echo -e "  ${BOLD}Verify${NC}     restart the terminal, then option 5 (or: hidewine verify ${slug}) reads the real Journal line"
 echo
 echo -e "  ${BOLD}Unchanged${NC}  file size (${size}), owner (${own}), permissions (${mode_bits})"
-echo -e "  ${BOLD}Undo${NC}       option 3 in this menu, or: hidewine restore ${slug}"
+echo -e "  ${BOLD}Undo${NC}       hidewine restore ${slug}"
 header
 return 0
 }
@@ -1445,20 +1445,9 @@ hide_wine_confirm || return 1
 if hide_wine_binary_patch "$HW_PICK_PREFIX" "$HW_PICK_SLUG"; then
 echo
 ok "Restart ${HW_PICK_SLUG} only, then check its Journal tab."
-info "After restarting it, option 7 checks that the Journal really shows no Wine / Linux."
-info "If it does not start: option 4 (diagnose) shows exactly where it dies."
+info "After restarting it, option 5 checks that the Journal really shows no Wine / Linux."
+info "If it does not start: option 2 (diagnose) shows exactly where it dies."
 fi
-}
-
-hide_wine_restore_pick() {
-hw_pick_terminal || return 1
-hw_preview "$HW_PICK_PREFIX" "$HW_PICK_SLUG" restore || return 1
-local ans=""
-if [[ -t 0 ]]; then
-read -rp "$(echo -e "Type ${BOLD}yes${NC} to restore: ")" ans || ans=""
-[[ "${ans,,}" == "yes" ]] || { warn "Cancelled - no changes made."; return 1; }
-fi
-hide_wine_restore_one "$HW_PICK_PREFIX" "$HW_PICK_SLUG"
 }
 
 hide_wine_diagnose_pick() {
@@ -1485,25 +1474,21 @@ header
 echo -e "  wine: ${BOLD}$(wine_version_string)${NC}   ${DIM}(MT5 sees: on $(wine_full_string))${NC}"
 echo -e "  log:  ${DIM}${HW_LOG}${NC}"
 echo
-echo -e "  ${BOLD}1)${NC} Patch all terminals"
-echo -e "  ${BOLD}2)${NC} Patch one terminal from the list"
-echo -e "  ${BOLD}3)${NC} Restore original terminal64.exe ${DIM}(undo the patch)${NC}"
-echo -e "  ${BOLD}4)${NC} Diagnose a terminal ${DIM}(launch it, capture the full wine log)${NC}"
-echo -e "  ${BOLD}5)${NC} Show log ${DIM}(last 120 lines)${NC}"
-echo -e "  ${BOLD}6)${NC} Toggle verbose debug  ${DIM}[currently: ${HW_DEBUG:-0}]${NC}"
-echo -e "  ${BOLD}7)${NC} Verify Journal after restart ${DIM}(reads the real OS line MT5 wrote)${NC}"
+echo -e "  ${BOLD}1)${NC} Patch a terminal from the list"
+echo -e "  ${BOLD}2)${NC} Diagnose a terminal ${DIM}(launch it, capture the full wine log)${NC}"
+echo -e "  ${BOLD}3)${NC} Show log ${DIM}(last 120 lines)${NC}"
+echo -e "  ${BOLD}4)${NC} Toggle verbose debug  ${DIM}[currently: ${HW_DEBUG:-0}]${NC}"
+echo -e "  ${BOLD}5)${NC} Verify Journal after restart ${DIM}(reads the real OS line MT5 wrote)${NC}"
 echo -e "  ${BOLD}0)${NC} Cancel"
 echo
 read -rp "Choice [${BOLD}1${NC}]: " CH || CH=""
 CH="${CH:-1}"
 case "${CH// /}" in
-1) echo; hide_wine_confirm || return 1; HW_SKIP_CONFIRM=1 hide_wine_binary_patch_all ;;
-2) hide_wine_binary_patch_pick ;;
-3) hide_wine_restore_pick ;;
-4) hide_wine_diagnose_pick ;;
-5) hide_wine_show_log 120 ;;
-7) hide_wine_verify_pick ;;
-6)
+1) hide_wine_binary_patch_pick ;;
+2) hide_wine_diagnose_pick ;;
+3) hide_wine_show_log 120 ;;
+5) hide_wine_verify_pick ;;
+4)
 if [[ "${HW_DEBUG:-0}" == "1" ]]; then HW_DEBUG=0; info "Verbose debug OFF"; else HW_DEBUG=1; info "Verbose debug ON"; fi
 export HW_DEBUG
 ;;
@@ -1732,15 +1717,10 @@ echo
 echo "  This module aligns Wine installations with standard Windows profiles for MT5 compatibility."
 echo -e "  active profile: ${BOLD}$(current_profile_line)${NC}"
 echo
-echo -e "  ${BOLD}1)${NC} Apply compliance to ALL terminals   ${DIM}(default - just press Enter)${NC}"
+echo -e "  ${BOLD}1)${NC} Apply compliance to a terminal   ${DIM}(default - just press Enter)${NC}"
 echo -e "  ${BOLD}2)${NC} Test compliance on ALL terminals"
-echo -e "  ${BOLD}3)${NC} Revert compliance from ALL terminals"
-echo -e "  ${BOLD}4)${NC} Show status"
-echo -e "  ${BOLD}5)${NC} Apply compliance to SPECIFIC terminal"
-echo -e "  ${BOLD}6)${NC} Test compliance on SPECIFIC terminal"
-echo -e "  ${BOLD}7)${NC} Change Windows version/build profile"
-echo -e "  ${BOLD}B)${NC} Make MT5 show the profile build (patch Wine's version table)  ${DIM}(patch / status / restore)${NC}"
-echo -e "  ${BOLD}H)${NC} Hide Wine from MT5 (patch terminal64.exe)  ${DIM}(patch / restore / diagnose + log)${NC}"
+echo -e "  ${BOLD}3)${NC} Change Windows version/build profile"
+echo -e "  ${BOLD}H)${NC} Hide Wine from MT5 (patch terminal64.exe)  ${DIM}(patch / diagnose / log)${NC}"
 echo -e "  ${BOLD}0)${NC} Back to main menu"
 echo
 header
@@ -1748,21 +1728,7 @@ echo
 read -rp "Choice [${BOLD}1${NC}]: " CH || CH=""
 CH="${CH:-1}"
 case "$CH" in
-1) COMPLIANCE_PREVIEW_SHOWN=0; apply_compliance_all; read -rp "Press Enter to continue..." _ ;;
-2) test_compliance_all; read -rp "Press Enter to continue..." _ ;;
-3)
-echo
-warn "This will revert all compliance patches."
-read -rp "Are you sure? (y/N): " confirm || confirm=""
-if [[ "${confirm,,}" == "y" ]]; then
-revert_compliance_all
-fi
-read -rp "Press Enter to continue..." _
-;;
-4) show_status; read -rp "Press Enter to continue..." _ ;;
-h|H) hide_wine_menu; read -rp "Press Enter to continue..." _ ;;
-b|B) buildpatch_menu; read -rp "Press Enter to continue..." _ ;;
-5)
+1)
 echo
 if [[ ! -s "$TERMINALS_FILE" ]]; then
 err "No terminals registered."
@@ -1789,33 +1755,9 @@ err "Invalid selection."
 fi
 read -rp "Press Enter to continue..." _
 ;;
-6)
-echo
-if [[ ! -s "$TERMINALS_FILE" ]]; then
-err "No terminals registered."
-read -rp "Press Enter to continue..." _
-continue
-fi
-local i=1
-declare -a SLUGS=()
-while IFS='|' read -r slug exe wineprefix termpath; do
-[[ -z "${slug:-}" ]] && continue
-SLUGS+=("$slug|$wineprefix")
-printf "  %2d) %s\n" "$i" "$slug"
-((i++))
-done < "$TERMINALS_FILE"
-echo
-read -rp "Which terminal? (number) [${BOLD}1${NC}]: " idx || idx=""
-idx="${idx:-1}"
-if [[ "$idx" =~ ^[0-9]+$ ]] && (( idx >= 1 && idx <= ${#SLUGS[@]} )); then
-IFS='|' read -r slug wineprefix <<< "${SLUGS[$((idx-1))]}"
-test_compliance_on_prefix "$wineprefix" "$slug"
-else
-err "Invalid selection."
-fi
-read -rp "Press Enter to continue..." _
-;;
-7) choose_profile; read -rp "Press Enter to continue..." _ ;;
+2) test_compliance_all; read -rp "Press Enter to continue..." _ ;;
+3) choose_profile; read -rp "Press Enter to continue..." _ ;;
+h|H) hide_wine_menu; read -rp "Press Enter to continue..." _ ;;
 0) exit 0 ;;
 *) warn "Invalid option."; sleep 1 ;;
 esac
