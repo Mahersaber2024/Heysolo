@@ -264,10 +264,12 @@ tr -d '\000\r' < "$f" | grep -a -i 'build' | grep -a -i -E 'windows|wine' | tail
 }
 
 hw_journal_verify() {
-local wineprefix="$1" slug="$2" ref f line
+local wineprefix="$1" slug="$2" ref f line pat="linux" st
 f="$(hw_latest_journal "$wineprefix")"
 ref="$(hw_ntdll_files | grep -m1 'x86_64-windows')"
 [[ -z "$ref" ]] && ref="$(hw_ntdll_files | head -1)"
+st="$(hw_ntdll_state)"
+[[ "$st" == "full" ]] && pat="wine|linux"
 echo
 title "JOURNAL CHECK  ${BOLD}${slug}${NC}"
 if [[ -z "$f" ]]; then
@@ -285,11 +287,12 @@ return 2
 fi
 echo -e "  ${BOLD}file${NC}   ${f}"
 echo -e "  ${BOLD}line${NC}   ${line}"
-if grep -qiE 'wine|linux' <<< "$line"; then
-err "  Journal still reveals Wine / Linux - patch incomplete or the terminal was not restarted."
+if grep -qiE "$pat" <<< "$line"; then
+err "  Journal still reveals it - patch incomplete or the terminal was not restarted."
 return 1
 fi
-ok "  Journal is clean - no Wine / Linux in the OS line."
+ok "  Journal is clean of the hidden part."
+[[ "$st" == "linux" ]] && info "  The word Wine itself is still printed by MT5; removing it breaks MT5's UI on this build."
 return 0
 }
 
@@ -904,11 +907,12 @@ echo "${home}/.heysolo/logs/${slug}.log"
 hw_ntdll_py() {
 command -v python3 >/dev/null 2>&1 || return 127
 python3 - "$@" <<'PY'
-import struct, sys
+import os, struct, sys
 mode, path = sys.argv[1], sys.argv[2]
 out = sys.argv[3] if len(sys.argv) > 3 else None
 ref = sys.argv[4] if len(sys.argv) > 4 else None
-TARGETS = [b'wine_get_version', b'wine_get_host_version', b'wine_get_build_id']
+ALL = [b'wine_get_version', b'wine_get_host_version', b'wine_get_build_id']
+TARGETS = ALL if os.environ.get('HW_TARGETS') == 'full' else [b'wine_get_host_version']
 ALPHA = b'abcdefghijklmnopqrstuvwxyz0123456789'
 
 def load(p):
@@ -954,7 +958,7 @@ data, ents = load(path)
 names = [x[1] for x in ents]
 
 if mode == 'scan':
-    for t in TARGETS:
+    for t in ALL:
         print('EXP|%s|%s' % (t.decode(), 'present' if t in names else 'absent'))
     sys.exit(0)
 
@@ -990,7 +994,7 @@ if mode == 'unhide':
         sys.exit(7)
     done = 0
     for i, t in enumerate(rn):
-        if t in TARGETS and names[i] != t:
+        if t in ALL and names[i] != t:
             if ents[i][0] != rents[i][0]:
                 sys.exit(7)
             data[ents[i][0]:ents[i][0] + len(t)] = t
@@ -1011,15 +1015,20 @@ printf '%s\n' "${HW_NTDLL_CACHE}"
 }
 
 hw_ntdll_state() {
-local files f out vis=0 hid=0
+local files f out vis=0 host=0 full=0
 files="$(hw_ntdll_files)"
 if [[ -z "${files//[[:space:]]/}" ]]; then echo unknown; return 0; fi
 while IFS= read -r f; do
 [[ -z "$f" ]] && continue
 out="$(hw_ntdll_py scan "$f" 2>/dev/null)" || { echo unknown; return 0; }
-if grep -q '^EXP|wine_get_version|present' <<< "$out"; then vis=1; else hid=1; fi
+if grep -q '^EXP|wine_get_host_version|present' <<< "$out"; then
+vis=1
+else
+host=1
+grep -q '^EXP|wine_get_version|present' <<< "$out" || full=1
+fi
 done <<< "$files"
-if (( vis )); then echo visible; elif (( hid )); then echo hidden; else echo unknown; fi
+if (( vis )); then echo visible; elif (( full )); then echo full; elif (( host )); then echo linux; else echo unknown; fi
 }
 
 hide_wine_state() {
@@ -1030,7 +1039,8 @@ printf '%s' "${RED}terminal64.exe modified (old patch)${NC}"
 return 0
 fi
 case "$(hw_ntdll_state)" in
-hidden)  printf '%s' "${GREEN}wine hidden${NC}" ;;
+linux)   printf '%s' "${GREEN}linux part hidden${NC}" ;;
+full)    printf '%s' "${YELLOW}wine fully hidden (MT5 UI may break)${NC}" ;;
 visible) printf '%s' "${DIM}not hidden${NC}" ;;
 *)       printf '%s' "${YELLOW}unknown${NC}" ;;
 esac
@@ -1051,9 +1061,9 @@ done < "$TERMINALS_FILE"
 }
 
 hide_wine_apply() {
-local files f bkp tmp out rc n_ok=0 n_same=0 n_fail=0
+local files f bkp tmp out rc n_ok=0 n_same=0 n_fail=0 mode="${HW_MODE:-host}"
 hw_log_init
-hlog STEP "=== HIDE WINE START ==="
+hlog STEP "=== HIDE WINE START (mode=${mode}) ==="
 if ! command -v python3 >/dev/null 2>&1; then hlog ERR "python3 is required"; return 1; fi
 files="$(hw_ntdll_files)"
 if [[ -z "${files//[[:space:]]/}" ]]; then
@@ -1064,29 +1074,25 @@ hw_legacy_restore_all
 while IFS= read -r f; do
 [[ -z "$f" ]] && continue
 hw_file_facts "$f" "ntdll"
-out="$(hw_ntdll_py scan "$f" 2>&1)"; rc=$?
-if (( rc != 0 )); then
-hlog ERR "export table not recognised (rc=${rc}) - left untouched: ${f}"
-((n_fail++)); continue
-fi
-if ! grep -q '^EXP|wine_get_version|present' <<< "$out"; then
-hlog OK "already hidden: ${f}"
-((n_same++)); continue
-fi
-bkp="${f}.orig-hide"
-if ! cp -a "$f" "$bkp" 2>/dev/null; then hlog ERR "backup failed, skipping ${f}"; ((n_fail++)); continue; fi
 tmp="$(mktemp "${f}.hwtmp.XXXXXX" 2>/dev/null)"
 if [[ -z "$tmp" ]]; then hlog ERR "cannot write next to ${f}"; ((n_fail++)); continue; fi
-out="$(hw_ntdll_py hide "$f" "$tmp" 2>&1)"; rc=$?
+out="$(HW_TARGETS="$mode" hw_ntdll_py hide "$f" "$tmp" 2>&1)"; rc=$?
 hlog DBG "hide rc=${rc}: $(tr '\n' ' ' <<< "$out")"
-if (( rc != 0 )); then rm -f "$tmp"; hlog ERR "patch failed (rc=${rc}) for ${f}"; ((n_fail++)); continue; fi
+if (( rc == 10 )); then rm -f "$tmp"; hlog OK "already hidden: ${f}"; ((n_same++)); continue; fi
+if (( rc != 0 )); then rm -f "$tmp"; hlog ERR "patch failed (rc=${rc}) - export table not recognised or no free name: ${f}"; ((n_fail++)); continue; fi
+bkp="${f}.orig-hide"
+if [[ -f "$bkp" ]] && ! hw_ntdll_py scan "$f" 2>/dev/null | grep -q '^EXP|wine_get_host_version|present'; then
+hlog INFO "keeping the existing original backup: ${bkp}"
+elif ! cp -a "$f" "$bkp" 2>/dev/null; then
+rm -f "$tmp"; hlog ERR "backup failed, skipping ${f}"; ((n_fail++)); continue
+fi
 chown --reference="$f" "$tmp" 2>/dev/null
 chmod --reference="$f" "$tmp" 2>/dev/null
 if [[ "$(stat -c %s "$tmp" 2>/dev/null)" != "$(stat -c %s "$f" 2>/dev/null)" ]]; then
 rm -f "$tmp"; hlog ERR "size changed - aborting for ${f}"; ((n_fail++)); continue
 fi
 if ! mv -f "$tmp" "$f" 2>/dev/null; then rm -f "$tmp"; hlog ERR "could not replace ${f}"; ((n_fail++)); continue; fi
-if hw_ntdll_py scan "$f" 2>/dev/null | grep -q '^EXP|wine_get_version|present'; then
+if hw_ntdll_py scan "$f" 2>/dev/null | grep -q '^EXP|wine_get_host_version|present'; then
 hlog ERR "patch did not stick - restoring ${f}"
 cp -a "$bkp" "$f" 2>/dev/null
 ((n_fail++)); continue
@@ -1097,7 +1103,13 @@ done <<< "$files"
 echo
 header
 if (( n_fail == 0 )); then
-ok "Wine exports hidden: ${n_ok} patched, ${n_same} already hidden"
+if [[ "$mode" == "full" ]]; then
+ok "Wine fully hidden: ${n_ok} patched, ${n_same} already hidden"
+warn "MT5 switches to its Windows UI when it cannot find Wine - on this build that leaves the window blank or closes it."
+else
+ok "Linux / kernel part hidden: ${n_ok} patched, ${n_same} already hidden"
+info "MT5 still knows it runs on Wine, so its Wine-compatible UI keeps working."
+fi
 info "terminal64.exe was not touched. Restart the terminals so MT5 reloads Wine's ntdll."
 else
 warn "${n_ok} patched, ${n_same} already hidden, ${n_fail} problem(s) - see ${HW_LOG}"
@@ -1148,7 +1160,7 @@ hide_wine_confirm || return 1
 hide_wine_apply || return 1
 echo
 ok "Restart the terminals (sudo heysolo -> R1, R2, ...), then check the Journal tab."
-info "Option 5 checks that the Journal really shows no Wine / Linux."
+info "Option 5 checks that the Journal no longer shows the Linux kernel text."
 info "If a terminal does not start: option 2 (diagnose) shows exactly where it dies."
 }
 
@@ -1258,7 +1270,13 @@ info "full file: ${HW_LOG}  (live: tail -f ${HW_LOG})"
 }
 
 hide_wine_confirm() {
-warn "This renames the wine_get_* exports inside Wine's ntdll.dll (a .orig-hide backup is kept)."
+if [[ "${HW_MODE:-host}" == "full" ]]; then
+warn "FULL hide: renames wine_get_version, wine_get_host_version and wine_get_build_id in Wine's ntdll.dll."
+warn "On the current MT5 build this makes the terminal window come up blank or close itself."
+else
+warn "This renames the wine_get_host_version export in Wine's ntdll.dll (a .orig-hide backup is kept)."
+warn "The Linux / kernel text disappears from the Journal. MT5 still detects Wine, so its UI keeps working."
+fi
 warn "terminal64.exe is NOT modified. It applies to every terminal - restart them afterwards."
 echo
 local ans=""
@@ -1344,7 +1362,7 @@ header
 echo -e "  wine: ${BOLD}$(wine_version_string)${NC}   ${DIM}(MT5 sees: on $(wine_full_string))${NC}"
 echo -e "  log:  ${DIM}${HW_LOG}${NC}"
 echo
-echo -e "  ${BOLD}1)${NC} Hide Wine from MT5 ${DIM}(all terminals, restores any old terminal64.exe patch)${NC}"
+echo -e "  ${BOLD}1)${NC} Hide the Linux / kernel text from MT5 ${DIM}(all terminals, keeps the UI working)${NC}"
 echo -e "  ${BOLD}2)${NC} Diagnose a terminal ${DIM}(launch it, capture the full wine log)${NC}"
 echo -e "  ${BOLD}3)${NC} Show log ${DIM}(last 120 lines)${NC}"
 echo -e "  ${BOLD}4)${NC} Toggle verbose debug  ${DIM}[currently: ${HW_DEBUG:-0}]${NC}"
@@ -1645,8 +1663,9 @@ echo "  revert [slug]     - Revert compliance from all or specific terminal"
 echo "  status            - Show compliance status for all terminals"
 echo "  version [n|build] - Pick a Windows profile (preset number or build, e.g. 19045)"
 echo "  buildpatch [status|restore] - Make Wine's ntdll report the profile build (MT5 reads it from there)"
-echo "  hidewine [slug]   - Hide the wine_get_* exports in Wine's ntdll (no slug = menu; applies to all terminals)"
+echo "  hidewine [slug]   - Hide the Linux / kernel text: renames wine_get_host_version in Wine's ntdll (no slug = menu; all terminals)"
 echo "  hidewine all      - Same as above, no menu"
+echo "  hidewine full     - Also hide wine_get_version / wine_get_build_id (MT5 then loses its Wine UI: blank window on this build)"
 echo "  hidewine restore  - Undo the ntdll patch and any old terminal64.exe patch"
 echo "  hidewine diagnose <slug>    - Launch the terminal and capture the full wine log"
 echo "  hidewine log [n]  - Show the hide-wine log (default 120 lines)"
@@ -1729,6 +1748,7 @@ hidewine)
 case "${2:-}" in
 "") hide_wine_menu ;;
 all) HW_SKIP_CONFIRM=1 hide_wine_apply ;;
+full) HW_MODE=full HW_SKIP_CONFIRM=1 hide_wine_apply ;;
 restore) hide_wine_restore_all ;;
 diagnose|diag)
 if [[ -z "${3:-}" ]]; then err "Usage: hidewine diagnose <slug>"; exit 1; fi

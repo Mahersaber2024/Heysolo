@@ -64,7 +64,7 @@ case "$WV" in
 echo "   The build will read 26200, but MT5 will still print 'on Wine ... Linux ...'."
 echo "   Fix it with either:"
 echo "     apt-get install --install-recommends winehq-staging"
-echo "   or hide the exports inside Wine's ntdll (terminal64.exe stays untouched, stop the terminals first):"
+echo "   or hide the Linux kernel text through Wine's ntdll (terminal64.exe stays untouched, stop the terminals first):"
 echo "     sudo bash ${WIN_DIR}/wine-compliance.sh hidewine all" ;;
 esac
 
