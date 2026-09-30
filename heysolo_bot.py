@@ -17,7 +17,7 @@ import concurrent.futures
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, RetryAfter, TelegramError
+from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 from telegram.ext import (
     AIORateLimiter,
     Application,
@@ -38,12 +38,13 @@ import heysolo_settings as settings
 import logger_bot
 from db import database as heysolo_db
 from prop import notifications as prop_notifications
+from copier import server as copier_server
+from copier import panel as copier_panel
 from prop.plan_prop import format_prop_panel_message as _format_prop_panel_message
 from prop.plan_settings import format_settings_panel_message as _format_settings_panel_message
 from prop.plan_status import (
     format_status_panel_message as _format_status_panel_message,
     link_button_label as _link_button_label,
-    link_details_text as _link_details_text,
     link_headline as _link_headline,
 )
 
@@ -51,7 +52,8 @@ BOT_TOKEN = settings.get_bot_token()
 CHAT_ID = settings.get_chat_id()
 _threads = settings.get_threads()
 THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT = (
-    _threads["bias"], _threads["trade"], _threads["log"], _threads["result"]
+    _threads.get("bias") or None, _threads.get("trade") or None,
+    _threads.get("log") or None, _threads.get("result") or None,
 )
 OUTBOX_POLL_SECONDS = settings.get_outbox_poll_seconds()
 
@@ -1160,16 +1162,6 @@ _EVENT_TYPE_TO_THREAD = {
 
 NY_TZ = ZoneInfo("America/New_York")
 
-def _parse_hhmm(value: str) -> int | None:
-    try:
-        hh, _, mm = str(value).strip().partition(":")
-        h, m = int(hh), int(mm or 0)
-    except ValueError:
-        return None
-    if not (0 <= h <= 23 and 0 <= m <= 59):
-        return None
-    return h * 60 + m
-
 _TME_LINK = re.compile(r"t\.me/c/(\d+)(?:/(\d+))?(?:/(\d+))?")
 
 
@@ -1178,23 +1170,17 @@ def _parse_group_target(text: str) -> tuple[int | None, int | None] | None:
 
     m = _TME_LINK.search(raw)
     if m:
-        chat_id = int(f"-100{m.group(1)}")
-        thread = m.group(2)
-        return chat_id, (int(thread) if thread else None)
+        return int(f"-100{m.group(1)}"), None
 
     parts = [p for p in re.split(r"[,\s]+", raw) if p]
-    if len(parts) == 1:
-        p = parts[0]
-        if not p.lstrip("-").isdigit():
-            return None
-        n = int(p)
-        if n < 0 or len(p.lstrip("-")) >= 10:
-            return n, None
-        return None, n
-    if len(parts) == 2:
-        a, b = parts
-        if a.lstrip("-").isdigit() and b.lstrip("-").isdigit():
-            return int(a), int(b)
+    if not parts:
+        return None
+    p = parts[0]
+    if not p.lstrip("-").isdigit():
+        return None
+    n = int(p)
+    if n < 0 or len(p.lstrip("-")) >= 10:
+        return n, None
     return None
 
 
@@ -1234,28 +1220,6 @@ async def verify_group_target(bot, chat_id: int | None, thread_id: int | None,
     return True, (f"{G_OK} Verified - posting to <b>{where}</b>"
                   + (f", thread <code>{thread_id}</code>" if thread_id else "") + ".")
 
-def in_delivery_window() -> bool:
-    w = settings.get_notify_window()
-    if not w["enabled"]:
-        return True
-    start, end = _parse_hhmm(w["start"]), _parse_hhmm(w["end"])
-    if start is None or end is None:
-        return True
-    now = datetime.now(NY_TZ)
-    now_min = now.hour * 60 + now.minute
-    if start <= end:
-        return start <= now_min <= end
-    return now_min >= start or now_min <= end
-
-def should_relay(event_type: str) -> tuple[bool, str]:
-    kind = (event_type or "LOG").lower()
-    if not settings.is_notify_enabled(kind):
-        return False, f"{kind} notifications are off"
-    if not in_delivery_window():
-        w = settings.get_notify_window()
-        return False, f"outside the {w['start']}-{w['end']} NY window"
-    return True, ""
-
 def parse_event(path: Path) -> tuple[str, int, str, str, str]:
     raw = path.read_text(encoding="utf-8", errors="ignore")
     header, _, body = raw.partition("---\n")
@@ -1274,7 +1238,8 @@ def _norm_target(chat: int, thread: int | None) -> tuple[int, int | None]:
     return (int(chat), thread or None)
 
 
-def relay_targets(login: str, kind: str, fallback_thread: int | None) -> set[tuple[int, int | None]]:
+def relay_targets(login: str, kind: str, fallback_thread: int | None,
+                  ea_code: str = "") -> set[tuple[int, int | None]]:
     try:
         db = heysolo_db.get_db()
         recipients = set(db.get_account_users(login)) if login else set()
@@ -1282,7 +1247,10 @@ def relay_targets(login: str, kind: str, fallback_thread: int | None) -> set[tup
             return set()
         targets: set[tuple[int, int | None]] = set()
         for uid in recipients:
-            if kind not in expert_caps(uid).get("notify_kinds", []):
+            user_exp = user_expert(uid) or {}
+            if kind not in (user_exp.get("notify_kinds") or []):
+                continue
+            if ea_code and str(user_exp.get("code") or "").strip().lower() != ea_code:
                 continue
             if not heysolo_db.is_user_notify_enabled(uid, kind):
                 continue
@@ -1309,6 +1277,33 @@ def relay_targets(login: str, kind: str, fallback_thread: int | None) -> set[tup
         log.warning("relay_targets failed for %s/%s: %s", login, kind, e)
         return set()
 
+def _resolve_photo_path(root: "Root", photo_name: str) -> Path | None:
+    photo_name = photo_name.replace("\\", "/")
+    candidate = root.path / photo_name
+    if candidate.exists():
+        return candidate
+    legacy = root.photos / Path(photo_name).name
+    if legacy.exists():
+        return legacy
+    return candidate
+
+def _account_ea(account: str) -> tuple[str, str]:
+    code, name = "", ""
+    try:
+        card = read_card(account) or {}
+        code = str(card.get("ea") or "").strip().lower()
+        name = str(card.get("ea_name") or "").strip()
+    except Exception as e:
+        log.warning("Could not read the EA card for account %s: %s", account, e)
+    if not code and not name:
+        try:
+            expert = heysolo_db.get_db().get_expert_for_login(account) or {}
+            code = str(expert.get("code") or "").strip().lower()
+            name = str(expert.get("display_name") or "").strip()
+        except Exception as e:
+            log.warning("Could not read the expert for account %s: %s", account, e)
+    return code, name
+
 def _prepare_outbox_batch() -> list[dict]:
     jobs: list[dict] = []
     multi_account = account_count() > 1
@@ -1317,20 +1312,30 @@ def _prepare_outbox_batch() -> list[dict]:
             continue
         try:
             event_type, thread_id, photo_name, account, text = parse_event(evt)
-            photo_path = root.photos / photo_name if photo_name else None
+            photo_path = _resolve_photo_path(root, photo_name) if photo_name else None
 
-            allowed, reason = should_relay(event_type)
-            if not allowed:
-                log.warning("Skipped %s event (%s)", event_type, reason)
-                if photo_path:
-                    photo_path.unlink(missing_ok=True)
-                evt.unlink(missing_ok=True)
-                continue
-
+            ea_code, ea_name = _account_ea(account) if account else ("", "")
             if account and multi_account:
-                text = f"{text}\n\n Account: {account}"
-            targets = (relay_targets(account, event_type.lower(), thread_id) if account
+                suffix = f" | {ea_name}" if ea_name else ""
+                text = f"{text}\n\n Account: {account}{suffix}"
+            targets = (relay_targets(account, event_type.lower(), thread_id, ea_code) if account
                        else {_norm_target(CHAT_ID, thread_id)})
+
+            if not targets:
+                try:
+                    recipients = heysolo_db.get_db().get_account_users(account) if account else []
+                except Exception:
+                    recipients = []
+                if account and not recipients:
+                    reason = f"account {account!r} is not linked to any bot user (user_accounts)"
+                elif account:
+                    reason = (f"account {account!r} has {len(recipients)} linked user(s), but none "
+                              f"is eligible for kind={event_type.lower()!r} "
+                              "(no expert assigned, or notify switched off)")
+                else:
+                    reason = "no account on the event and no fallback CHAT_ID configured"
+                log.warning("Dropping outbox event %s (TYPE=%s, ACCOUNT=%s): no delivery targets - %s",
+                            evt.name, event_type, account or "-", reason)
 
             photo_bytes = None
             if photo_path and photo_path.exists():
@@ -1346,6 +1351,7 @@ def _prepare_outbox_batch() -> list[dict]:
                 "text": text,
                 "targets": targets,
                 "photo_bytes": photo_bytes,
+                "kind": event_type.lower(),
             })
         except Exception as e:
             _note_failure(evt, e)
@@ -1436,6 +1442,26 @@ def _cleanup_event_files(evt: Path, photo_path: Path | None) -> None:
                       "permissions; skipping it for the rest of this run", evt.name)
 
 
+_TOPIC_HEAL_COOLDOWN = 300
+_recent_topic_heals: dict[tuple, float] = {}
+
+def _topic_heal_allowed(chat_id, kind: str) -> bool:
+    key = (str(chat_id), str(kind))
+    now = time.monotonic()
+    last = _recent_topic_heals.get(key)
+    if last is not None and (now - last) < _TOPIC_HEAL_COOLDOWN:
+        return False
+    _recent_topic_heals[key] = now
+    return True
+
+async def _recreate_topic_in_chat(bot, chat_id: int, kind: str) -> int | None:
+    try:
+        topic = await bot.create_forum_topic(chat_id=chat_id, name=settings.topic_name(kind))
+    except TelegramError as e:
+        log.error("Could not recreate the '%s' topic in chat %s: %s", kind, chat_id, e)
+        return None
+    return topic.message_thread_id
+
 async def watch_outbox(app: Application):
     bot = app.bot
     consecutive_errors = 0
@@ -1477,8 +1503,83 @@ async def watch_outbox(app: Application):
                                     "skipping this target for now", job["evt"].name, target_chat,
                                     getattr(e, "retry_after", "?"))
                     except Exception as send_err:
-                        log.warning("Failed to deliver %s to chat %s / thread %s: %s",
-                                    job["evt"].name, target_chat, target_thread, send_err)
+                        err_text = str(send_err).lower()
+                        kind = job.get("kind", "log")
+
+                        if "thread not found" in err_text:
+                            if not _topic_heal_allowed(target_chat, kind):
+                                log.warning("Failed to deliver %s to chat %s / thread %s: %s "
+                                            "(topic was already recreated for this chat/kind "
+                                            "recently - not recreating again, check the group "
+                                            "manually)", job["evt"].name, target_chat,
+                                            target_thread, send_err)
+                                continue
+
+                            is_global_chat = bool(CHAT_ID) and str(target_chat) == str(CHAT_ID)
+                            if is_global_chat:
+                                new_thread = await _recreate_missing_topic(bot, kind)
+                                fixed_desc = "global settings"
+                            else:
+                                new_thread = await _recreate_topic_in_chat(bot, target_chat, kind)
+                                fixed_desc = "0 user(s)"
+                                if new_thread is not None:
+                                    fixed = await asyncio.to_thread(
+                                        heysolo_db.get_db().update_thread_for_chat,
+                                        target_chat, kind, target_thread, new_thread)
+                                    fixed_desc = f"{len(fixed)} user(s)"
+
+                            if new_thread is None:
+                                log.error("Could not recreate the missing '%s' topic in chat %s "
+                                          "for %s.", kind, target_chat, job["evt"].name)
+                                continue
+                            log.warning("Recreated the '%s' topic in chat %s (was thread %s, now "
+                                        "%s) - updated %s.", kind, target_chat,
+                                        target_thread, new_thread, fixed_desc)
+                            try:
+                                if photo_bytes is not None:
+                                    await bot.send_photo(chat_id=target_chat,
+                                                          message_thread_id=new_thread,
+                                                          photo=photo_bytes, caption=text[:1024])
+                                else:
+                                    await bot.send_message(chat_id=target_chat,
+                                                            message_thread_id=new_thread, text=text)
+                            except Exception as retry_err:
+                                log.warning("Retry after recreating the topic still failed for "
+                                            "%s: %s", job["evt"].name, retry_err)
+
+                        elif ("chat not found" in err_text or "bot was kicked" in err_text
+                              or "forbidden" in err_text or "not a member" in err_text):
+                            if not _topic_heal_allowed(target_chat, "chatgone"):
+                                continue
+                            reset_uids = await asyncio.to_thread(
+                                heysolo_db.get_db().reset_dest_to_dm_for_chat, target_chat)
+                            if not reset_uids:
+                                if CHAT_ID and str(target_chat) == str(CHAT_ID):
+                                    log.error("The global report group (chat %s) is unreachable: "
+                                              "%s. This cannot self-heal - set a new group as "
+                                              "chat_id from the admin panel.", target_chat,
+                                              send_err)
+                                else:
+                                    log.warning("Failed to deliver %s to chat %s / thread %s: %s "
+                                                "(chat unreachable, no linked group users to "
+                                                "fall back to DM)", job["evt"].name, target_chat,
+                                                target_thread, send_err)
+                                continue
+                            log.warning("Chat %s is gone - switched %d user(s) back to DM: %s",
+                                        target_chat, len(reset_uids), reset_uids)
+                            for uid in reset_uids:
+                                try:
+                                    if photo_bytes is not None:
+                                        await bot.send_photo(chat_id=uid, photo=photo_bytes,
+                                                              caption=text[:1024])
+                                    else:
+                                        await bot.send_message(chat_id=uid, text=text)
+                                except Exception as dm_err:
+                                    log.warning("Could not DM %s after chat %s vanished: %s",
+                                                uid, target_chat, dm_err)
+                        else:
+                            log.warning("Failed to deliver %s to chat %s / thread %s: %s",
+                                        job["evt"].name, target_chat, target_thread, send_err)
 
                 await asyncio.to_thread(_cleanup_event_files, job["evt"], job["photo_path"])
             consecutive_errors = 0
@@ -1513,10 +1614,10 @@ def build_main_keyboard(user_id: int, st: "AccountState | None" = None,
                          login: str | None = None) -> ReplyKeyboardMarkup:
     st = st or AccountState()
     caps = expert_caps(user_id)
-    top_row = [BTN_ACCOUNT, BTN_PROP]
+    top_row = [BTN_ACCOUNT]
     if caps["has_bias"] or caps["has_mode"] or caps["has_trading"]:
         top_row.insert(0, BTN_EA)
-    rows = [top_row, [BTN_STATUS]]
+    rows = [top_row]
     if heysolo_db.is_admin(user_id):
         rows.append([BTN_ADMIN])
     else:
@@ -1677,14 +1778,6 @@ async def apply_control_toggle(q, uid: int, login: str, key: str) -> None:
                        show_alert=True)
     await show_ea_panel(q, uid, login, st)
 
-def online_row(login: str) -> list:
-    try:
-        label = _link_button_label(read_link(login))
-    except Exception as exc:
-        log.debug("Could not read the broker link for %s: %s", login, exc)
-        label = "⚪ Unknown"
-    return [InlineKeyboardButton(label, callback_data=f"LINK_{login}")]
-
 def accounts_list_view(user_id: int) -> dict:
     accounts = visible_accounts(user_id)
     active = resolve_login(user_id)
@@ -1705,7 +1798,7 @@ def accounts_list_view(user_id: int) -> dict:
 def account_detail_view(user_id: int, login: str) -> dict:
     active = resolve_login(user_id)
     text = format_account_info_message(login)
-    kb_rows = [online_row(login)]
+    kb_rows = []
     if login != active:
         kb_rows.append([InlineKeyboardButton(f"{G_OK} Set as active", callback_data=f"ACC_SET_{login}")])
     kb_rows.append([InlineKeyboardButton(LBL_STATUS, callback_data=f"STAT_VIEW_{login}")])
@@ -1740,24 +1833,17 @@ def prop_list_view(user_id: int) -> dict:
 def prop_detail_view(user_id: int, login: str) -> dict:
     text = format_prop_panel_message(login)
     kb_rows = [
-        online_row(login),
-        [InlineKeyboardButton(f"🔄 Refresh", callback_data=f"PROP_VIEW_{login}"),
-         InlineKeyboardButton(f"{G_SETTINGS} My alerts", callback_data=f"PROP_ALERTS_{login}")],
-        [InlineKeyboardButton(LBL_STATUS, callback_data=f"STAT_VIEW_{login}"),
-         InlineKeyboardButton(LBL_EA_INPUTS, callback_data=f"SETT_VIEW_{login}")],
-        [InlineKeyboardButton(LBL_ACCOUNT, callback_data=f"ACC_VIEW_{login}")],
-        [InlineKeyboardButton(f"{G_BACK} All panels", callback_data="PROP_LIST")],
+        [InlineKeyboardButton(f"🔄 Refresh", callback_data=f"PROP_VIEW_{login}")],
+        [InlineKeyboardButton(f"⚙️ Alert settings", callback_data=f"PROP_ALERTS_{login}")],
+        [InlineKeyboardButton(f"{G_BACK} Account", callback_data=f"ACC_VIEW_{login}")],
     ]
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
 def settings_detail_view(user_id: int, login: str) -> dict:
     text = format_settings_panel_message(login)
     kb_rows = [
-        online_row(login),
-        [InlineKeyboardButton(f"🔄 Refresh", callback_data=f"SETT_VIEW_{login}"),
-         InlineKeyboardButton(LBL_STATUS, callback_data=f"STAT_VIEW_{login}")],
-        [InlineKeyboardButton(LBL_PROP, callback_data=f"PROP_VIEW_{login}"),
-         InlineKeyboardButton(LBL_ACCOUNT, callback_data=f"ACC_VIEW_{login}")],
+        [InlineKeyboardButton(f"🔄 Refresh", callback_data=f"SETT_VIEW_{login}")],
+        [InlineKeyboardButton(f"{G_BACK} Account", callback_data=f"ACC_VIEW_{login}")],
     ]
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
@@ -1782,11 +1868,8 @@ def status_list_view(user_id: int) -> dict:
 def status_detail_view(user_id: int, login: str) -> dict:
     text = format_status_panel_message(login)
     kb_rows = [
-        online_row(login),
-        [InlineKeyboardButton(f"🔄 Refresh", callback_data=f"STAT_VIEW_{login}"),
-         InlineKeyboardButton(LBL_EA_INPUTS, callback_data=f"SETT_VIEW_{login}")],
-        [InlineKeyboardButton(LBL_PROP, callback_data=f"PROP_VIEW_{login}"),
-         InlineKeyboardButton(LBL_ACCOUNT, callback_data=f"ACC_VIEW_{login}")],
+        [InlineKeyboardButton(f"🔄 Refresh", callback_data=f"STAT_VIEW_{login}")],
+        [InlineKeyboardButton(f"{G_BACK} Account", callback_data=f"ACC_VIEW_{login}")],
     ]
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
@@ -1834,31 +1917,17 @@ def user_settings_view(user_id: int, login: str | None) -> dict:
     )
 
     switches = heysolo_db.get_user_notify(user_id)
-    threads = {}
-    if in_group:
-        try:
-            threads = heysolo_db.get_db().get_user_threads(user_id)
-        except Exception:
-            threads = {}
-    defaults = settings.get_threads()
     for k in kinds:
-        if in_group:
-            t = threads.get(k)
-            shown = t if t is not None else defaults.get(k)
-            label = f"{TOPIC_KIND_LABELS[k]} ({shown if shown else '-'})"
-        else:
-            label = TOPIC_KIND_LABELS[k]
+        on = switches.get(k, True)
         rows.append([
-            InlineKeyboardButton(label, callback_data=f"SET_TH_{k}"),
-            InlineKeyboardButton(G_BELL if switches.get(k, True) else G_MUTE,
-                                 callback_data=f"SET_NTOG_{k}"),
+            InlineKeyboardButton(f"{TOPIC_KIND_LABELS[k]}", callback_data=f"SET_NTOG_{k}"),
+            InlineKeyboardButton(G_BELL if on else G_MUTE, callback_data=f"SET_NTOG_{k}"),
         ])
 
     if in_group:
         text += (
-            f"\n<i>Tap a category and send its topic number, e.g. <code>2</code>. "
-            f"Send <code>0</code> for a group without topics. "
-            f"{G_BELL}/{G_MUTE} turns that category on or off.</i>"
+            f"\n<i>I create and keep the topics in that group myself. "
+            f"Tap a name or {G_BELL}/{G_MUTE} to turn that category on or off.</i>"
         )
     else:
         text += (
@@ -1869,32 +1938,37 @@ def user_settings_view(user_id: int, login: str | None) -> dict:
     rows.append([InlineKeyboardButton(f"{G_BACK} Close", callback_data="SET_CLOSE")])
     return {"text": text, "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
 
+async def provision_user_topics(bot, chat_id: int, user_id: int,
+                                kinds: list[str]) -> tuple[int, int]:
+    db = heysolo_db.get_db()
+    made, failed = 0, 0
+    for k in kinds:
+        try:
+            topic = await bot.create_forum_topic(
+                chat_id=chat_id, name=TOPIC_KIND_LABELS.get(k, k))
+            db.set_user_thread(user_id, k, topic.message_thread_id)
+            made += 1
+        except TelegramError as exc:
+            log.info("create_forum_topic(%s) failed for %s: %s", k, user_id, exc)
+            try:
+                db.set_user_thread(user_id, k, None)
+            except Exception:
+                pass
+            failed += 1
+        except Exception as exc:
+            log.warning("create_forum_topic(%s) error for %s: %s", k, user_id, exc)
+            failed += 1
+    return made, failed
+
+
 def group_prompt_text(bot_username: str) -> str:
     return (
         f"{G_GROUP} <b>Send to my group</b>\n\n"
         f"<b>1.</b> Add <code>@{bot_username}</code> to the group.\n"
         f"<b>2.</b> Send its id or any link from it here.\n\n"
         f"<i>{G_ROW} Example: <code>-1001234567890</code></i>\n"
-        f"<i>{G_ROW} Or a link: <code>https://t.me/c/1234567890/2</code></i>"
-    )
-
-def admin_thread_prompt_text(kind: str) -> str:
-    current = settings.get_threads().get(kind)
-    cur = f"<code>{current}</code>" if current else "the group itself"
-    return (
-        f"{G_SETTINGS} <b>{TOPIC_KIND_LABELS.get(kind, kind)} topic</b>\n"
-        f"{G_ROW} Currently: {cur}\n\n"
-        f"Send the topic number, e.g. <code>2</code>.\n"
-        f"<i>{G_ROW} <code>0</code> = no topic, post to the group itself.</i>"
-    )
-
-def thread_prompt_text(kind: str, current) -> str:
-    cur = f"<code>{current}</code>" if current is not None else "the group itself"
-    return (
-        f"{G_SETTINGS} <b>{TOPIC_KIND_LABELS.get(kind, kind)} topic</b>\n"
-        f"{G_ROW} Currently: {cur}\n\n"
-        f"Send the topic number, e.g. <code>2</code>.\n"
-        f"<i>{G_ROW} <code>0</code> = no topic, post to the group itself.</i>"
+        f"<i>{G_ROW} Or any link from the group.</i>\n"
+        f"<i>{G_ROW} I create the topics in there myself - no topic numbers needed.</i>"
     )
 
 _name_seen: dict[int, tuple[str, str]] = {}
@@ -1987,7 +2061,8 @@ def admin_panel_view() -> dict:
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{G_USER} Access", callback_data="ADM_ACCESS"),
          InlineKeyboardButton("📓 Chat Journal", callback_data="ADM_REPORT")],
-        [InlineKeyboardButton("🗂 Files", callback_data="ADM_COMMON")],
+        [InlineKeyboardButton("🗂 Files", callback_data="ADM_COMMON"),
+         InlineKeyboardButton("📡 Copy Server", callback_data="ADM_CP")],
     ])
     return {
         "text": f"{G_ADMIN} <b>Admin</b>\nPick an option.",
@@ -2151,34 +2226,19 @@ def reporting_view() -> dict:
     chat_id = settings.get_chat_id()
     t = settings.get_threads()
     topics_ok = all(t.get(k) for k in ("bias", "trade", "log", "result"))
-    n = settings.get_notify()
-    w = settings.get_notify_window()
-    now_ny = datetime.now(NY_TZ).strftime("%H:%M")
-    live = f"{G_OK} inside window" if in_delivery_window() else f"{G_OFF} outside window"
 
     lines = [
         f"📓 <b>Chat Journal</b>",
         f"{G_ROW} Group: <code>{chat_id or 'not set'}</code>",
         f"{G_ROW} Topics: {G_OK + ' ready' if topics_ok else G_WAIT + ' not created'}",
-        f"{G_ROW} NY time now: <code>{now_ny}</code> - {live}",
     ]
-    lines.append(f"{G_ROW} Tap a category to set its topic number, {G_BELL}/{G_MUTE} to turn it on or off.")
+    for k, label in NOTIFY_LABELS:
+        lines.append(f"{G_ROW} {label}: {G_OK if t.get(k) else G_WAIT}")
+    lines.append(f"<i>{G_ROW} Topics are created automatically. Just set the group.</i>")
     top = [InlineKeyboardButton(f"{G_MANUAL} Set group", callback_data="ADM_SETCHAT")]
-    if chat_id and topics_ok:
+    if chat_id:
         top.append(InlineKeyboardButton(f"{G_AUTO} Recreate topics", callback_data="ADM_REPROVISION"))
     rows = [top]
-    for k, label in NOTIFY_LABELS:
-        shown = t.get(k) or "-"
-        rows.append([
-            InlineKeyboardButton(f"{label} ({shown})", callback_data=f"ADM_TH_{k}"),
-            InlineKeyboardButton(G_BELL if n[k] else G_MUTE, callback_data=f"ADM_NTOG_{k}"),
-        ])
-    rows.append([
-        InlineKeyboardButton(
-            f"{G_ON if w['enabled'] else G_OFF} Window ({w['start']}-{w['end']} NY)",
-            callback_data="ADM_NWIN"),
-        InlineKeyboardButton(f"{G_MANUAL} Set window", callback_data="ADM_NSETWIN"),
-    ])
     rows.append([InlineKeyboardButton(f"{G_BACK} Back", callback_data="ADM_PANEL")])
     return {"text": "\n".join(lines), "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
 
@@ -2890,45 +2950,6 @@ async def _handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode=ParseMode.HTML,
         )
 
-    elif data.startswith("ADM_TH_"):
-        kind = data[len("ADM_TH_"):]
-        if kind not in settings.NOTIFY_KINDS:
-            await q.answer("Unknown setting.", show_alert=True)
-            return
-        _pending[uid] = f"adm_set_thread:{kind}"
-        await q.answer()
-        await safe_edit_message_text(q, admin_thread_prompt_text(kind), reply_markup=cancel_kb(),
-                                  parse_mode=ParseMode.HTML)
-
-    elif data.startswith("ADM_NTOG_"):
-        kind = data.rsplit("_", 1)[1]
-        try:
-            now_on = settings.toggle_notify(kind)
-        except ValueError:
-            await q.answer("Unknown setting.", show_alert=True)
-            return
-        await q.answer(f"{kind.capitalize()}: {'on' if now_on else 'off'}")
-        v = reporting_view()
-        await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
-
-    elif data == "ADM_NWIN":
-        now_on = settings.toggle_notify_window()
-        await q.answer(f"Time window {'on' if now_on else 'off'}")
-        v = reporting_view()
-        await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
-
-    elif data == "ADM_NSETWIN":
-        _pending[uid] = "set_window"
-        await q.answer()
-        w = settings.get_notify_window()
-        await safe_edit_message_text(q,
-            f"{G_MANUAL} <b>Time window</b>\nCurrent: <code>{w['start']}-{w['end']}</code> (New York)\n"
-            "Send it as <code>HH:MM-HH:MM</code>, e.g. <code>01:30-15:30</code>. "
-            "A window that crosses midnight is fine.",
-            reply_markup=cancel_kb(),
-            parse_mode=ParseMode.HTML,
-        )
-
     elif data == "ADM_REPROVISION":
         await q.answer()
         await show_working(q, "Recreating topics...")
@@ -3016,6 +3037,18 @@ async def _handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
                 [InlineKeyboardButton("\U0001f4d6 share guide", callback_data="ADM_COMMON_GUIDE")]),
             parse_mode=ParseMode.HTML)
 
+    elif data.startswith("ADM_CP"):
+        res = await copier_panel.handle_callback(data, uid, _pending)
+        await q.answer(res["answer"] or None, show_alert=res["alert"])
+        thread_id = q.message.message_thread_id if getattr(q.message, "is_topic_message", False) else None
+        for line in res["send"]:
+            await context.bot.send_message(chat_id=q.message.chat_id, message_thread_id=thread_id,
+                                           text=line, disable_web_page_preview=True)
+        v = res["view"]
+        if v:
+            await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"],
+                                         parse_mode=v["parse_mode"], disable_web_page_preview=True)
+
     elif data == "ADM_COMMON_TEST":
         await q.answer("Testing...")
         await show_working(q, "Running connection test...")
@@ -3038,6 +3071,18 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text.lower() in CANCEL_WORDS:
             await msg.reply_text("Cancelled.")
             await send_admin_panel(update)
+            return
+        if action.startswith("cp_"):
+            if not heysolo_db.is_admin(uid):
+                await msg.reply_text(f"{G_BAD} Admins only.")
+                return
+            res = await copier_panel.handle_text(action, text, uid, _pending)
+            for line in res["send"]:
+                await msg.reply_text(line, disable_web_page_preview=True)
+            v = res["view"]
+            if v:
+                await msg.reply_text(v["text"], reply_markup=v["reply_markup"],
+                                     parse_mode=v["parse_mode"], disable_web_page_preview=True)
             return
         if action == "add_user":
             if not text.lstrip("-").isdigit():
@@ -3104,18 +3149,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(f"{G_OK} Prop warning threshold set to {value:.0f}%.")
             v = prop_notifications.settings_view(uid, config, target_login)
             await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
-        elif action == "set_window":
-            start, _, end = text.replace(" ", "").partition("-")
-            if _parse_hhmm(start) is None or _parse_hhmm(end) is None:
-                await msg.reply_text(
-                    f"{G_BAD} Use <code>HH:MM-HH:MM</code>, e.g. <code>01:30-15:30</code>. "
-                    "Send it again.", reply_markup=cancel_kb(), parse_mode=ParseMode.HTML)
-                _pending[uid] = action
-                return
-            settings.set_notify_window(start=start, end=end, enabled=True)
-            await msg.reply_text(f"{G_OK} Window set to {start}-{end} NY.")
-            v = reporting_view()
-            await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         elif action == "set_chat":
             ok, result_text, kb = await provision_group(context.bot, text)
             await msg.reply_text(result_text, parse_mode=ParseMode.HTML,
@@ -3177,65 +3210,28 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=cancel_kb(), parse_mode=ParseMode.HTML)
                 _pending[uid] = action
                 return
-            thread_id = parsed[1]
-            ok, detail = await verify_group_target(msg.get_bot(), chat_id, thread_id, "log")
+            ok, detail = await verify_group_target(msg.get_bot(), chat_id, None, "log")
             if not ok:
                 await msg.reply_text(detail, reply_markup=cancel_kb(),
                                      parse_mode=ParseMode.HTML)
                 _pending[uid] = action
                 return
             heysolo_db.set_user_dest(uid, "group", chat_id)
-            if thread_id is not None:
-                db = heysolo_db.get_db()
-                for k in _active_kinds(uid):
-                    db.set_user_thread(uid, k, thread_id)
-            await msg.reply_text(
-                f"{G_OK} Alerts now go to group <code>{chat_id}</code>"
-                + (f", topic <code>{thread_id}</code>." if thread_id is not None else "."),
-                parse_mode=ParseMode.HTML)
-            v = user_settings_view(uid, resolve_login(uid))
-            await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
-        elif action.startswith("adm_set_thread:"):
-            kind = action.split(":", 1)[1]
-            digits = text.lstrip("#").strip()
-            if not digits.isdigit():
-                await msg.reply_text(
-                    f"{G_BAD} Just the number, e.g. <code>2</code> (<code>0</code> for no topic). "
-                    "Send it again.", reply_markup=cancel_kb(), parse_mode=ParseMode.HTML)
-                _pending[uid] = action
-                return
-            thread_id = int(digits) or None
-            ok, detail = await verify_group_target(
-                msg.get_bot(), settings.get_chat_id(), thread_id, kind)
-            if not ok:
-                await msg.reply_text(detail, reply_markup=cancel_kb(),
-                                     parse_mode=ParseMode.HTML)
-                _pending[uid] = action
-                return
-            settings.set_threads(**{kind: int(digits)})
-            await msg.reply_text(detail, parse_mode=ParseMode.HTML)
-            v = reporting_view()
-            await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
-        elif action.startswith("set_thread:"):
-            kind = action.split(":", 1)[1]
-            digits = text.lstrip("#").strip()
-            if not digits.isdigit():
-                await msg.reply_text(
-                    f"{G_BAD} Just the number, e.g. <code>2</code> (<code>0</code> for no topic). "
-                    "Send it again.", reply_markup=cancel_kb(), parse_mode=ParseMode.HTML)
-                _pending[uid] = action
-                return
-            thread_id = int(digits) or None
-            dest = heysolo_db.get_user_dest(uid)
-            ok, detail = await verify_group_target(
-                msg.get_bot(), dest.get("chat_id"), thread_id, kind)
-            if not ok:
-                await msg.reply_text(detail, reply_markup=cancel_kb(),
-                                     parse_mode=ParseMode.HTML)
-                _pending[uid] = action
-                return
-            heysolo_db.get_db().set_user_thread(uid, kind, thread_id)
-            await msg.reply_text(detail, parse_mode=ParseMode.HTML)
+            kinds = _active_kinds(uid)
+            made, failed = await provision_user_topics(msg.get_bot(), chat_id, uid, kinds)
+            summary = (
+                f"{G_OK} Alerts now go to group <code>{chat_id}</code>.\n"
+                + "\n".join(f"{G_ROW} {TOPIC_KIND_LABELS.get(k, k)}" for k in kinds)
+            )
+            if failed:
+                summary += (
+                    f"\n\n{G_NEUTRAL} I could not create "
+                    + ("some topics" if made else "the topics")
+                    + " there, so those alerts land in the group itself. "
+                    "Make me an admin with <b>Manage Topics</b> and turn Topics on, "
+                    "then pick the group again."
+                )
+            await msg.reply_text(summary, parse_mode=ParseMode.HTML)
             v = user_settings_view(uid, resolve_login(uid))
             await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         return
@@ -3311,7 +3307,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uid = update.effective_user.id
         action = _pending.pop(uid, None) or ""
         await q.answer("Cancelled")
-        if action == "set_dest_group" or action.startswith("set_thread:"):
+        if action == "set_dest_group":
             v = user_settings_view(uid, resolve_login(uid))
         elif heysolo_db.is_admin(uid):
             v = admin_panel_view()
@@ -3387,16 +3383,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer()
         v = await asyncio.to_thread(status_detail_view, uid, target_login)
         await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
-        return
-
-    if data.startswith("LINK_"):
-        target_login = data[len("LINK_"):]
-        visible = await asyncio.to_thread(visible_accounts, uid)
-        if target_login not in {a["login"] for a in visible}:
-            await q.answer("Not your account.", show_alert=True)
-            return
-        link = await asyncio.to_thread(read_link, target_login)
-        await q.answer(_link_details_text(target_login, link), show_alert=True)
         return
 
     if data.startswith("PROP_ALERTS_"):
@@ -3568,19 +3554,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         return
 
-    if data.startswith("SET_TH_"):
-        kind = data[len("SET_TH_"):]
-        dest = heysolo_db.get_user_dest(uid)
-        if dest["mode"] != "group":
-            await q.answer("Pick a group first.", show_alert=True)
-            return
-        _pending[uid] = f"set_thread:{kind}"
-        await q.answer()
-        current = heysolo_db.get_db().get_user_thread(uid, kind)
-        await safe_edit_message_text(q, thread_prompt_text(kind, current), reply_markup=cancel_kb(),
-                                  parse_mode=ParseMode.HTML)
-        return
-
     if data == "SET_CLOSE":
         await q.answer()
         await safe_edit_message_text(q, f"{G_OK} Settings closed. Use {BTN_SETTINGS} to reopen.")
@@ -3672,6 +3645,36 @@ STARTUP_TEXT = (
 def _plain(html_text: str) -> str:
     return re.sub(r"<[^>]+>", "", html_text)
 
+async def _recreate_missing_topic(bot, kind: str) -> int | None:
+    if not CHAT_ID:
+        return None
+    try:
+        chat_id_int = int(CHAT_ID)
+    except ValueError:
+        log.error("Cannot recreate the %s topic: CHAT_ID %r is not numeric.", kind, CHAT_ID)
+        return None
+    try:
+        topic = await bot.create_forum_topic(chat_id=chat_id_int, name=settings.topic_name(kind))
+    except TelegramError as e:
+        log.error("Could not recreate the %s topic in %s: %s", kind, CHAT_ID, e)
+        return None
+    new_id = topic.message_thread_id
+    current = settings.get_threads()
+    current[kind] = new_id
+    settings.set_threads(**current)
+    global THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT
+    if kind == "bias":
+        THREAD_BIAS = new_id
+    elif kind == "trade":
+        THREAD_TRADE = new_id
+    elif kind == "log":
+        THREAD_LOG = new_id
+    elif kind == "result":
+        THREAD_RESULT = new_id
+    _EVENT_TYPE_TO_THREAD[kind.upper()] = new_id
+    log.warning("Recreated the missing '%s' topic (new thread_id=%s) and saved it.", kind, new_id)
+    return new_id
+
 async def send_startup_notice(bot):
     accounts = await asyncio.to_thread(list_accounts)
     text = STARTUP_TEXT
@@ -3691,19 +3694,41 @@ async def send_startup_notice(bot):
             parse_mode=ParseMode.HTML,
         )
     except TelegramError as e:
+        if "thread not found" in str(e).lower():
+            log.warning("The 'log' topic is gone - recreating it: %s", e)
+            new_thread = await _recreate_missing_topic(bot, "log")
+            if new_thread is not None:
+                try:
+                    await bot.send_message(
+                        chat_id=CHAT_ID,
+                        message_thread_id=new_thread,
+                        text=text,
+                        parse_mode=ParseMode.HTML,
+                    )
+                    return
+                except TelegramError as e2:
+                    log.error("Still could not post the startup notice after recreating "
+                              "the topic: %s", e2)
+                    return
         log.error("Could not post the startup notice: %s", e)
 
 async def post_init(app: Application):
-    logger_bot.install(app, CHAT_ID, THREAD_LOG, level=logging.WARNING)
+    logger_bot.install(app, lambda: CHAT_ID, lambda: THREAD_LOG, level=logging.WARNING,
+                        on_missing_thread=lambda: _recreate_missing_topic(app.bot, "log"))
     asyncio.create_task(watch_outbox(app))
     asyncio.create_task(
         prop_notifications.watch_prop_alerts(
             app, read_dashboard, list_accounts, heysolo_db, CHAT_ID))
+    await asyncio.to_thread(copier_server.start_from_settings)
     await send_startup_notice(app.bot)
     log.debug("Bot started. Watching %d folder(s): %s", len(ROOTS),
              " | ".join(f"{r.source}:{r.path}" for r in ROOTS))
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    # Transient network/DNS hiccups: PTB retries on its own, don't spam the log topic
+    if isinstance(context.error, (NetworkError, TimedOut)):
+        log.debug("Network hiccup ignored: %s", context.error)
+        return
     log.error("Unhandled exception while processing %r", update, exc_info=context.error)
 
 def main():

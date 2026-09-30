@@ -10,14 +10,13 @@ SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "heysol
 
 _cache: Optional[dict] = None
 
-_OBSOLETE_KEYS = ("symbols",)
+_OBSOLETE_KEYS = ("symbols", "notify", "notify_window")
 
 DEFAULT_BOT_TOKEN = ""
 DEFAULT_CHAT_ID = ""
-DEFAULT_THREADS = {"bias": 2, "trade": 4, "log": 7, "result": 1723}
+DEFAULT_THREADS = {"bias": 0, "trade": 0, "log": 0, "result": 0}
 
-DEFAULT_NOTIFY = {"bias": True, "trade": True, "log": False, "result": True}
-DEFAULT_NOTIFY_WINDOW = {"enabled": True, "start": "01:30", "end": "15:30"}
+TOPIC_NAMES = {"bias": "Bias", "trade": "Trades", "log": "Logs", "result": "Results"}
 
 DEFAULT_DB_HOST = "127.0.0.1"
 DEFAULT_DB_PORT = 5432
@@ -32,8 +31,6 @@ def _get_default_settings() -> dict:
         "user_ids": [],
         "chat_id": DEFAULT_CHAT_ID,
         "threads": dict(DEFAULT_THREADS),
-        "notify": dict(DEFAULT_NOTIFY),
-        "notify_window": dict(DEFAULT_NOTIFY_WINDOW),
         "outbox_poll_seconds": 3,
         "common_files_dir": "",
         "db_host": DEFAULT_DB_HOST,
@@ -42,6 +39,7 @@ def _get_default_settings() -> dict:
         "db_user": DEFAULT_DB_USER,
         "db_password": DEFAULT_DB_PASSWORD,
         "installed_at": "",
+        "copier": {},
     }
 
 def _load() -> dict:
@@ -72,20 +70,10 @@ def _load() -> dict:
     for key, value in defaults["threads"].items():
         data["threads"].setdefault(key, value)
 
-    data.setdefault("notify", {})
-    for key, value in DEFAULT_NOTIFY.items():
-        data["notify"].setdefault(key, value)
-    data.setdefault("notify_window", {})
-    for key, value in DEFAULT_NOTIFY_WINDOW.items():
-        data["notify_window"].setdefault(key, value)
-
     if not str(data.get("bot_token", "")).strip():
         data["bot_token"] = DEFAULT_BOT_TOKEN
     if not str(data.get("chat_id", "")).strip():
         data["chat_id"] = DEFAULT_CHAT_ID
-    if not any(data["threads"].get(k) for k in DEFAULT_THREADS):
-        data["threads"].update(DEFAULT_THREADS)
-
     removed = [k for k in _OBSOLETE_KEYS if k in data]
     for k in removed:
         data.pop(k, None)
@@ -229,51 +217,15 @@ def set_threads(bias: int = None, trade: int = None, log: int = None, result: in
         t["result"] = int(result)
     _save(data)
 
+def clear_threads():
+    data = _load()
+    data["threads"] = dict(DEFAULT_THREADS)
+    _save(data)
+
+def topic_name(kind: str) -> str:
+    return TOPIC_NAMES.get(kind, kind)
+
 NOTIFY_KINDS = ("bias", "trade", "log", "result")
-
-def get_notify() -> Dict[str, bool]:
-    n = _load().get("notify", {})
-    return {k: bool(n.get(k, DEFAULT_NOTIFY[k])) for k in NOTIFY_KINDS}
-
-def is_notify_enabled(kind: str) -> bool:
-    return get_notify().get(str(kind).lower(), False)
-
-def set_notify(kind: str, enabled: bool):
-    kind = str(kind).lower()
-    if kind not in NOTIFY_KINDS:
-        raise ValueError(f"unknown notification kind: {kind}")
-    data = _load()
-    data.setdefault("notify", {})[kind] = bool(enabled)
-    _save(data)
-
-def toggle_notify(kind: str) -> bool:
-    new_value = not is_notify_enabled(kind)
-    set_notify(kind, new_value)
-    return new_value
-
-def get_notify_window() -> Dict[str, Any]:
-    w = _load().get("notify_window", {})
-    return {
-        "enabled": bool(w.get("enabled", DEFAULT_NOTIFY_WINDOW["enabled"])),
-        "start": str(w.get("start") or DEFAULT_NOTIFY_WINDOW["start"]),
-        "end": str(w.get("end") or DEFAULT_NOTIFY_WINDOW["end"]),
-    }
-
-def set_notify_window(enabled: bool = None, start: str = None, end: str = None):
-    data = _load()
-    w = data.setdefault("notify_window", dict(DEFAULT_NOTIFY_WINDOW))
-    if enabled is not None:
-        w["enabled"] = bool(enabled)
-    if start is not None:
-        w["start"] = str(start)
-    if end is not None:
-        w["end"] = str(end)
-    _save(data)
-
-def toggle_notify_window() -> bool:
-    new_value = not get_notify_window()["enabled"]
-    set_notify_window(enabled=new_value)
-    return new_value
 
 def get_outbox_poll_seconds() -> int:
     return int(_load().get("outbox_poll_seconds", 3) or 3)
@@ -314,6 +266,15 @@ def set_db_config(host: str = None, port: int = None, name: str = None,
         data["db_user"] = str(user).strip()
     if password is not None:
         data["db_password"] = password
+    _save(data)
+
+def get_copier_config() -> Dict[str, Any]:
+    value = _load().get("copier")
+    return dict(value) if isinstance(value, dict) else {}
+
+def set_copier_config(config: Dict[str, Any]):
+    data = _load()
+    data["copier"] = dict(config)
     _save(data)
 
 def is_first_run() -> bool:

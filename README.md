@@ -203,6 +203,36 @@ systemctl restart heysolo-bot
   folder every `outbox_poll_seconds` (default 3s), so a slow or flaky link
   will delay trade/log updates.
 
+## Copy Server (Server Copier for the EA)
+The bot also runs the server the EA's **Server Copier** talks to - no extra
+service and no extra Python packages (it's plain `http.server`, in `copier/`).
+Everything is set from Telegram: **Admin → 📡 Copy Server**.
+
+- **▶ Turn on** starts it (default port `80`; if `ufw` is active the port is
+ opened automatically).
+- **📡 Channels → ＋ New channel** creates a channel. One channel = one
+ Transmitter + any number of Receivers. Each channel shows two ready links:
+ - **Transmitter link** `http://SERVER_IP/tx/<token>` → put in `ServerURL` on
+ the Transmitter account (only this link can send signals).
+ - **Receiver link** `http://SERVER_IP/rx/<token>` → put in `ServerURL` on
+ every Receiver account (read only).
+- In every MT5: **Tools → Options → Expert Advisors → Allow WebRequest for
+ listed URL** and add `http://SERVER_IP` (shown in the bot).
+- **📨 Send links**, **🧪 Test**, **📋 Signals**, **🔑 New links** (rotate
+ tokens), **🧹 Clear signals**, **✎ Rename**, **✕ Delete** per channel.
+- Settings: **Port**, **Address** (IP/domain or `https://domain` when a proxy
+ is in front), **Keep closed** (how long a closed trade stays so every
+ Receiver sees the close, default 600s) and **Flat sync** (when the
+ Transmitter has no open trade, Receivers close their leftover copies).
+
+MT5's `WebRequest()` only connects on port **80** (http) or **443** (https).
+Keep port 80, or put nginx/Caddy with HTTPS on 443 in front and set the
+Address to `https://your-domain`.
+
+Settings and channel tokens live in `heysolo_settings.json` (key `copier`);
+live signals are kept in `copier_signals.json` next to it, so a bot restart
+does not lose open trades.
+
 ## Service Management
 
 ```bash
