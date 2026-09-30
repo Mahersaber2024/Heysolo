@@ -450,6 +450,30 @@ class PgDatabase:
                          (str(login),), fetch="all") or []
         return [int(r["user_id"]) for r in rows]
 
+    def find_users_by_dest_chat(self, chat_id: int) -> List[int]:
+        rows = self._run(
+            "SELECT user_id FROM bot_users WHERE dest_mode = 'group' AND dest_chat_id = %s",
+            (int(chat_id),), fetch="all") or []
+        return [int(r["user_id"]) for r in rows]
+
+    def update_thread_for_chat(self, chat_id: int, kind: str,
+                                old_thread_id: int, new_thread_id: int) -> List[int]:
+        fixed = []
+        for uid in self.find_users_by_dest_chat(chat_id):
+            row = self._run("SELECT thread_id FROM user_topics WHERE user_id = %s AND kind = %s",
+                            (uid, str(kind)), fetch="one")
+            current = (row or {}).get("thread_id")
+            if current is None or int(current) == int(old_thread_id):
+                self.set_user_thread(uid, kind, new_thread_id)
+                fixed.append(uid)
+        return fixed
+
+    def reset_dest_to_dm_for_chat(self, chat_id: int) -> List[int]:
+        uids = self.find_users_by_dest_chat(chat_id)
+        for uid in uids:
+            self.set_user_dest(uid, "dm")
+        return uids
+
     def get_active_login(self, user_id: int) -> Optional[str]:
         row = self._run("SELECT active_login FROM bot_users WHERE user_id = %s",
                         (int(user_id),), fetch="one")

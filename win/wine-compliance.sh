@@ -264,19 +264,16 @@ tr -d '\000\r' < "$f" | grep -a -i 'build' | grep -a -i -E 'windows|wine' | tail
 }
 
 hw_journal_verify() {
-local wineprefix="$1" slug="$2" ref f line pat="linux" st
+local wineprefix="$1" slug="$2" exe f line
+exe="$(find_terminal_exe "$wineprefix")"
 f="$(hw_latest_journal "$wineprefix")"
-ref="$(hw_ntdll_files | grep -m1 'x86_64-windows')"
-[[ -z "$ref" ]] && ref="$(hw_ntdll_files | head -1)"
-st="$(hw_ntdll_state)"
-[[ "$st" == "full" ]] && pat="wine|linux"
 echo
 title "JOURNAL CHECK  ${BOLD}${slug}${NC}"
 if [[ -z "$f" ]]; then
 warn "  no Journal file found for ${slug} - start the terminal once, then check again."
 return 2
 fi
-if [[ -n "$ref" && ! "$f" -nt "$ref" ]]; then
+if [[ -n "$exe" && ! "$f" -nt "$exe" ]]; then
 warn "  newest Journal is older than the patch - restart ${slug}, wait a few seconds, then check again."
 return 2
 fi
@@ -287,12 +284,11 @@ return 2
 fi
 echo -e "  ${BOLD}file${NC}   ${f}"
 echo -e "  ${BOLD}line${NC}   ${line}"
-if grep -qiE "$pat" <<< "$line"; then
-err "  Journal still reveals it - patch incomplete or the terminal was not restarted."
+if grep -qiE 'wine|linux' <<< "$line"; then
+err "  Journal still reveals Wine / Linux - patch incomplete or the terminal was not restarted."
 return 1
 fi
-ok "  Journal is clean of the hidden part."
-[[ "$st" == "linux" ]] && info "  The word Wine itself is still printed by MT5; removing it breaks MT5's UI on this build."
+ok "  Journal is clean - no Wine / Linux in the OS line."
 return 0
 }
 
@@ -392,7 +388,7 @@ ok "Wine is a staging build ($(wine_version_string)) - HideWineExports will work
 else
 warn "Wine is NOT a staging build ($(wine_version_string)) - HideWineExports is IGNORED by plain Wine."
 warn "MT5 will still print \"on Wine ... Linux ...\"."
-info "To drop that suffix: install wine-staging, or run the Wine ntdll patch (option H)."
+info "To drop that suffix: install wine-staging, or run the terminal64.exe binary patch (option H)."
 fi
 local bps
 bps="$(bp_state)"
@@ -747,7 +743,7 @@ warn "Compliance applied to ${success} terminal(s), ${failed} failed"
 fi
 if ! wine_is_staging; then
 warn "Wine is NOT a staging build ($(wine_version_string)) - HideWineExports is IGNORED by plain Wine."
-info "To drop that suffix: install wine-staging, or run the Wine ntdll patch (option H)."
+info "To drop that suffix: install wine-staging, or run the terminal64.exe binary patch (option H)."
 fi
 header
 info "Restart terminals to apply changes:"
@@ -904,264 +900,316 @@ home="${home:-/home/${MT5_USER}}"
 echo "${home}/.heysolo/logs/${slug}.log"
 }
 
-hw_ntdll_py() {
-command -v python3 >/dev/null 2>&1 || return 127
-python3 - "$@" <<'PY'
-import os, struct, sys
-mode, path = sys.argv[1], sys.argv[2]
-out = sys.argv[3] if len(sys.argv) > 3 else None
-ref = sys.argv[4] if len(sys.argv) > 4 else None
-ALL = [b'wine_get_version', b'wine_get_host_version', b'wine_get_build_id']
-TARGETS = ALL if os.environ.get('HW_TARGETS') == 'full' else [b'wine_get_host_version']
-ALPHA = b'abcdefghijklmnopqrstuvwxyz0123456789'
+hw_write_inplace() {
+local src="$1" dst="$2"
+if cat "$src" > "$dst" 2>/dev/null; then return 0; fi
+return 1
+}
 
-def load(p):
-    d = bytearray(open(p, 'rb').read())
-    if d[:2] != b'MZ':
-        sys.exit(4)
-    u16 = lambda o: struct.unpack_from('<H', d, o)[0]
-    u32 = lambda o: struct.unpack_from('<I', d, o)[0]
-    pe = u32(0x3C)
-    if d[pe:pe + 4] != b'PE\0\0':
-        sys.exit(4)
-    nsec = u16(pe + 6)
-    opt = pe + 24
-    magic = u16(opt)
-    if magic not in (0x10B, 0x20B):
-        sys.exit(4)
-    dd = opt + (112 if magic == 0x20B else 96)
-    exp_rva = u32(dd)
-    if not exp_rva:
-        sys.exit(4)
-    secs = []
-    so = opt + u16(pe + 20)
-    for i in range(nsec):
-        o = so + 40 * i
-        secs.append((u32(o + 12), max(u32(o + 8), u32(o + 16)), u32(o + 20)))
-    def r2o(rva):
-        for va, sz, ptr in secs:
-            if va <= rva < va + sz:
-                return rva - va + ptr
-        sys.exit(4)
-    e = r2o(exp_rva)
-    n = u32(e + 24)
-    no = r2o(u32(e + 32))
-    ents = []
-    for i in range(n):
-        ro = r2o(u32(no + 4 * i))
-        ents.append((ro, bytes(d[ro:d.index(b'\0', ro)])))
-    if [x[1] for x in ents] != sorted(x[1] for x in ents):
-        sys.exit(5)
-    return d, ents
-
-data, ents = load(path)
-names = [x[1] for x in ents]
-
-if mode == 'scan':
-    for t in ALL:
-        print('EXP|%s|%s' % (t.decode(), 'present' if t in names else 'absent'))
-    sys.exit(0)
-
-if mode == 'hide':
-    done = 0
-    for t in TARGETS:
-        if t not in names:
-            continue
-        i = names.index(t)
-        lo = names[i - 1] if i > 0 else b''
-        hi = names[i + 1] if i + 1 < len(names) else None
-        new = None
-        for c in ALPHA:
-            cand = t[:-1] + bytes([c])
-            if cand != t and cand > lo and (hi is None or cand < hi) and cand not in names:
-                new = cand
-                break
-        if new is None:
-            sys.exit(6)
-        data[ents[i][0]:ents[i][0] + len(t)] = new
-        names[i] = new
-        done += 1
-        print('HIDE|%s|%s' % (t.decode(), new.decode()))
-    if not done:
-        sys.exit(10)
-    open(out, 'wb').write(data)
-    sys.exit(0)
-
-if mode == 'unhide':
-    rdata, rents = load(ref)
-    rn = [x[1] for x in rents]
-    if len(rn) != len(names):
-        sys.exit(7)
-    done = 0
-    for i, t in enumerate(rn):
-        if t in ALL and names[i] != t:
-            if ents[i][0] != rents[i][0]:
-                sys.exit(7)
-            data[ents[i][0]:ents[i][0] + len(t)] = t
-            done += 1
-            print('SHOW|%s|%s' % (names[i].decode(), t.decode()))
-    if not done:
-        sys.exit(10)
-    open(out, 'wb').write(data)
-    sys.exit(0)
-
-sys.exit(2)
+hw_apply_bytes() {
+local src="$1" dst="$2"
+if command -v python3 >/dev/null 2>&1; then
+python3 - "$src" "$dst" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+data = open(src, 'rb').read()
+pairs = [(b'wine_get_host_version', b'hack_get_host_version'),
+         (b'wine_get_build_id',     b'hack_get_build_id'),
+         (b'wine_get_version',      b'hack_get_version')]
+total = 0
+for a, b in pairs:
+    if len(a) != len(b):
+        sys.exit(90)
+    n = data.count(a)
+    if n:
+        data = data.replace(a, b)
+        total += n
+    print("replaced %s -> %s : %d" % (a.decode(), b.decode(), n))
+open(dst, 'wb').write(data)
+print("hits=%d bytes=%d" % (total, len(data)))
+sys.exit(0 if total else 91)
 PY
-}
-
-hw_ntdll_files() {
-if [[ -z "${HW_NTDLL_CACHE:-}" ]]; then HW_NTDLL_CACHE="$(bp_find_ntdll)"; fi
-printf '%s\n' "${HW_NTDLL_CACHE}"
-}
-
-hw_ntdll_state() {
-local files f out vis=0 host=0 full=0
-files="$(hw_ntdll_files)"
-if [[ -z "${files//[[:space:]]/}" ]]; then echo unknown; return 0; fi
-while IFS= read -r f; do
-[[ -z "$f" ]] && continue
-out="$(hw_ntdll_py scan "$f" 2>/dev/null)" || { echo unknown; return 0; }
-if grep -q '^EXP|wine_get_host_version|present' <<< "$out"; then
-vis=1
-else
-host=1
-grep -q '^EXP|wine_get_version|present' <<< "$out" || full=1
+return $?
 fi
-done <<< "$files"
-if (( vis )); then echo visible; elif (( full )); then echo full; elif (( host )); then echo linux; else echo unknown; fi
+if command -v perl >/dev/null 2>&1; then
+perl -0777 -pe 's/wine_get_host_version/hack_get_host_version/g; s/wine_get_build_id/hack_get_build_id/g; s/wine_get_version/hack_get_version/g' "$src" > "$dst" 2>/dev/null
+return $?
+fi
+LC_ALL=C sed -e 's/wine_get_host_version/hack_get_host_version/g' -e 's/wine_get_build_id/hack_get_build_id/g' -e 's/wine_get_version/hack_get_version/g' "$src" > "$dst" 2>/dev/null
+return $?
 }
 
 hide_wine_state() {
 local exe
 exe="$(find_terminal_exe "$1")"
-if [[ -n "$exe" ]] && grep -qa 'hack_get_version' "$exe" 2>/dev/null; then
-printf '%s' "${RED}terminal64.exe modified (old patch)${NC}"
+if [[ -z "$exe" ]]; then printf '%s' "${DIM}no terminal64.exe${NC}"; return 0; fi
+if grep -qa 'hack_get_version' "$exe" 2>/dev/null; then
+printf '%s' "${GREEN}patched${NC}"
+elif [[ -f "${exe}.orig-wine-detect" ]]; then
+printf '%s' "${YELLOW}restored${NC}"
+else
+printf '%s' "${DIM}not patched${NC}"
+fi
+}
+
+hw_string_table() {
+local f="$1"
+if command -v python3 >/dev/null 2>&1; then
+python3 - "$f" <<'PYSCAN'
+import sys
+path = sys.argv[1]
+pairs = [(b'wine_get_version', b'hack_get_version'),
+         (b'wine_get_host_version', b'hack_get_host_version'),
+         (b'wine_get_build_id', b'hack_get_build_id')]
+data = open(path, 'rb').read()
+for a, b in pairs:
+    offs = []
+    i = data.find(a)
+    while i != -1 and len(offs) < 5:
+        offs.append(i)
+        i = data.find(a, i + 1)
+    txt = ' '.join('0x%X' % o for o in offs) or '-'
+    print("STR|%s|%s|%d|%d|%s" % (a.decode(), b.decode(), data.count(a), data.count(b), txt))
+PYSCAN
 return 0
 fi
-case "$(hw_ntdll_state)" in
-linux)   printf '%s' "${GREEN}linux part hidden${NC}" ;;
-full)    printf '%s' "${YELLOW}wine fully hidden (MT5 UI may break)${NC}" ;;
-visible) printf '%s' "${DIM}not hidden${NC}" ;;
-*)       printf '%s' "${YELLOW}unknown${NC}" ;;
-esac
+local a b
+for a in wine_get_version wine_get_host_version wine_get_build_id; do
+b="hack_${a#wine_}"
+printf 'STR|%s|%s|%s|%s|%s\n' "$a" "$b" \
+"$(grep -oa "$a" "$f" 2>/dev/null | wc -l)" \
+"$(grep -oa "$b" "$f" 2>/dev/null | wc -l)" "-"
+done
 }
 
-hw_legacy_restore_all() {
-local slug exe wineprefix termpath texe
-[[ -s "$TERMINALS_FILE" ]] || return 0
-while IFS='|' read -r slug exe wineprefix termpath; do
-[[ -z "${slug:-}" || -z "${wineprefix:-}" ]] && continue
-texe="$(find_terminal_exe "$wineprefix")"
-[[ -z "$texe" ]] && continue
-if [[ -f "${texe}.orig-wine-detect" ]] && grep -qa 'hack_get_version' "$texe" 2>/dev/null; then
-hlog WARN "${slug}: terminal64.exe carries the old byte patch - restoring the original"
-hide_wine_restore_one "$wineprefix" "$slug" || hlog WARN "${slug}: could not restore terminal64.exe - stop that terminal and run: hidewine restore"
-fi
-done < "$TERMINALS_FILE"
-}
-
-hide_wine_apply() {
-local files f bkp tmp out rc n_ok=0 n_same=0 n_fail=0 mode="${HW_MODE:-host}"
-hw_log_init
-hlog STEP "=== HIDE WINE START (mode=${mode}) ==="
-if ! command -v python3 >/dev/null 2>&1; then hlog ERR "python3 is required"; return 1; fi
-files="$(hw_ntdll_files)"
-if [[ -z "${files//[[:space:]]/}" ]]; then
-hlog ERR "Could not find Wine's ntdll.dll - set WINE_ROOT=/path/to/wine (the folder holding bin/ and lib/) and retry"
-return 1
-fi
-hw_legacy_restore_all
-while IFS= read -r f; do
-[[ -z "$f" ]] && continue
-hw_file_facts "$f" "ntdll"
-tmp="$(mktemp "${f}.hwtmp.XXXXXX" 2>/dev/null)"
-if [[ -z "$tmp" ]]; then hlog ERR "cannot write next to ${f}"; ((n_fail++)); continue; fi
-out="$(HW_TARGETS="$mode" hw_ntdll_py hide "$f" "$tmp" 2>&1)"; rc=$?
-hlog DBG "hide rc=${rc}: $(tr '\n' ' ' <<< "$out")"
-if (( rc == 10 )); then rm -f "$tmp"; hlog OK "already hidden: ${f}"; ((n_same++)); continue; fi
-if (( rc != 0 )); then rm -f "$tmp"; hlog ERR "patch failed (rc=${rc}) - export table not recognised or no free name: ${f}"; ((n_fail++)); continue; fi
-bkp="${f}.orig-hide"
-if [[ -f "$bkp" ]] && ! hw_ntdll_py scan "$f" 2>/dev/null | grep -q '^EXP|wine_get_host_version|present'; then
-hlog INFO "keeping the existing original backup: ${bkp}"
-elif ! cp -a "$f" "$bkp" 2>/dev/null; then
-rm -f "$tmp"; hlog ERR "backup failed, skipping ${f}"; ((n_fail++)); continue
-fi
-chown --reference="$f" "$tmp" 2>/dev/null
-chmod --reference="$f" "$tmp" 2>/dev/null
-if [[ "$(stat -c %s "$tmp" 2>/dev/null)" != "$(stat -c %s "$f" 2>/dev/null)" ]]; then
-rm -f "$tmp"; hlog ERR "size changed - aborting for ${f}"; ((n_fail++)); continue
-fi
-if ! mv -f "$tmp" "$f" 2>/dev/null; then rm -f "$tmp"; hlog ERR "could not replace ${f}"; ((n_fail++)); continue; fi
-if hw_ntdll_py scan "$f" 2>/dev/null | grep -q '^EXP|wine_get_host_version|present'; then
-hlog ERR "patch did not stick - restoring ${f}"
-cp -a "$bkp" "$f" 2>/dev/null
-((n_fail++)); continue
-fi
-hlog OK "hidden in ${f}"
-((n_ok++))
-done <<< "$files"
+hw_preview() {
+local wineprefix="$1" slug="$2" mode="${3:-patch}"
+local exe bkp own mode_bits size state winever wfull kern vh hh
+exe="$(find_terminal_exe "$wineprefix")"
+if [[ -z "$exe" ]]; then err "terminal64.exe not found under ${wineprefix}/drive_c"; return 1; fi
+bkp="${exe}.orig-wine-detect"
+own="$(stat -c '%U:%G' "$exe" 2>/dev/null)"
+mode_bits="$(stat -c '%a' "$exe" 2>/dev/null)"
+size="$(stat -c '%s' "$exe" 2>/dev/null)"
+winever="$(wine_version_string 2>/dev/null)"
+wfull="$(wine_full_string)"
+kern="$(host_kernel_string)"
 echo
 header
-if (( n_fail == 0 )); then
-if [[ "$mode" == "full" ]]; then
-ok "Wine fully hidden: ${n_ok} patched, ${n_same} already hidden"
-warn "MT5 switches to its Windows UI when it cannot find Wine - on this build that leaves the window blank or closes it."
+if [[ "$mode" == "restore" ]]; then
+title "PREVIEW - RESTORE  ${BOLD}${slug}${NC}"
 else
-ok "Linux / kernel part hidden: ${n_ok} patched, ${n_same} already hidden"
-info "MT5 still knows it runs on Wine, so its Wine-compatible UI keeps working."
-fi
-info "terminal64.exe was not touched. Restart the terminals so MT5 reloads Wine's ntdll."
-else
-warn "${n_ok} patched, ${n_same} already hidden, ${n_fail} problem(s) - see ${HW_LOG}"
+title "PREVIEW - WHAT WILL CHANGE  ${BOLD}${slug}${NC}"
 fi
 header
-hlog STEP "=== HIDE WINE DONE ==="
-(( n_fail == 0 ))
-}
-
-hide_wine_restore_all() {
-local files f bkp tmp out rc n=0
-hw_log_init
-hlog STEP "=== RESTORE START ==="
-files="$(hw_ntdll_files)"
-if [[ -z "${files//[[:space:]]/}" ]]; then
-hlog ERR "Could not find Wine's ntdll.dll (set WINE_ROOT=/path/to/wine)"
+echo
+echo -e "  ${BOLD}terminal${NC}   ${slug}"
+echo -e "  ${BOLD}exe${NC}        ${exe}"
+echo -e "  ${BOLD}size${NC}       ${size} bytes   ${BOLD}owner${NC} ${own}   ${BOLD}mode${NC} ${mode_bits}"
+echo -e "  ${BOLD}wine here${NC}  ${winever}   ${DIM}(wine --version only - not the full text)${NC}"
+echo -e "  ${BOLD}MT5 sees${NC}   ${YELLOW}on ${wfull}${NC}   ${DIM}(full text MT5 prints in the Journal)${NC}"
+echo -e "  ${BOLD}made of${NC}    wine_get_version -> ${winever#wine-}    wine_get_host_version -> ${kern}"
+echo -e "  ${BOLD}profile${NC}    $(current_profile_line)"
+if [[ -f "$bkp" ]]; then
+echo -e "  ${BOLD}backup${NC}     ${GREEN}present${NC}  $(stat -c '%s bytes, %y' "$bkp" 2>/dev/null)"
+else
+echo -e "  ${BOLD}backup${NC}     ${YELLOW}none yet - one will be created${NC}"
+fi
+state="$(hide_wine_state "$wineprefix")"
+echo -e "  ${BOLD}state now${NC}  ${state}"
+echo
+if [[ "$mode" == "restore" ]]; then
+if [[ ! -f "$bkp" ]]; then
+err "  No backup to restore from - nothing can be undone here."
+header
 return 1
 fi
-while IFS= read -r f; do
-[[ -z "$f" ]] && continue
-bkp="${f}.orig-hide"
-if [[ ! -f "$bkp" ]]; then hlog INFO "no backup for ${f} - nothing to restore"; continue; fi
-tmp="$(mktemp "${f}.hwtmp.XXXXXX" 2>/dev/null)"
-if [[ -z "$tmp" ]]; then hlog ERR "cannot write next to ${f}"; continue; fi
-out="$(hw_ntdll_py unhide "$f" "$tmp" "$bkp" 2>&1)"; rc=$?
-case "$rc" in
-0)
-chown --reference="$f" "$tmp" 2>/dev/null
-chmod --reference="$f" "$tmp" 2>/dev/null
-if mv -f "$tmp" "$f" 2>/dev/null; then
-hlog OK "exports restored in ${f}"
-((n++))
-else
-rm -f "$tmp"; hlog ERR "could not replace ${f}"
+echo -e "  ${BOLD}Strings that will come BACK into the binary:${NC}"
+echo
+printf "    %-24s %-4s %-24s %-4s\n" "FROM (in file now)" "hits" "TO (after restore)" "hits"
+printf "    %s\n" "---------------------------------------------------------------------"
+while IFS='|' read -r tag from to nfrom nto offs; do
+[[ "$tag" == "STR" ]] || continue
+[[ "$nto" == "0" ]] && continue
+printf "    %-24s ${BOLD}%-4s${NC} ${GREEN}%-24s${NC} %-4s\n" "$to" "$nto" "$from" "$nto"
+done < <(hw_string_table "$exe")
+echo
+echo -e "  ${BOLD}Result${NC}     MT5 will detect Wine again ${DIM}(wine_get_version resolvable)${NC}"
+echo -e "  ${BOLD}Restored${NC}   byte-for-byte from ${bkp}, owner ${own} kept"
+header
+return 0
 fi
-;;
-10) rm -f "$tmp"; hlog INFO "already visible: ${f}" ;;
-*) rm -f "$tmp"; hlog WARN "Wine was updated since the patch - ${f} left alone" ;;
+if ! grep -qa 'wine_get_version' "$exe" 2>/dev/null; then
+if grep -qa 'hack_get_version' "$exe" 2>/dev/null; then
+ok "  Already patched - no wine_* export names left to rename. Nothing to do."
+header
+return 2
+fi
+warn "  This binary has no wine_get_version string at all - nothing to patch."
+header
+return 2
+fi
+echo -e "  ${BOLD}Byte-level rename (same length, size never changes):${NC}"
+echo
+printf "    %-24s %-4s %-24s %-13s %s\n" "FROM (found now)" "hits" "TO (after patch)" "hides" "offsets"
+printf "    %s\n" "---------------------------------------------------------------------------------------"
+vh=0; hh=0
+while IFS='|' read -r tag from to nfrom nto offs; do
+[[ "$tag" == "STR" ]] || continue
+local part
+case "$from" in
+wine_get_version)      part="Wine part"; vh="$nfrom" ;;
+wine_get_host_version) part="Linux part"; hh="$nfrom" ;;
+*)                     part="build id" ;;
 esac
-done <<< "$files"
-hw_legacy_restore_all
-hlog INFO "restored ${n} ntdll file(s). Restart the terminals to take effect."
-hlog STEP "=== RESTORE DONE ==="
+if [[ "$nfrom" == "0" ]]; then
+printf "    ${DIM}%-24s %-4s %-24s %-13s %s${NC}\n" "$from" "0" "$to" "-" "not present - skipped"
+else
+printf "    %-24s ${BOLD}%-4s${NC} ${GREEN}%-24s${NC} %-13s %s\n" "$from" "$nfrom" "$to" "${part:0:13}" "${offs}"
+fi
+done < <(hw_string_table "$exe")
+echo
+echo -e "  ${BOLD}Before${NC}     Journal ends with: ${RED}on ${wfull}${NC}"
+if (( vh > 0 && hh > 0 )); then
+echo -e "  ${BOLD}After${NC}      MT5 cannot resolve either function -> ${GREEN}no 'Wine ${winever#wine-}' and no '${kern}'${NC}, Journal shows Windows build ${GREEN}${WIN10_BUILD}${NC} (${WIN10_RELEASE})"
+else
+if (( vh == 0 )); then echo -e "  ${BOLD}After${NC}      ${YELLOW}wine_get_version not in this binary - the 'Wine ${winever#wine-}' part will NOT be hidden${NC}"; fi
+if (( hh == 0 )); then echo -e "  ${BOLD}After${NC}      ${YELLOW}wine_get_host_version not in this binary - the '${kern}' part will NOT be hidden${NC}"; fi
+fi
+echo -e "  ${BOLD}Verify${NC}     restart the terminal, then option 5 (or: hidewine verify ${slug}) reads the real Journal line"
+echo
+echo -e "  ${BOLD}Unchanged${NC}  file size (${size}), owner (${own}), permissions (${mode_bits})"
+echo -e "  ${BOLD}Undo${NC}       hidewine restore ${slug}"
+header
+return 0
 }
 
-hide_wine_apply_menu() {
-hide_wine_confirm || return 1
-hide_wine_apply || return 1
+hide_wine_binary_patch() {
+local wineprefix="$1" slug="$2"
+local exe bkp tmp own mode size_before size_after rc hits
+hw_log_init
+hlog STEP "=== PATCH START slug=${slug} prefix=${wineprefix} ==="
+hlog DBG "wine=$(wine_version_string 2>/dev/null) euid=${EUID} log=${HW_LOG}"
+
+exe="$(find_terminal_exe "$wineprefix")"
+if [[ -z "$exe" ]]; then
+hlog ERR "terminal64.exe not found under ${wineprefix}/drive_c for ${slug}"
+return 1
+fi
 echo
-ok "Restart the terminals (sudo heysolo -> R1, R2, ...), then check the Journal tab."
-info "Option 5 checks that the Journal no longer shows the Linux kernel text."
-info "If a terminal does not start: option 2 (diagnose) shows exactly where it dies."
+info "${slug}: ${exe}"
+hw_file_facts "$exe" "before"
+
+own="$(stat -c '%U:%G' "$exe" 2>/dev/null)"
+mode="$(stat -c '%a' "$exe" 2>/dev/null)"
+size_before="$(stat -c '%s' "$exe" 2>/dev/null)"
+hlog INFO "owner=${own} mode=${mode} size=${size_before}"
+
+if [[ ! -w "$(dirname "$exe")" ]]; then
+hlog WARN "directory not writable: $(dirname "$exe")"
+fi
+
+if ! grep -qa 'wine_get_version' "$exe" 2>/dev/null; then
+if grep -qa 'hack_get_version' "$exe" 2>/dev/null; then
+hlog OK "already patched (hack_get_version present)"
+return 0
+fi
+hlog WARN "no wine_get_version string in this binary - nothing to patch"
+return 0
+fi
+hlog DBG "wine_get_version occurrences: $(grep -oa 'wine_get_version' "$exe" 2>/dev/null | wc -l)"
+
+if exe_is_running "$exe"; then
+hlog ERR "this terminal looks like it is running - stop only this one, then retry"
+hlog DBG "running pids: $(pgrep -u "${MT5_USER}" -f 'terminal64.exe' 2>/dev/null | tr '\n' ' ')"
+return 1
+fi
+
+bkp="${exe}.orig-wine-detect"
+if [[ -f "$bkp" ]]; then
+if grep -qa 'wine_get_version' "$bkp" 2>/dev/null; then
+hlog DBG "backup exists and is original (has wine_get_version)"
+else
+hlog WARN "backup exists but is stale/corrupted (no wine_get_version) - will recreate from exe"
+rm -f "$bkp"
+fi
+fi
+if [[ ! -f "$bkp" ]]; then
+if ! grep -qa 'wine_get_version' "$exe" 2>/dev/null; then
+hlog ERR "exe is patched but no valid backup - cannot re-patch safely; restore with unpatched copy or reinstall"
+return 1
+fi
+if cp -a "$exe" "$bkp" 2>/dev/null; then
+hlog OK "backup created from exe: ${bkp}"
+else
+hlog ERR "backup failed - aborting (disk full? permissions?)"
+hlog DBG "df: $(df -h "$(dirname "$exe")" 2>/dev/null | tail -1)"
+return 1
+fi
+else
+hlog INFO "backup already valid: ${bkp}"
+fi
+hw_file_facts "$bkp" "backup"
+
+tmp="$(mktemp "${exe}.hwtmp.XXXXXX" 2>/dev/null)"
+if [[ -z "$tmp" ]]; then
+hlog ERR "cannot create temp file next to the binary"
+return 1
+fi
+
+hw_apply_bytes "$bkp" "$tmp" >> "$HW_LOG" 2>&1
+rc=$?
+hlog DBG "byte-rewrite rc=${rc}"
+if (( rc == 90 )); then
+hlog ERR "replacement string length mismatch - refusing to resize the binary"
+rm -f "$tmp"; return 1
+fi
+if (( rc != 0 && rc != 91 )); then
+hlog ERR "byte rewrite failed (rc=${rc}) - nothing changed"
+rm -f "$tmp"; return 1
+fi
+
+size_after="$(stat -c '%s' "$tmp" 2>/dev/null)"
+hlog DBG "size check: before=${size_before} after=${size_after}"
+if [[ "$size_before" != "$size_after" ]]; then
+hlog ERR "size changed (${size_before} -> ${size_after}) - aborting, binary untouched"
+rm -f "$tmp"; return 1
+fi
+if grep -qa 'wine_get_version' "$tmp" 2>/dev/null; then
+hlog ERR "patched copy still contains wine_get_version - aborting, binary untouched"
+rm -f "$tmp"; return 1
+fi
+
+if ! hw_write_inplace "$tmp" "$exe"; then
+hlog ERR "in-place write failed - restoring from backup"
+cat "$bkp" > "$exe" 2>/dev/null
+rm -f "$tmp"; return 1
+fi
+rm -f "$tmp"
+
+chown "$own" "$exe" 2>/dev/null || hlog WARN "chown ${own} failed"
+chmod "$mode" "$exe" 2>/dev/null || hlog WARN "chmod ${mode} failed"
+hw_file_facts "$exe" "after"
+
+if grep -qa 'wine_get_version' "$exe" 2>/dev/null; then
+hlog ERR "patch did not stick - restoring backup"
+cat "$bkp" > "$exe" 2>/dev/null
+chown "$own" "$exe" 2>/dev/null; chmod "$mode" "$exe" 2>/dev/null
+return 1
+fi
+if [[ "$(stat -c '%U:%G' "$exe" 2>/dev/null)" != "$own" ]]; then
+hlog ERR "ownership drifted to $(stat -c '%U:%G' "$exe" 2>/dev/null) - the terminal will not start; fixing"
+chown "$own" "$exe" 2>/dev/null
+fi
+hlog OK "patched - MT5 can no longer resolve wine_get_version"
+if grep -qaE 'wine_get_(host_version|build_id)' "$exe" 2>/dev/null; then
+hlog WARN "wine_get_host_version / wine_get_build_id still present - the Linux part may still show"
+else
+hlog OK "wine_get_host_version and wine_get_build_id also gone - Wine and Linux parts are both hidden"
+fi
+hlog INFO "size/owner/mode preserved: $(stat -c '%s bytes %U:%G %a' "$exe" 2>/dev/null)"
+hlog STEP "=== PATCH DONE slug=${slug} ==="
+return 0
 }
 
 hide_wine_restore_one() {
@@ -1200,6 +1248,18 @@ return 0
 fi
 hlog WARN "restored, but wine_get_version is still absent - backup may itself be patched"
 return 0
+}
+
+hide_wine_restore_all() {
+local slug exe wineprefix termpath n_ok=0 n_fail=0
+if [[ ! -s "$TERMINALS_FILE" ]]; then err "No terminals registered."; return 1; fi
+while IFS='|' read -r slug exe wineprefix termpath; do
+[[ -z "${slug:-}" || -z "${wineprefix:-}" ]] && continue
+if hide_wine_restore_one "$wineprefix" "$slug"; then ((n_ok++)); else ((n_fail++)); fi
+done < "$TERMINALS_FILE"
+echo; header
+ok "Restored ${n_ok}, failed ${n_fail}."
+header
 }
 
 hide_wine_diagnose() {
@@ -1270,14 +1330,8 @@ info "full file: ${HW_LOG}  (live: tail -f ${HW_LOG})"
 }
 
 hide_wine_confirm() {
-if [[ "${HW_MODE:-host}" == "full" ]]; then
-warn "FULL hide: renames wine_get_version, wine_get_host_version and wine_get_build_id in Wine's ntdll.dll."
-warn "On the current MT5 build this makes the terminal window come up blank or close itself."
-else
-warn "This renames the wine_get_host_version export in Wine's ntdll.dll (a .orig-hide backup is kept)."
-warn "The Linux / kernel text disappears from the Journal. MT5 still detects Wine, so its UI keeps working."
-fi
-warn "terminal64.exe is NOT modified. It applies to every terminal - restart them afterwards."
+warn "This edits terminal64.exe in place (a .orig-wine-detect backup is kept)."
+warn "Only needed when Wine is NOT a staging build. Stop the affected terminal(s) first."
 echo
 local ans=""
 [[ -t 0 ]] || return 0
@@ -1285,6 +1339,20 @@ read -rp "$(echo -e "Type ${BOLD}yes${NC} to proceed: ")" ans || ans=""
 [[ "${ans,,}" == "yes" ]] && return 0
 warn "Cancelled - no changes made."
 return 1
+}
+
+hide_wine_apply_one() {
+local slug="$1" wineprefix
+wineprefix=$(awk -F'|' -v s="$slug" '$1==s{print $3; exit}' "$TERMINALS_FILE" 2>/dev/null)
+if [[ -z "$wineprefix" ]]; then err "Terminal not found: $slug"; return 1; fi
+hide_wine_binary_patch "$wineprefix" "$slug"
+}
+
+hide_wine_restore_slug() {
+local slug="$1" wineprefix
+wineprefix=$(awk -F'|' -v s="$slug" '$1==s{print $3; exit}' "$TERMINALS_FILE" 2>/dev/null)
+if [[ -z "$wineprefix" ]]; then err "Terminal not found: $slug"; return 1; fi
+hide_wine_restore_one "$wineprefix" "$slug"
 }
 
 hide_wine_diagnose_slug() {
@@ -1307,6 +1375,34 @@ while IFS='|' read -r slug exe wineprefix termpath; do
 [[ -z "${slug:-}" || -z "${wineprefix:-}" ]] && continue
 hw_journal_verify "$wineprefix" "$slug"
 done < "$TERMINALS_FILE"
+}
+
+hide_wine_binary_patch_all() {
+if [[ ! -s "$TERMINALS_FILE" ]]; then
+err "No terminals registered."
+return 1
+fi
+if [[ "${HW_SKIP_CONFIRM:-0}" != "1" ]]; then
+echo
+header
+title "HIDE WINE FROM MT5 - terminal64.exe binary patch"
+header
+hide_wine_confirm || return 1
+fi
+local slug exe wineprefix termpath n_ok=0 n_fail=0
+while IFS='|' read -r slug exe wineprefix termpath; do
+[[ -z "${slug:-}" ]] && continue
+[[ -z "${wineprefix:-}" ]] && continue
+if hide_wine_binary_patch "$wineprefix" "$slug"; then ((n_ok++)); else ((n_fail++)); fi
+done < "$TERMINALS_FILE"
+echo
+header
+if (( n_fail == 0 )); then
+ok "Done on ${n_ok} terminal(s). Restart them, then run: hidewine verify"
+else
+warn "${n_ok} done, ${n_fail} failed - see ${HW_LOG}"
+fi
+header
 }
 
 hw_pick_terminal() {
@@ -1338,6 +1434,22 @@ info "Selected: ${BOLD}${HW_PICK_SLUG}${NC}"
 return 0
 }
 
+hide_wine_binary_patch_pick() {
+hw_pick_terminal || return 1
+hw_preview "$HW_PICK_PREFIX" "$HW_PICK_SLUG" patch
+case $? in
+2) return 0 ;;
+1) return 1 ;;
+esac
+hide_wine_confirm || return 1
+if hide_wine_binary_patch "$HW_PICK_PREFIX" "$HW_PICK_SLUG"; then
+echo
+ok "Restart ${HW_PICK_SLUG} only, then check its Journal tab."
+info "After restarting it, option 5 checks that the Journal really shows no Wine / Linux."
+info "If it does not start: option 2 (diagnose) shows exactly where it dies."
+fi
+}
+
 hide_wine_diagnose_pick() {
 hw_pick_terminal || return 1
 hide_wine_diagnose "$HW_PICK_PREFIX" "$HW_PICK_SLUG"
@@ -1357,12 +1469,12 @@ hw_log_init
 local CH
 echo
 header
-title "HIDE WINE FROM MT5 - Wine ntdll export patch (terminal files untouched)"
+title "HIDE WINE FROM MT5 - terminal64.exe binary patch"
 header
 echo -e "  wine: ${BOLD}$(wine_version_string)${NC}   ${DIM}(MT5 sees: on $(wine_full_string))${NC}"
 echo -e "  log:  ${DIM}${HW_LOG}${NC}"
 echo
-echo -e "  ${BOLD}1)${NC} Hide the Linux / kernel text from MT5 ${DIM}(all terminals, keeps the UI working)${NC}"
+echo -e "  ${BOLD}1)${NC} Patch a terminal from the list"
 echo -e "  ${BOLD}2)${NC} Diagnose a terminal ${DIM}(launch it, capture the full wine log)${NC}"
 echo -e "  ${BOLD}3)${NC} Show log ${DIM}(last 120 lines)${NC}"
 echo -e "  ${BOLD}4)${NC} Toggle verbose debug  ${DIM}[currently: ${HW_DEBUG:-0}]${NC}"
@@ -1372,7 +1484,7 @@ echo
 read -rp "Choice [${BOLD}1${NC}]: " CH || CH=""
 CH="${CH:-1}"
 case "${CH// /}" in
-1) hide_wine_apply_menu ;;
+1) hide_wine_binary_patch_pick ;;
 2) hide_wine_diagnose_pick ;;
 3) hide_wine_show_log 120 ;;
 5) hide_wine_verify_pick ;;
@@ -1663,10 +1775,9 @@ echo "  revert [slug]     - Revert compliance from all or specific terminal"
 echo "  status            - Show compliance status for all terminals"
 echo "  version [n|build] - Pick a Windows profile (preset number or build, e.g. 19045)"
 echo "  buildpatch [status|restore] - Make Wine's ntdll report the profile build (MT5 reads it from there)"
-echo "  hidewine [slug]   - Hide the Linux / kernel text: renames wine_get_host_version in Wine's ntdll (no slug = menu; all terminals)"
-echo "  hidewine all      - Same as above, no menu"
-echo "  hidewine full     - Also hide wine_get_version / wine_get_build_id (MT5 then loses its Wine UI: blank window on this build)"
-echo "  hidewine restore  - Undo the ntdll patch and any old terminal64.exe patch"
+echo "  hidewine [slug]   - Patch terminal64.exe (no slug = menu: all or pick one)"
+echo "  hidewine all      - Patch every terminal"
+echo "  hidewine restore [slug|all] - Undo the patch from the .orig-wine-detect backup"
 echo "  hidewine diagnose <slug>    - Launch the terminal and capture the full wine log"
 echo "  hidewine log [n]  - Show the hide-wine log (default 120 lines)"
 echo "  hidewine verify [slug] - After a restart, read the real Journal OS line and check for Wine / Linux"
@@ -1747,16 +1858,17 @@ esac
 hidewine)
 case "${2:-}" in
 "") hide_wine_menu ;;
-all) HW_SKIP_CONFIRM=1 hide_wine_apply ;;
-full) HW_MODE=full HW_SKIP_CONFIRM=1 hide_wine_apply ;;
-restore) hide_wine_restore_all ;;
+all) HW_SKIP_CONFIRM=1 hide_wine_binary_patch_all ;;
+restore)
+if [[ -n "${3:-}" && "${3}" != "all" ]]; then hide_wine_restore_slug "$3"; else hide_wine_restore_all; fi
+;;
 diagnose|diag)
 if [[ -z "${3:-}" ]]; then err "Usage: hidewine diagnose <slug>"; exit 1; fi
 hide_wine_diagnose_slug "$3"
 ;;
 log|logs) hide_wine_show_log "${3:-120}" ;;
 verify|check) if [[ -n "${3:-}" ]]; then hide_wine_verify_slug "$3"; else hide_wine_verify_all; fi ;;
-*) HW_SKIP_CONFIRM=1 hide_wine_apply ;;
+*) HW_SKIP_CONFIRM=1 hide_wine_apply_one "$2" ;;
 esac
 ;;
 version|profile)

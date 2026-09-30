@@ -170,8 +170,8 @@ def settings_view(uid, config, login=""):
     daily = _number(config.get("daily_threshold"), 80.0)
     overall = _number(config.get("overall_threshold"), 80.0)
     text = (
-        "🏆 <b>My alerts</b>\n"
-        "Your personal prop alerts: passed, failed, and near-limit warnings, "
+        "⚙️ <b>Alert settings</b>\n"
+        "Prop challenge alerts: passed, failed, and near-limit warnings, "
         "on every account you can see.\n\n"
         f"{'🟢' if enabled else '⚪'} Status: <b>{'ON' if enabled else 'OFF'}</b>\n"
         f"📆 Daily warning: <b>{daily:.0f}%</b> of the allowed daily loss\n"

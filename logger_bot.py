@@ -33,13 +33,15 @@ def _format_record(record: logging.LogRecord, formatter: logging.Formatter) -> s
 
 class TelegramLogHandler(logging.Handler):
     def __init__(self, loop, bot_getter, chat_id_getter, thread_id_getter,
-                 level=logging.WARNING, min_interval=1.0, queue_maxsize=500):
+                 level=logging.WARNING, min_interval=1.0, queue_maxsize=500,
+                 on_missing_thread=None):
         super().__init__(level=level)
         self._loop = loop
         self._bot_getter = bot_getter
         self._chat_id_getter = chat_id_getter
         self._thread_id_getter = thread_id_getter
         self._min_interval = min_interval
+        self._on_missing_thread = on_missing_thread
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=queue_maxsize)
         self._worker_task = None
         self.setFormatter(logging.Formatter("%(message)s"))
@@ -78,23 +80,54 @@ class TelegramLogHandler(logging.Handler):
         super().close()
 
     async def _worker(self):
+        warned_no_chat = False
         while True:
             text = await self._queue.get()
             bot = self._bot_getter()
             chat_id = self._chat_id_getter()
             thread_id = self._thread_id_getter()
-            if bot is not None and chat_id:
-                try:
-                    await bot.send_message(
-                        chat_id=chat_id,
-                        message_thread_id=thread_id or None,
-                        text=text,
-                        parse_mode="HTML",
-                    )
-                except TelegramError:
-                    pass
-                except Exception:
-                    pass
+            if bot is None or not chat_id:
+                if not warned_no_chat:
+                    warned_no_chat = True
+                    print("logger_bot: dropping log relay message(s) - "
+                          f"{'no bot instance' if bot is None else 'CHAT_ID is empty in heysolo_settings.json'} "
+                          "(this warning prints once; set chat_id / threads.log to fix it)",
+                          flush=True)
+                await asyncio.sleep(self._min_interval)
+                continue
+            warned_no_chat = False
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    message_thread_id=thread_id or None,
+                    text=text,
+                    parse_mode="HTML",
+                )
+            except TelegramError as e:
+                if "thread not found" in str(e).lower() and self._on_missing_thread is not None:
+                    print(f"logger_bot: thread {thread_id} is gone - recreating it: {e}", flush=True)
+                    try:
+                        await self._on_missing_thread()
+                    except Exception as heal_err:
+                        print(f"logger_bot: could not recreate the topic: {heal_err}", flush=True)
+                    else:
+                        new_thread_id = self._thread_id_getter()
+                        try:
+                            await bot.send_message(
+                                chat_id=self._chat_id_getter(),
+                                message_thread_id=new_thread_id or None,
+                                text=text,
+                                parse_mode="HTML",
+                            )
+                        except Exception as retry_err:
+                            print(f"logger_bot: retry after recreating the topic still failed: "
+                                  f"{retry_err}", flush=True)
+                else:
+                    print(f"logger_bot: failed to relay log to chat_id={chat_id} "
+                          f"thread_id={thread_id}: {e}", flush=True)
+            except Exception as e:
+                print(f"logger_bot: unexpected error relaying log to chat_id={chat_id} "
+                      f"thread_id={thread_id}: {e}", flush=True)
             await asyncio.sleep(self._min_interval)
 
 
@@ -104,16 +137,18 @@ _installed_handler: TelegramLogHandler | None = None
 _installed_target: str | None = None
 
 
-def install(app, chat_id, thread_id, level=logging.WARNING, logger_name=None):
+def install(app, chat_id, thread_id, level=logging.WARNING, logger_name=None,
+            on_missing_thread=None):
     global _installed_handler, _installed_target
     uninstall()
     loop = asyncio.get_event_loop()
     handler = TelegramLogHandler(
         loop,
         bot_getter=lambda: app.bot,
-        chat_id_getter=lambda: chat_id,
-        thread_id_getter=lambda: thread_id,
+        chat_id_getter=chat_id if callable(chat_id) else (lambda: chat_id),
+        thread_id_getter=thread_id if callable(thread_id) else (lambda: thread_id),
         level=level,
+        on_missing_thread=on_missing_thread,
     )
     handler.start()
     target = logging.getLogger(logger_name) if logger_name else logging.getLogger()
