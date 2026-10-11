@@ -13,6 +13,11 @@
 //|  - Control Center > Copier > Get signals from ACHCMBias = OFF     |
 //|    =>  ACHCMBias کاملاً نادیده گرفته می‌شود (نه پنل، نه فیلتر).    |
 //|  - گوشه پایین-راست (◢) را بکشید تا اندازه پنل عوض شود (۷۰٪ تا ۲۰۰٪). |
+//|  - API (ACHCMBias روی سرور دیگر): فید امضاشده از ربات تلگرام      |
+//|    خوانده می‌شود  GET http://BOT/bs/<token>                        |
+//|    لینک: ربات > Admin > ACHCMBias API > Hey Solo account  (خودکار)  |
+//|    یا Control Center > Copier > ACHCMBias over API + API URL       |
+//|    فایل محلی هم همزمان خوانده می‌شود؛ بهترین/تازه‌ترین برنده است.   |
 //|                                                                  |
 //|  نصب (داخل Hey Solo [ATM].mq5) - قبلاً انجام شده:                 |
 //|   OnInit:        HSG_Init();                                      |
@@ -49,6 +54,14 @@ bool HSG_REQ[HSG_NF] = { true,  true,  true,    true, true,  true };   // requir
 #define HSG_SETFILE    "Hey Solo\\BiasGate_"
 #define HSG_REFRESH_MS 500
 #define HSG_MAXROWS    40
+
+//--- API mode (ACHCMBias on another server, relayed by the Telegram bot)
+#define HSG_BOTCFG       "TelegramBridge\\Control\\BiasFeed_"   // RX_URL=... written by the bot
+#define HSG_CFG_MS       5000    // re-read the bot file this often
+#define HSG_API_POLL_MS  2000    // GET the feed this often
+#define HSG_API_TIMEOUT  2500    // WebRequest timeout (ms)
+#define HSG_API_COOLDOWN 20      // seconds to wait after a failed GET
+#define HSG_API_KEEP_SEC 60      // last good answer older than this = no API data
 
 //--- layout (base px @96dpi)
 #define HSG_PAD   12
@@ -130,6 +143,12 @@ bool    HSG_resize = false;
 bool    HSG_drag = false, HSG_prevBtn = false, HSG_scrollWas = true;
 int     HSG_dX = 0, HSG_dY = 0;
 
+//--- API runtime
+string   HSG_apiBody = "", HSG_apiErr = "", HSG_apiLastURL = "", HSG_cfgURL = "";
+ulong    HSG_apiAt = 0, HSG_apiTry = 0, HSG_cfgAt = 0;
+bool     HSG_apiOk = true;
+datetime HSG_apiFailAt = 0;
+
 //==================================================================
 // Basics
 //==================================================================
@@ -196,7 +215,7 @@ string HSG_NameF(const HSGFeed &f, const int i) { return HSG_NameTF(f.tf[0], f.t
 //==================================================================
 // Feed (signed file in the Common folder, written by ACHCMBias)
 //==================================================================
-void HSG_ParseLine(const string &p[], HSGFeed &f)
+void HSG_ParseLine(const string &p[], HSGFeed &f, const int ageOverride = -1)
 {
    int a[HSF_NK];
    f.sym = p[0];
@@ -209,7 +228,7 @@ void HSG_ParseLine(const string &p[], HSGFeed &f)
    f.v[0]   = a[1]; f.boff = (a[2] != 0); f.manual = (a[3] != 0);
    f.v[1]   = a[4]; f.v[2] = a[5]; f.v[3] = a[6]; f.v[4] = a[7]; f.v[5] = a[8];
    f.tf[0]  = a[9]; f.tf[1] = a[10]; f.tf[2] = a[11]; f.tf[3] = a[12];
-   long age = (long)TimeLocal() - ts;
+   long age = (ageOverride >= 0 ? (long)ageOverride : (long)TimeLocal() - ts);
    f.age    = (int)(age < 0 ? 0 : (age > 99999999 ? 99999999 : age));
 
    if(!ok)                         f.state = 4;
@@ -220,6 +239,31 @@ void HSG_ParseLine(const string &p[], HSGFeed &f)
 
 int HSG_Rank(const int state) { return (state == 1 ? 3 : (state == 5 ? 2 : (state == 3 ? 1 : 0))); }
 
+// one feed line (file or API) -> rows; same symbol from several ACHCMBias: keep the best / newest
+void HSG_AddLine(string ln, HSGFeed &rows[], const int ageOverride = -1)
+{
+   StringTrimLeft(ln); StringTrimRight(ln);
+   if(ln == "" || StringGetCharacter(ln, 0) == '#') return;
+   string p[];
+   if(StringSplit(ln, ';', p) != HSF_NK + 3) return;
+
+   HSGFeed f;
+   HSG_ParseLine(p, f, ageOverride);
+   if(f.age > HSG_DROP_SEC) return;
+
+   int n = ArraySize(rows), r = -1;
+   for(int i = 0; i < n; i++) if(rows[i].sym == f.sym) { r = i; break; }
+   if(r < 0)
+   {
+      if(n >= HSG_MAXROWS) return;
+      ArrayResize(rows, n + 1);
+      rows[n] = f;
+   }
+   else if(HSG_Rank(f.state) > HSG_Rank(rows[r].state) ||
+          (HSG_Rank(f.state) == HSG_Rank(rows[r].state) && f.age < rows[r].age))
+      rows[r] = f;
+}
+
 void HSG_ReadFile(const string path, HSGFeed &rows[])
 {
    int h = INVALID_HANDLE;
@@ -229,33 +273,107 @@ void HSG_ReadFile(const string path, HSGFeed &rows[])
       h = FileOpen(path, FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
    }
    if(h == INVALID_HANDLE) return;
+   while(!FileIsEnding(h)) HSG_AddLine(FileReadString(h), rows);
+   FileClose(h);
+}
 
+//==================================================================
+// API feed (Telegram bot relay)
+//==================================================================
+string HSG_Trim(string s) { StringTrimLeft(s); StringTrimRight(s); return s; }
+
+string HSG_ReadBotURL()
+{
+   string path = HSG_BOTCFG + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + ".txt";
+   if(!FileIsExist(path, FILE_COMMON)) return "";
+   int h = FileOpen(path, FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE) return HSG_cfgURL;   // bot is rewriting it: keep the last one
+   string url = "";
    while(!FileIsEnding(h))
    {
-      string ln = FileReadString(h);
-      StringTrimLeft(ln); StringTrimRight(ln);
-      if(ln == "" || StringGetCharacter(ln, 0) == '#') continue;
-      string p[];
-      if(StringSplit(ln, ';', p) != HSF_NK + 3) continue;
-
-      HSGFeed f;
-      HSG_ParseLine(p, f);
-      if(f.age > HSG_DROP_SEC) continue;
-
-      // same symbol from several ACHCMBias terminals: keep the best / newest
-      int n = ArraySize(rows), r = -1;
-      for(int i = 0; i < n; i++) if(rows[i].sym == f.sym) { r = i; break; }
-      if(r < 0)
-      {
-         if(n >= HSG_MAXROWS) continue;
-         ArrayResize(rows, n + 1);
-         rows[n] = f;
-      }
-      else if(HSG_Rank(f.state) > HSG_Rank(rows[r].state) ||
-             (HSG_Rank(f.state) == HSG_Rank(rows[r].state) && f.age < rows[r].age))
-         rows[r] = f;
+      string ln = HSG_Trim(FileReadString(h));
+      if(StringFind(ln, "RX_URL=") == 0) url = HSG_Trim(StringSubstr(ln, 7));
    }
    FileClose(h);
+   return url;
+}
+
+// "" = API off. Link set from the bot wins over the Control Center.
+string HSG_ApiURL()
+{
+   ulong now = GetTickCount64();
+   if(HSG_cfgAt == 0 || now - HSG_cfgAt >= HSG_CFG_MS) { HSG_cfgURL = HSG_ReadBotURL(); HSG_cfgAt = now; }
+   string u = HSG_cfgURL;
+   if(u == "" && ACHCMFromAPI) u = HSG_Trim(ACHCMURL);
+   if(StringFind(u, "http://") != 0 && StringFind(u, "https://") != 0) return "";
+   while(StringLen(u) > 0 && StringSubstr(u, StringLen(u) - 1, 1) == "/") u = StringSubstr(u, 0, StringLen(u) - 1);
+   return u;
+}
+
+// urgent = right before a trade: refresh if the last try is older than 1s
+void HSG_ApiPoll(const bool urgent)
+{
+   string url = HSG_ApiURL();
+   if(url != HSG_apiLastURL)
+   {
+      HSG_apiLastURL = url; HSG_apiBody = ""; HSG_apiErr = ""; HSG_apiOk = true; HSG_apiTry = 0; HSG_apiAt = 0;
+      if(url != "") Print("Bias Gate: ACHCMBias API ON -> ", url);
+   }
+   if(url == "") return;
+   if(!HSG_apiOk && TimeLocal() < HSG_apiFailAt + HSG_API_COOLDOWN) return;
+   ulong now = GetTickCount64();
+   if(HSG_apiTry != 0 && now - HSG_apiTry < (ulong)(urgent ? 1000 : HSG_API_POLL_MS)) return;
+   HSG_apiTry = now;
+
+   char   data[], result[];
+   string rh;
+   ResetLastError();
+   int res = WebRequest("GET", url + "?l=" + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)), "", HSG_API_TIMEOUT, data, result, rh);
+   int err = GetLastError();
+   if(res == 200)
+   {
+      if(!HSG_apiOk) Print("✅ Bias Gate: ACHCMBias API connected");
+      HSG_apiBody = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+      HSG_apiAt   = GetTickCount64();
+      HSG_apiOk   = true;
+      HSG_apiErr  = "";
+      return;
+   }
+   string why;
+   if(res == -1 && err == 4014) why = "WebRequest not allowed for " + url;
+   else if(res == -1)           why = "bot unreachable";
+   else if(res == 403)          why = "invalid receiver link";
+   else                         why = "HTTP " + IntegerToString(res);
+   if(why != HSG_apiErr) Print("❌ Bias Gate: ACHCMBias API - ", why, " (error ", err, "). Retry in ", HSG_API_COOLDOWN, "s");
+   HSG_apiErr    = why;
+   HSG_apiOk     = false;
+   HSG_apiFailAt = TimeLocal();
+}
+
+// relay text: "#FEED=<login>" / "#AGE=<sec>" headers, then the signed lines exactly as ACHCMBias wrote them
+void HSG_ReadApi(HSGFeed &rows[])
+{
+   if(HSG_apiBody == "" || HSG_apiAt == 0 || HSG_ApiURL() == "") return;
+   int extra = (int)((GetTickCount64() - HSG_apiAt) / 1000);
+   if(extra > HSG_API_KEEP_SEC) return;
+   string ln[];
+   int n = StringSplit(HSG_apiBody, '\n', ln);
+   int age = -1;
+   for(int i = 0; i < n; i++)
+   {
+      string s = HSG_Trim(ln[i]);
+      if(StringFind(s, "#AGE=") == 0) { age = (int)StringToInteger(StringSubstr(s, 5)) + extra; continue; }
+      if(age < 0) continue;              // data line without relay age: ignore
+      HSG_AddLine(s, rows, age);
+   }
+}
+
+// why there are no rows at all
+string HSG_NoFeedWhy()
+{
+   if(HSG_ApiURL() == "") return "ACHCMBias is not running";
+   if(HSG_apiErr != "")   return "ACHCMBias API: " + HSG_apiErr;
+   return "ACHCMBias is not sending (API)";
 }
 
 int HSG_Collect(HSGFeed &rows[])
@@ -269,6 +387,7 @@ int HSG_Collect(HSGFeed &rows[])
       while(FileFindNext(hf, fn));
       FileFindClose(hf);
    }
+   HSG_ReadApi(rows);   // ACHCMBias on another server (bot relay)
    // keep the SymbolsInput order of ACHCMBias
    int cnt = ArraySize(rows);
    for(int i = 1; i < cnt; i++)
@@ -340,7 +459,7 @@ string HSG_Reason(const HSGFeed &f, const int dir)
 string HSG_CurWhy(const int dir)
 {
    if(HSG_ReqCount() == 0) return "";
-   if(ArraySize(HSG_rows) == 0) return "ACHCMBias is not running";
+   if(ArraySize(HSG_rows) == 0) return HSG_NoFeedWhy();
    if(HSG_cur < 0) return HSG_Sym() + " is not in ACHCMBias symbols";
    return HSG_Reason(HSG_rows[HSG_cur], dir);
 }
@@ -354,11 +473,12 @@ bool HSG_AllowTrade(const string symbol, const ENUM_ORDER_TYPE type)
    if(HSG_ReqCount() == 0) return true;
 
    int dir = HSG_Dir(type);
+   HSG_ApiPoll(true);   // fresh API data right before the entry
    HSGFeed rows[];
    HSG_Collect(rows);
    int r = HSG_FindRow(rows, symbol);
    string why;
-   if(ArraySize(rows) == 0) why = "ACHCMBias is not running";
+   if(ArraySize(rows) == 0) why = HSG_NoFeedWhy();
    else if(r < 0)           why = symbol + " is not in ACHCMBias symbols";
    else                     why = HSG_Reason(rows[r], dir);
    if(why == "") return true;
@@ -522,7 +642,8 @@ void HSG_Draw()
       if(n == 0)
       {
          HSG_Rect("r0_bg", 6, rowsY + 2, W - 12, HSG_ROWH - 4, HSG_C_REDBG, HSG_C_REDBG, 2);
-         HSG_Text("r0_msg", W / 2, rowsY + HSG_ROWH / 2, "ACHCMBias is not running on this terminal  ·  trading is locked",
+         string r0 = (HSG_ApiURL() == "" ? "ACHCMBias is not running on this terminal" : HSG_NoFeedWhy());
+         HSG_Text("r0_msg", W / 2, rowsY + HSG_ROWH / 2, HSG_Cut(r0, 70) + "  ·  trading is locked",
                   HSG_C_RED, 8, "Segoe UI Semibold", ANCHOR_CENTER);
       }
       for(int i = 0; i < n; i++)
@@ -602,7 +723,8 @@ void HSG_Update(bool force)
 
    int n = ArraySize(HSG_rows);
    string sig = HSG_Sym() + "|" + IntegerToString(HSG_cur) + (HSG_collapsed ? "C" : "c")
-              + "|" + IntegerToString(HSG_x) + "," + IntegerToString(HSG_y) + "," + DoubleToString(HSG_user, 2) + "|" + IntegerToString(n);
+              + "|" + IntegerToString(HSG_x) + "," + IntegerToString(HSG_y) + "," + DoubleToString(HSG_user, 2) + "|" + IntegerToString(n)
+              + "|" + HSG_apiLastURL + "|" + HSG_apiErr;
    for(int i = 0; i < n; i++)
    {
       sig += "|" + HSG_rows[i].sym + IntegerToString(HSG_rows[i].state) + (HSG_rows[i].boff ? "B" : "b") + (HSG_rows[i].manual ? "M" : "m");
@@ -690,6 +812,7 @@ void HSG_OnTimer()
    ulong now = GetTickCount64();
    if(now - HSG_lastRefresh < HSG_REFRESH_MS) return;
    HSG_lastRefresh = now;
+   HSG_ApiPoll(false);   // throttled inside (every 2s, cooldown on errors)
    HSG_Update(false);
 }
 
