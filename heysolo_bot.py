@@ -42,6 +42,8 @@ from db import database as heysolo_db
 from prop import notifications as prop_notifications
 from copier import server as copier_server
 from copier import panel as copier_panel
+from biasfeed import server as bias_server
+from biasfeed import panel as bias_panel
 from prop.plan_prop import format_prop_panel_message as _format_prop_panel_message
 from prop.plan_settings import format_settings_panel_message as _format_settings_panel_message
 from prop.plan_status import (
@@ -2077,6 +2079,7 @@ def admin_panel_view() -> dict:
          InlineKeyboardButton("📓 Chat Journal", callback_data="ADM_REPORT")],
         [InlineKeyboardButton("🗂 Files", callback_data="ADM_COMMON"),
          InlineKeyboardButton("📡 Copy Server", callback_data="ADM_CP")],
+        [InlineKeyboardButton("🧭 ACHCMBias API", callback_data="ADM_BF")],
     ])
     return {
         "text": f"{G_ADMIN} <b>Admin</b>\nPick an option.",
@@ -3063,6 +3066,18 @@ async def _handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
             await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"],
                                          parse_mode=v["parse_mode"], disable_web_page_preview=True)
 
+    elif data.startswith("ADM_BF"):
+        res = await bias_panel.handle_callback(data, uid, _pending)
+        await q.answer(res["answer"] or None, show_alert=res["alert"])
+        thread_id = q.message.message_thread_id if getattr(q.message, "is_topic_message", False) else None
+        for line in res["send"]:
+            await context.bot.send_message(chat_id=q.message.chat_id, message_thread_id=thread_id,
+                                           text=line, disable_web_page_preview=True)
+        v = res["view"]
+        if v:
+            await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"],
+                                         parse_mode=v["parse_mode"], disable_web_page_preview=True)
+
     elif data == "ADM_COMMON_TEST":
         await q.answer("Testing...")
         await show_working(q, "Running connection test...")
@@ -3100,6 +3115,18 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text(f"{G_BAD} Admins only.")
                 return
             res = await copier_panel.handle_text(action, text, uid, _pending)
+            for line in res["send"]:
+                await msg.reply_text(line, disable_web_page_preview=True)
+            v = res["view"]
+            if v:
+                await msg.reply_text(v["text"], reply_markup=v["reply_markup"],
+                                     parse_mode=v["parse_mode"], disable_web_page_preview=True)
+            return
+        if action.startswith("bf_"):
+            if not heysolo_db.is_admin(uid):
+                await msg.reply_text(f"{G_BAD} Admins only.")
+                return
+            res = await bias_panel.handle_text(action, text, uid, _pending)
             for line in res["send"]:
                 await msg.reply_text(line, disable_web_page_preview=True)
             v = res["view"]
@@ -3774,7 +3801,10 @@ async def post_init(app: Application):
     asyncio.create_task(
         prop_notifications.watch_prop_alerts(
             app, read_dashboard, list_accounts, heysolo_db, CHAT_ID))
+    bias_panel.setup(accounts_fn=list_accounts,
+                     control_dir_fn=lambda login: root_for_login(str(login)).control)
     await asyncio.to_thread(copier_server.start_from_settings)
+    await asyncio.to_thread(bias_server.start_from_settings)
     await send_startup_notice(app.bot)
     log.debug("Bot started. Watching %d folder(s): %s", len(ROOTS),
              " | ".join(f"{r.source}:{r.path}" for r in ROOTS))

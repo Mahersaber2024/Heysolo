@@ -40,6 +40,7 @@ def _get_default_settings() -> dict:
         "db_password": DEFAULT_DB_PASSWORD,
         "installed_at": "",
         "copier": {},
+        "biasfeed": {},
         "user_langs": {},
     }
 
@@ -276,6 +277,15 @@ def get_copier_config() -> Dict[str, Any]:
 def set_copier_config(config: Dict[str, Any]):
     data = _load()
     data["copier"] = dict(config)
+    _save(data)
+
+def get_biasfeed_config() -> Dict[str, Any]:
+    value = _load().get("biasfeed")
+    return dict(value) if isinstance(value, dict) else {}
+
+def set_biasfeed_config(config: Dict[str, Any]):
+    data = _load()
+    data["biasfeed"] = dict(config)
     _save(data)
 
 def is_first_run() -> bool:

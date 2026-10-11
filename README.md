@@ -257,6 +257,31 @@ keyboard, or the button on any account card).
  request history is kept in `ea_settings_requests.json` next to
  `heysolo_settings.json`.
 
+## ACHCMBias Signals over API (EAs on different servers)
+Hey Solo [ATM] normally reads the ACHCMBias scanner from a signed file in
+`Common\Files\HeySolo_ACHCM`, which only works when both EAs run on the same
+PC. The bot can now relay that same signed feed, so ACHCMBias and Hey Solo can
+run anywhere. Everything is set from Telegram: **Admin → 🧭 ACHCMBias API**.
+- **＋ New channel** gives two links:
+  - **Transmitter** `http://SERVER/bx/<token>` → ACHCMBias POSTs its feed here.
+  - **Receiver** `http://SERVER/bs/<token>` → Hey Solo GETs it (read only).
+- **📤 ACHCMBias account / 📥 Hey Solo account** - pick the MT5 login; the bot
+  writes the link to `Common\Files\TelegramBridge\Control\BiasFeed_<login>.txt`
+  (`TX_URL=` / `RX_URL=`) and the EAs pick it up within ~5s. For a terminal
+  the bot can't see, paste the link by hand: ACHCMBias input **Bias API URL**,
+  or Hey Solo Control Center › Copier › **ACHCMBias over API** + **ACHCMBias
+  API URL** (also editable from ⚙️ EA Settings).
+- Allow WebRequest for the server address in **both** MT5.
+- It is its **own server**, fully independent from the Copy Server: own
+  **▶ Turn on / ■ Turn off**, **Port** (default 8080), **Address**, channels and
+  tokens (settings key `biasfeed`). It always uses a different port than the
+  Copy Server (80) - the bot refuses the Copy Server's port - so the two never
+  mix. Allow WebRequest with the port, e.g. `http://SERVER_IP:8080`.
+- The bot never signs or edits a line: the salt stays inside the EAs. Staleness
+  uses the relay's own age, so server clocks/time zones don't matter. When
+  ACHCMBias stops (or is silent for 2 min) Hey Solo blocks new trades as before.
+- Local file mode keeps working at the same time; the freshest valid feed wins.
+
 ## Service Management
 
 ```bash
@@ -298,6 +323,7 @@ mt5.sh                 MT5/VNC installer, called by heysolo.sh (panel: P, I) -
 uninstall.sh           uninstall component, called by heysolo.sh (panel: X)
 heysolo_bot.py         the bot itself
 heysolo_settings.py    settings handling
+biasfeed/              ACHCMBias -> Hey Solo signal relay (Admin › ACHCMBias API)
 ```
 
 ## Bot Commands
