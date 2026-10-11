@@ -74,6 +74,10 @@ MQL5_LOCAL_DIR="/opt/heysolo/bot/MT5"
 
 TERMINALS_FILE="${STATE_DIR}/terminals.list"
 VNC_PASS_FILE="/home/${MT5_USER}/.vnc/passwd"
+START_LOCK_FILE="${STATE_DIR}/start.lock"
+START_STAGGER_SEC="${START_STAGGER_SEC:-20}"
+START_READY_TIMEOUT="${START_READY_TIMEOUT:-60}"
+STARTUP_SWAP_MIN_GB="${STARTUP_SWAP_MIN_GB:-2}"
 
 if [[ -t 1 ]]; then
   RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -104,6 +108,42 @@ require_root(){
 }
 
 log_line(){ printf '%s %s\n' "$(date '+%F %T' 2>/dev/null)" "$1" 2>/dev/null >> "${HEYSOLO_LOG}" || true; }
+
+configure_memory_safety(){
+  local sysctl_file="/etc/sysctl.d/99-heysolo-memory.conf"
+  local swap_total_kb=0 ram_kb=0 target_kb=0 free_kb=0
+  mkdir -p "${STATE_DIR}" 2>/dev/null || true
+  cat > "${sysctl_file}" <<EOF
+vm.swappiness=80
+vm.vfs_cache_pressure=50
+vm.page-cluster=0
+EOF
+  sysctl --system >/dev/null 2>&1 || {
+    sysctl -w vm.swappiness=80 vm.vfs_cache_pressure=50 vm.page-cluster=0 >/dev/null 2>&1 || true
+  }
+  swap_total_kb=$(awk 'NR>1 {s+=$3} END{print s+0}' /proc/swaps 2>/dev/null || echo 0)
+  if (( swap_total_kb < STARTUP_SWAP_MIN_GB * 1024 * 1024 )); then
+    ram_kb=$(awk '/MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo 0)
+    target_kb=$((STARTUP_SWAP_MIN_GB * 1024 * 1024))
+    (( ram_kb > 0 && target_kb > ram_kb * 2 )) && target_kb=$((ram_kb * 2))
+    free_kb=$(df -Pk / 2>/dev/null | awk 'NR==2 {print $4+0}')
+    if (( free_kb > target_kb + 1048576 )) && [[ ! -e /swapfile ]]; then
+      if command -v fallocate >/dev/null 2>&1; then
+        fallocate -l "${target_kb}K" /swapfile 2>/dev/null || true
+      else
+        dd if=/dev/zero of=/swapfile bs=1K count="${target_kb}" status=none 2>/dev/null || true
+      fi
+      chmod 600 /swapfile
+      mkswap /swapfile >/dev/null 2>&1 || true
+      swapon /swapfile >/dev/null 2>&1 || true
+      grep -qE '^[[:space:]]*/swapfile[[:space:]]' /etc/fstab 2>/dev/null ||
+        printf '/swapfile none swap sw 0 0\n' >> /etc/fstab
+      log_line "memory safety: ensured ${STARTUP_SWAP_MIN_GB}G startup swap target"
+    fi
+  fi
+  free_kb=$(awk 'NR==3 {print $4+0}' /proc/meminfo 2>/dev/null || echo 0)
+  log_line "memory safety: swap=${swap_total_kb}K free=${free_kb}K swappiness=$(cat /proc/sys/vm/swappiness 2>/dev/null || echo unknown)"
+}
 
 start_logging(){
   mkdir -p "$(dirname "${HEYSOLO_LOG}")" 2>/dev/null || true
@@ -3092,6 +3132,20 @@ start_terminal(){
     warn "${slug}: terminal64.exe not found (was the wizard completed?)."
     return 1
   fi
+  local lock_fd
+  exec {lock_fd}>"${STATE_DIR}/${slug}.start.lock"
+  if ! flock -w 120 "${lock_fd}"; then
+    warn "${slug}: another start/stop operation is still running; skipping duplicate launch."
+    eval "exec ${lock_fd}>&-"
+    return 1
+  fi
+  if terminal_status "${slug}" "${wineprefix}" "${termpath}" | grep -q '^ACTIVE$'; then
+    info "${slug} is already running."
+    eval "exec ${lock_fd}>&-"
+    return 0
+  fi
+  mkdir -p "${STATE_DIR}" "${MT5_HOME}/.heysolo/logs" 2>/dev/null || true
+  local launch_env="MALLOC_ARENA_MAX=2 WINEDEBUG=-all WINEESYNC=0 WINEFSYNC=0"
   local visible
   if declare -F terminal_desktop_visible >/dev/null 2>&1; then
     visible=$(terminal_desktop_visible "${slug}")
@@ -3101,28 +3155,40 @@ start_terminal(){
   if [[ "${visible}" == "0" ]]; then
 
     as_mt5 "screen -dmS ${slug} bash -c '
-      export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
+      export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix} ${launch_env};
       wine \"${termpath}\"'"
     if declare -F desktop_hide_background_terminal >/dev/null 2>&1; then
       ( desktop_hide_background_terminal "${termpath}" & )
     fi
+    sleep 2
+    eval "exec ${lock_fd}>&-"
     return 0
   fi
 
   if [[ "${WINE_VDESKTOP:-0}" == "1" ]]; then
     as_mt5 "screen -dmS ${slug} bash -c '
-      export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
+      export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix} ${launch_env};
       wine explorer /desktop=${slug},${WORK_RES_WH:-${SCREEN_RES%x*}} \"${termpath}\"'"
   else
     as_mt5 "screen -dmS ${slug} bash -c '
-      export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix};
+      export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX=${wineprefix} ${launch_env};
       wine \"${termpath}\"'"
   fi
   ( fit_new_window_to_workarea "${slug}" "${termpath}" & )
+  sleep 2
+  eval "exec ${lock_fd}>&-"
 }
 
 graceful_stop_terminal(){
   local slug="$1" termpath="$2" timeout="${3:-20}" wid pid waited=0
+  local lock_fd
+  mkdir -p "${STATE_DIR}" 2>/dev/null || true
+  exec {lock_fd}>"${STATE_DIR}/${slug}.start.lock"
+  if ! flock -w 120 "${lock_fd}"; then
+    warn "${slug}: another terminal operation is still running; stop request ignored."
+    eval "exec ${lock_fd}>&-"
+    return 1
+  fi
 
   pid=$(as_mt5 "pgrep -f '${termpath}'" 2>/dev/null | head -n1)
   if [[ -n "${pid}" ]]; then
@@ -3143,6 +3209,7 @@ graceful_stop_terminal(){
     as_mt5 "pkill -f '${termpath}'" 2>/dev/null || true
   fi
   as_mt5 "screen -S ${slug} -X quit" 2>/dev/null || true
+  eval "exec ${lock_fd}>&-"
 }
 
 start_all_terminals(){
@@ -3151,19 +3218,44 @@ start_all_terminals(){
     return
   fi
   dedupe_terminals
+  mkdir -p "${STATE_DIR}" 2>/dev/null || true
+  local all_lock_fd
+  exec {all_lock_fd}>"${START_LOCK_FILE}"
+  if ! flock -w 180 "${all_lock_fd}"; then
+    warn "Another terminal batch is already starting. The second request was ignored."
+    eval "exec ${all_lock_fd}>&-"
+    return 1
+  fi
+  configure_memory_safety
   local slug exe wineprefix termpath
+  local started=0
   while IFS='|' read -r slug exe wineprefix termpath; do
     [[ -z "${slug:-}" ]] && continue
-    if as_mt5 "screen -ls" 2>/dev/null | grep -qE "\.${slug}[[:space:]]"; then
+    if terminal_status "${slug}" "${wineprefix:-}" "${termpath:-}" | grep -q '^ACTIVE$'; then
       info "${slug} is already running."
       continue
+    fi
+    if (( started > 0 )); then
+      info "Cooling down ${START_STAGGER_SEC}s before the next Wine terminal..."
+      sleep "${START_STAGGER_SEC}"
     fi
     info "Starting terminal ${slug}..."
     if start_terminal "${slug}" "${wineprefix}" "${termpath:-}"; then
       ok "${slug} started."
+      started=$((started + 1))
+      local waited=0
+      while ! terminal_status "${slug}" "${wineprefix:-}" "${termpath:-}" | grep -q '^ACTIVE$' \
+            && (( waited < START_READY_TIMEOUT )); do
+        sleep 2
+        waited=$((waited + 2))
+      done
+      if (( waited >= START_READY_TIMEOUT )); then
+        warn "${slug}: process did not become visible within ${START_READY_TIMEOUT}s; continuing without launching another copy."
+      fi
     fi
   done < "${TERMINALS_FILE}"
   declare -F desktop_ensure_window_guard >/dev/null 2>&1 && desktop_ensure_window_guard || true
+  eval "exec ${all_lock_fd}>&-"
 }
 
 manage_one_terminal(){
