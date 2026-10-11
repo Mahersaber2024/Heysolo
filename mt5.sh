@@ -67,7 +67,9 @@ wineprefix_for_slug(){ echo "${WINEPREFIX_BASE}/${1}"; }
 
 SHARED_MT5_COMMON_DIR="/home/${MT5_USER}/.heysolo-common"
 
-MT5_LOCAL_DIR="/opt/heysolo/mt5"
+MT5_LOCAL_DIR="/opt/heysolo/bot/Meta5"
+LEGACY_MT5_LOCAL_DIR="/opt/heysolo/mt5"
+MT5_REPO_SUBDIR="Meta5"
 MQL5_LOCAL_DIR="/opt/heysolo/bot/MT5"
 
 TERMINALS_FILE="${STATE_DIR}/terminals.list"
@@ -2221,14 +2223,44 @@ print_terminal_list(){
 
 ensure_local_mt5_dir(){
   mkdir -p "${MT5_LOCAL_DIR}"
+  if [[ -d "${LEGACY_MT5_LOCAL_DIR}" && "${LEGACY_MT5_LOCAL_DIR%/}" != "${MT5_LOCAL_DIR%/}" ]]; then
+    local old_exe moved_n=0
+    while IFS= read -r old_exe; do
+      [[ -z "${old_exe}" ]] && continue
+      if [[ ! -e "${MT5_LOCAL_DIR}/$(basename "${old_exe}")" ]]; then
+        mv -n "${old_exe}" "${MT5_LOCAL_DIR}/" 2>/dev/null && moved_n=$((moved_n+1))
+      fi
+    done < <(find "${LEGACY_MT5_LOCAL_DIR}" -maxdepth 1 -type f -iname '*.exe' 2>/dev/null)
+    (( moved_n > 0 )) && info "Moved ${moved_n} installer(s) from ${LEGACY_MT5_LOCAL_DIR} into ${MT5_LOCAL_DIR}."
+    rmdir "${LEGACY_MT5_LOCAL_DIR}" 2>/dev/null || true
+  fi
   if id "${MT5_USER}" &>/dev/null; then
     chown -R "${MT5_USER}:${MT5_USER}" "${MT5_LOCAL_DIR}" 2>/dev/null || true
   fi
   chmod 2775 "${MT5_LOCAL_DIR}" 2>/dev/null || chmod 775 "${MT5_LOCAL_DIR}" 2>/dev/null || true
 }
 
+HEYSOLO_SETS_DIR_NAME="HeySoloATM_Sets"
+
+merge_heysolo_sets_variants(){
+  local parent="${1%/}" canon_name="${2:-${HEYSOLO_SETS_DIR_NAME}}" d base norm
+  [[ -d "${parent}" ]] || return 0
+  while IFS= read -r d; do
+    [[ -z "${d}" ]] && continue
+    base="$(basename "${d}")"
+    [[ "${base}" == "${canon_name}" ]] && continue
+    norm="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]' | tr -d '_ -')"
+    [[ "${norm}" == "heysoloatmsets" ]] || continue
+    mkdir -p "${parent}/${canon_name}" 2>/dev/null || true
+    cp -rn "${d}/." "${parent}/${canon_name}/" 2>/dev/null || true
+    rm -rf "${d}"
+    info "Merged duplicate folder ${base}/ into ${canon_name}/ (${parent})."
+  done < <(find "${parent}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
+}
+
 ensure_mql5_local_dir(){
   mkdir -p "${MQL5_LOCAL_DIR}"/{Experts,Include,Indicators,set,Templates}
+  merge_heysolo_sets_variants "${MQL5_LOCAL_DIR}"
   if id "${MT5_USER}" &>/dev/null; then
     chown -R "${MT5_USER}:${MT5_USER}" "${MQL5_LOCAL_DIR}" 2>/dev/null || true
   fi
@@ -2496,9 +2528,10 @@ sync_mql5_assets_all(){
   header
 }
 
-HEYSOLO_SETS_LOCAL_DIR="${MQL5_LOCAL_DIR}/HeySoloATM_Sets"
+HEYSOLO_SETS_LOCAL_DIR="${MQL5_LOCAL_DIR}/${HEYSOLO_SETS_DIR_NAME}"
 
 ensure_heysolo_sets_local_dir(){
+  merge_heysolo_sets_variants "${MQL5_LOCAL_DIR}"
   mkdir -p "${HEYSOLO_SETS_LOCAL_DIR}"
   if id "${MT5_USER}" &>/dev/null; then
     chown -R "${MT5_USER}:${MT5_USER}" "${HEYSOLO_SETS_LOCAL_DIR}" 2>/dev/null || true
@@ -2616,6 +2649,7 @@ sync_heysolo_atm_sets(){
   HEYSOLO_SETS_DIR_OWNER["${mql5_dir}"]="${slug}"
 
   local dest="${mql5_dir}/Files/HeySoloATM_Sets"
+  merge_heysolo_sets_variants "${mql5_dir}/Files"
   local n_src
   n_src=$(find "${HEYSOLO_SETS_LOCAL_DIR}" -type f 2>/dev/null | wc -l | tr -d ' ')
   if (( n_src == 0 )); then
@@ -2671,12 +2705,14 @@ print_upload_instructions(){
   local ip; ip=$(server_ip)
   echo
   header
-  title "STEP 1 DONE  ->  NOW UPLOAD YOUR MT5 INSTALLERS"
+  title "STEP 1 DONE  ->  MT5 INSTALLERS FOLDER"
   header
   echo
-  echo -e " Put every MT5 / prop-firm ${BOLD}.exe${NC} installer in this folder:"
+  echo -e " The project's own installers (repo folder ${BOLD}${MT5_REPO_SUBDIR}/${NC}) are already in:"
   echo
   echo -e "     ${GREEN}${BOLD}${MT5_LOCAL_DIR}${NC}"
+  echo
+  echo -e " Want your own MetaTrader / prop-firm terminal? Upload its ${BOLD}.exe${NC} into the same folder."
   echo
   echo " With any SFTP client (FileZilla / WinSCP), connect to:"
   echo "     host: ${ip}     port: 22"
@@ -2740,8 +2776,86 @@ terminal_is_installed(){
   [[ -n "$(installed_termpath "$1")" ]]
 }
 
+fetch_mt5_installers_from_repo(){
+  ensure_local_mt5_dir
+  info "Fetching bundled MT5 installers (${MT5_REPO_SUBDIR}/*.exe) from ${REPO_OWNER}/${REPO_NAME}..."
+
+  local tree_json
+  tree_json="$(curl -fsSL "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/trees/main?recursive=1" 2>/dev/null)"
+  if [[ -z "${tree_json}" ]]; then
+    warn "Could not reach the GitHub API - using whatever installers are already in ${MT5_LOCAL_DIR}."
+    return 1
+  fi
+
+  local list_file
+  list_file="$(mktemp)"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c '
+import json, sys
+prefix = sys.argv[2].rstrip("/") + "/"
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = {}
+with open(sys.argv[1], "w") as f:
+    for e in data.get("tree", []):
+        p = e.get("path", "")
+        if e.get("type") == "blob" and p.startswith(prefix) and "/" not in p[len(prefix):] and p.lower().endswith(".exe"):
+            f.write(p + "\n")
+' "${list_file}" "${MT5_REPO_SUBDIR}" <<<"${tree_json}"
+  else
+    printf '%s' "${tree_json}" \
+      | grep -o "\"path\"[[:space:]]*:[[:space:]]*\"${MT5_REPO_SUBDIR}/[^\"/]*\.[eE][xX][eE]\"" \
+      | sed 's/^"path"[[:space:]]*:[[:space:]]*"//; s/"$//' > "${list_file}"
+  fi
+
+  if [[ ! -s "${list_file}" ]]; then
+    info "No .exe found under ${MT5_REPO_SUBDIR}/ in the repo - only uploaded installers will be used."
+    rm -f "${list_file}"
+    return 0
+  fi
+
+  local path dest enc_path ok_n=0 fail_n=0 skip_n=0
+  while IFS= read -r path; do
+    [[ -z "${path}" ]] && continue
+    dest="${MT5_LOCAL_DIR}/${path#${MT5_REPO_SUBDIR}/}"
+    if [[ -s "${dest}" && "${MQL5_FORCE_FETCH:-0}" != "1" ]]; then
+      skip_n=$((skip_n+1))
+      continue
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+      enc_path="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "${path}")"
+    else
+      enc_path="$(printf '%s' "${path}" | sed -e 's/ /%20/g' -e 's/#/%23/g' -e 's/(/%28/g' -e 's/)/%29/g')"
+    fi
+    info "  downloading ${path} ..."
+    if curl -fSL --retry 3 --retry-delay 2 "${REPO_RAW}/${enc_path}" -o "${dest}.part" 2>/dev/null \
+       && [[ -s "${dest}.part" ]] && [[ "$(head -c 2 "${dest}.part" 2>/dev/null)" == "MZ" ]]; then
+      mv -f "${dest}.part" "${dest}"
+      ok_n=$((ok_n+1))
+    else
+      rm -f "${dest}.part" 2>/dev/null || true
+      warn "  failed to fetch a valid installer: ${path} (Git LFS pointer or network error?)"
+      fail_n=$((fail_n+1))
+    fi
+  done < "${list_file}"
+  rm -f "${list_file}"
+
+  if id "${MT5_USER}" &>/dev/null; then
+    chown -R "${MT5_USER}:${MT5_USER}" "${MT5_LOCAL_DIR}" 2>/dev/null || true
+  fi
+  (( skip_n > 0 )) && info "Bundled installers: ${skip_n} already present - kept as-is."
+  if (( fail_n > 0 )); then
+    warn "Bundled installers: ${ok_n} downloaded, ${fail_n} failed."
+    return 1
+  fi
+  ok "Bundled installers: ${ok_n} downloaded into ${MT5_LOCAL_DIR}."
+  return 0
+}
+
 fetch_available_installers(){
   ensure_local_mt5_dir
+  fetch_mt5_installers_from_repo || true
   info "Scanning ${MT5_LOCAL_DIR} for *.exe installers..."
   mapfile -t AVAILABLE_EXES < <(find "${MT5_LOCAL_DIR}" -maxdepth 1 -type f -iname '*.exe' \
                                   -printf '%f\n' 2>/dev/null | sort)
@@ -3265,6 +3379,7 @@ step1_prepare_server(){
   guard "vnc password"     setup_vnc_password
   guard "desktop packages" desktop_install_packages
   guard "upload folder"    ensure_local_mt5_dir
+  guard "bundled MT5 installers" fetch_mt5_installers_from_repo
 
   export DESKTOP_ICONS=0
   guard "virtual display + VNC" start_display

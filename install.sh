@@ -308,12 +308,38 @@ ok "Bot configuration saved securely."
 
 MQL5_SUBDIR="MT5"
 MQL5_STASH=""
+REPO_DROP_DIRS=(MT5_Common_Files)
+
+drop_unwanted_repo_dirs(){
+local d
+for d in "${REPO_DROP_DIRS[@]}"; do
+[[ -n "${d}" && -e "${INSTALL_DIR}/${d}" ]] || continue
+rm -rf "${INSTALL_DIR:?}/${d}"
+info "Removed ${INSTALL_DIR}/${d} (not used by the bot)."
+done
+}
+
+merge_fresh_sets_dirs(){
+local parent="${INSTALL_DIR}/${MQL5_SUBDIR}" canon="HeySoloATM_Sets" d base norm
+[[ -d "${parent}" ]] || return 0
+while IFS= read -r d; do
+[[ -z "${d}" ]] && continue
+base="$(basename "${d}")"
+[[ "${base}" == "${canon}" ]] && continue
+norm="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]' | tr -d '_ -')"
+[[ "${norm}" == "heysoloatmsets" ]] || continue
+mkdir -p "${parent}/${canon}"
+cp -rn "${d}/." "${parent}/${canon}/" 2>/dev/null || true
+rm -rf "${d}"
+info "Merged ${base}/ into ${canon}/."
+done < <(find "${parent}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
+}
 
 git_never_touch_mql5(){
 git config core.sparseCheckout true 2>/dev/null || true
 git config core.sparseCheckoutCone false 2>/dev/null || true
 mkdir -p .git/info 2>/dev/null || true
-printf '/*\n!/%s/\n' "${MQL5_SUBDIR}" > .git/info/sparse-checkout 2>/dev/null || true
+{ printf '/*\n!/%s/\n' "${MQL5_SUBDIR}"; for d in "${REPO_DROP_DIRS[@]}"; do printf '!/%s/\n' "${d}"; done; } > .git/info/sparse-checkout 2>/dev/null || true
 grep -qx "/${MQL5_SUBDIR}/" .git/info/exclude 2>/dev/null \
 || printf '/%s/\n' "${MQL5_SUBDIR}" >> .git/info/exclude 2>/dev/null || true
 git ls-files -z -- "${MQL5_SUBDIR}" 2>/dev/null \
@@ -359,6 +385,8 @@ git remote get-url origin >/dev/null 2>&1 && git remote set-url origin "${REPO_U
 if [[ ${fresh} -eq 1 && ! -d "${MQL5_SUBDIR}" ]]; then
 if git fetch --all 2>/dev/null && git reset --hard origin/main 2>/dev/null; then
 git_never_touch_mql5
+merge_fresh_sets_dirs
+drop_unwanted_repo_dirs
 ok "Repository files installed (MQL5 assets seeded once into ${INSTALL_DIR}/${MQL5_SUBDIR})."
 else
 err "Could not fetch/update from ${REPO_URL} - nothing on disk was changed."
@@ -377,6 +405,7 @@ rc=1
 fi
 mql5_restore
 trap - EXIT INT TERM
+drop_unwanted_repo_dirs
 [[ ${rc} -eq 0 ]] || return 1
 ok "Bot files ready (${MQL5_SUBDIR}/ skipped)."
 }

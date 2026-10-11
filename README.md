@@ -70,8 +70,8 @@ Everything lives under one project directory, `/opt/heysolo`:
 ```text
 /opt/heysolo/scripts   heysolo.sh, install.sh, mt5.sh, uninstall.sh
 /opt/heysolo/bot       bot files, heysolo_settings.json, the Python venv
-/opt/heysolo/bot/MT5   MQL5 assets (Experts, Include, Indicators, set, Templates)
-/opt/heysolo/mt5       MT5 / prop-firm terminal installers
+/opt/heysolo/bot/MT5   MQL5 assets (Experts, Include, Indicators, set, HeySoloATM_Sets, Templates)
+/opt/heysolo/bot/Meta5       MT5 / prop-firm installers (repo Meta5/ + your own uploads)
 ```
 
 The bot's own path is remembered in `/etc/heysolo-bot.install_dir`, so if you
@@ -85,7 +85,7 @@ repository's own `MT5/` layout. Because of that:
   Include, Indicators, set and Templates files are kept in place, and the
   empty `bot` shell is left behind only to hold them.
 - The same protection applies when the launcher directory is cleaned up after
-  the last component is removed: `/opt/heysolo/mt5` and
+  the last component is removed: `/opt/heysolo/bot/Meta5` and
   `/opt/heysolo/bot/MT5` both survive.
 - **Updates never touch `MT5/`.** The repo's MQL5 assets are downloaded
   exactly once, during the first install. After that, panel **U** (update
@@ -289,7 +289,7 @@ tail -f /home/mt5user/.heysolo/logs/tint2.log
 
 ```text
 BG/heysolo-des.png     desktop wallpaper used on the VNC desktop
-MT5/*.exe              MT5 / prop-firm terminal installers
+Meta5/*.exe              MT5 / prop-firm terminal installers (-> /opt/heysolo/bot/Meta5)
 heysolo.sh             the installer - the only entry point end users run
 install.sh             bot installer, called by heysolo.sh (panel: T)
 mt5.sh                 MT5/VNC installer, called by heysolo.sh (panel: P, I) -
