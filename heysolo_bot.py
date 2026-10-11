@@ -35,6 +35,7 @@ for _noisy in ("httpx", "httpcore", "telegram", "telegram.ext", "telegram.bot", 
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 import heysolo_settings as settings
+import language as L
 import logger_bot
 from db import database as heysolo_db
 from prop import notifications as prop_notifications
@@ -294,9 +295,9 @@ G_PROP = "🏆"
 
 CANCEL_CB = "CANCEL_PENDING"
 
-def cancel_kb(*extra_rows) -> InlineKeyboardMarkup:
+def cancel_kb(*extra_rows, lang: str = "en") -> InlineKeyboardMarkup:
     rows = [list(r) for r in extra_rows if r]
-    rows.append([InlineKeyboardButton(f"{G_DEL} Cancel", callback_data=CANCEL_CB)])
+    rows.append([InlineKeyboardButton(L.t(lang, "btn_cancel"), callback_data=CANCEL_CB)])
     return InlineKeyboardMarkup(rows)
 RULE = "─" * 27
 EA_HEARTBEAT_SECONDS = 45.0
@@ -877,68 +878,76 @@ def owner_label_for_login(login: str) -> str:
     names = heysolo_db.get_user_names()
     return ", ".join(user_label(u, names, with_id=False) for u in sorted(uids))
 
-def _dashboard_footer(d: dict, login: str) -> list[str]:
+def _dashboard_footer(d: dict, login: str, lang: str = "en") -> list[str]:
     root = root_for_login(login)
     lines = [""]
     if root.is_share:
         lines.append(root.label)
     updated_bits = []
     if d.get("updated"):
-        updated_bits.append(f"updated {d['updated']}")
+        updated_bits.append(L.t(lang, "updated", when=ltr(d['updated'])))
     if d.get("latency_ms") is not None:
-        updated_bits.append(f"🌐 {d['latency_ms']:.0f} ms")
+        latency = f"{d['latency_ms']:.0f} ms"
+        updated_bits.append(f"🌐 {ltr(latency)}")
     if updated_bits:
         lines.append(f"<i>{' · '.join(updated_bits)}</i>")
     return lines
 
-def format_account_info_message(login: str) -> str:
+def format_account_info_message(login: str, lang: str = "en") -> str:
     d = read_dashboard(login)
     if not d:
-        return f"{E_PROGRESS} No data exported for this account yet (enable <code>ExportAccountCard</code> in the EA)."
+        return L.t(lang, "acc_no_data")
 
     cur = d["currency"] or ""
     mode_label = (d["mode"] or "-").title()
-    ea_mode = "Manual" if d["ea_mode"] == "MANUAL" else ("Auto" if d["ea_mode"] == "AUTO" else "-")
-    ea_trading = "On" if d["ea_trading"] == "ON" else ("Off" if d["ea_trading"] == "OFF" else "-")
+    ea_mode = (L.t(lang, "manual") if d["ea_mode"] == "MANUAL"
+               else (L.t(lang, "auto") if d["ea_mode"] == "AUTO" else "-"))
+    ea_trading = (L.t(lang, "on_cap") if d["ea_trading"] == "ON"
+                  else (L.t(lang, "off_cap") if d["ea_trading"] == "OFF" else "-"))
     today_emoji = "🟢" if d["today_usd"] >= 0 else "🔴"
     has_manual_controls = bool(d["ea_mode"] or d["ea_trading"] or d["symbols"])
     owner = owner_label_for_login(login)
 
     lines = [
-        f"<b>Account {login}</b>",
+        L.t(lang, "acc_title", login=login),
         f"<i>{html.escape(d['broker'])} · {mode_label}</i>",
     ]
     if d.get("ea_name") or d.get("ea"):
-        lines.append(f"🧩 Expert {html.escape(d.get('ea_name') or '-')} · "
-                     f"<code>{html.escape(d.get('ea') or '-')}</code>")
-    lines.append(f"👤 Owner {html.escape(owner) if owner else '<i>unassigned</i>'}")
+        lines.append(L.t(lang, "acc_expert", name=html.escape(d.get('ea_name') or '-'),
+                         code=html.escape(d.get('ea') or '-')))
+    lines.append(L.t(lang, "acc_owner", owner=html.escape(owner) if owner else L.t(lang, "unassigned")))
     lines += [
         "",
-        f"💵 Balance <b>{d['balance']:,.2f} {cur}</b>",
-        f"📈 Equity <b>{d['equity']:,.2f} {cur}</b>",
-        f"{today_emoji} Today <b>{d['today_usd']:+,.2f} {cur}</b> ({d['today_pct']:+.2f}%)",
-        f"📌 Open trades <b>{d['open_positions']}</b>",
+        L.t(lang, "acc_balance", v=ltr(f"{d['balance']:,.2f} {cur}")),
+        L.t(lang, "acc_equity", v=ltr(f"{d['equity']:,.2f} {cur}")),
+        L.t(lang, "acc_today", e=today_emoji, v=ltr(f"{d['today_usd']:+,.2f} {cur}"),
+            p=ltr(f"{d['today_pct']:+.2f}%")),
+        L.t(lang, "acc_open", n=d['open_positions']),
     ]
     if has_manual_controls:
         lines.append("")
-        lines.append(f"⚙️ Mode <b>{ea_mode}</b> · 🚦 Trading <b>{ea_trading}</b>")
-        lines.append(f"💠 Symbols <code>{d['symbols'] or 'waiting for EA'}</code>")
+        lines.append(L.t(lang, "acc_mode_trading", mode=ea_mode, trading=ea_trading))
+        lines.append(L.t(lang, "acc_symbols", s=d['symbols'] or L.t(lang, "waiting_for_ea")))
 
-    lines += _dashboard_footer(d, login)
+    lines += _dashboard_footer(d, login, lang)
     return "\n".join(lines)
 
-def format_prop_panel_message(login: str) -> str:
-    return _format_prop_panel_message(login, read_dashboard, _dashboard_footer)
+def _footer_for(lang: str):
+    return lambda d, login: _dashboard_footer(d, login, lang)
 
-def link_line(login: str) -> str:
-    return _link_headline(read_link(login))
+def format_prop_panel_message(login: str, lang: str = "en") -> str:
+    return _format_prop_panel_message(login, read_dashboard, _footer_for(lang), lang)
 
-def format_settings_panel_message(login: str) -> str:
-    return _format_settings_panel_message(login, read_live_settings, _dashboard_footer,
-                                          link_line(login))
+def link_line(login: str, lang: str = "en") -> str:
+    return _link_headline(read_link(login), lang)
 
-def format_status_panel_message(login: str) -> str:
-    return _format_status_panel_message(login, read_live_settings, read_link, _dashboard_footer)
+def format_settings_panel_message(login: str, lang: str = "en") -> str:
+    return _format_settings_panel_message(login, read_live_settings, _footer_for(lang),
+                                          link_line(login, lang), lang)
+
+def format_status_panel_message(login: str, lang: str = "en") -> str:
+    return _format_status_panel_message(login, read_live_settings, read_link,
+                                        _footer_for(lang), lang)
 
 def get_symbols_for_login(login: str | None) -> list[str]:
     if not login:
@@ -954,11 +963,10 @@ def get_symbols_for_login(login: str | None) -> list[str]:
             out.append(s)
     return out
 
-NO_SYMBOLS_TEXT = (
-    f"{G_WAIT} No symbols yet.\n"
-    "Symbols are read from the EA input <code>SymbolsInput</code> and refresh automatically "
-    "on every export. Edit them on the chart, not here."
-)
+NO_SYMBOLS_TEXT = L.t("en", "no_symbols")
+
+def no_symbols_text(lang: str = "en") -> str:
+    return L.t(lang, "no_symbols")
 
 @dataclass
 class AccountState:
@@ -1111,15 +1119,15 @@ def user_expert(user_id: int | None) -> dict | None:
 def expert_caps(user_id: int | None) -> dict:
     return user_expert(user_id) or NO_CAPS
 
-NO_EXPERT_TEXT = (
-    f"{G_WAIT} No EA has been assigned to you yet, so this feature is closed. "
-    "An admin assigns it under Admin \u203a Access."
-)
+NO_EXPERT_TEXT = L.t("en", "no_expert")
 
-def caps_denied_text(caps: dict, what: str) -> str:
+def no_expert_text(lang: str = "en") -> str:
+    return L.t(lang, "no_expert")
+
+def caps_denied_text(caps: dict, what: str, lang: str = "en") -> str:
     if not caps.get("code"):
-        return NO_EXPERT_TEXT
-    return f"{G_BAD} <b>{caps['display_name']}</b> has no {what}."
+        return no_expert_text(lang)
+    return L.t(lang, "caps_denied", name=caps['display_name'], what=L.t(lang, what))
 
 def visible_accounts(user_id: int | None = None) -> list[dict]:
     accounts = list_accounts()
@@ -1185,40 +1193,32 @@ def _parse_group_target(text: str) -> tuple[int | None, int | None] | None:
 
 
 async def verify_group_target(bot, chat_id: int | None, thread_id: int | None,
-                              kind: str) -> tuple[bool, str]:
+                              kind: str, lang: str = "en") -> tuple[bool, str]:
     target = chat_id if chat_id is not None else CHAT_ID
     if not target:
-        return False, (f"{G_BAD} No reporting group is configured yet, so there is no "
-                       "group to send a thread id for. Paste the group's link instead, "
-                       "or ask an admin to set the group up.")
+        return False, L.t(lang, "vg_no_group")
     try:
         chat = await bot.get_chat(target)
     except Exception:
-        return False, (
-            f"{G_BAD} I cannot see chat <code>{target}</code>.\n"
-            f"{G_ROW} <b>Add me to that group first</b>, then send this again. "
-            "I have to be a member before I can post there."
-        )
+        return False, L.t(lang, "vg_cant_see", target=target)
     try:
         probe = await bot.send_message(
             chat_id=target,
             message_thread_id=thread_id or None,
-            text=f"{G_OK} Routing check - {TOPIC_KIND_LABELS.get(kind, kind)} "
-                 f"alerts will appear here.",
+            text=L.t(lang, "vg_probe", label=topic_label(kind, lang)),
         )
         try:
             await bot.delete_message(chat_id=target, message_id=probe.message_id)
         except Exception:
             pass
     except Exception as exc:
-        hint = (f"{G_ROW} Thread <code>{thread_id}</code> may not exist in that group."
-                if thread_id else
-                f"{G_ROW} Make sure I am a member and allowed to send messages there.")
-        return False, (f"{G_BAD} I reached <b>{chat.title or target}</b> but could not "
-                       f"post: {exc}\n{hint}")
+        hint = (L.t(lang, "vg_thread_hint", tid=thread_id) if thread_id
+                else L.t(lang, "vg_member_hint"))
+        return False, L.t(lang, "vg_post_failed", title=chat.title or target,
+                          exc=html.escape(str(exc)), hint=hint)
     where = chat.title or str(target)
-    return True, (f"{G_OK} Verified - posting to <b>{where}</b>"
-                  + (f", thread <code>{thread_id}</code>" if thread_id else "") + ".")
+    return True, L.t(lang, "vg_ok", where=where,
+                     thread=L.t(lang, "vg_thread", tid=thread_id) if thread_id else "")
 
 def parse_event(path: Path) -> tuple[str, int, str, str, str]:
     raw = path.read_text(encoding="utf-8", errors="ignore")
@@ -1610,21 +1610,31 @@ def toggle_kind(text: str) -> str | None:
     m = _TOGGLE_RE.match(text or "")
     return m.group(1).capitalize() if m else None
 
+def is_button(text: str, key: str) -> bool:
+    return text in L.variants(key)
+
 def build_main_keyboard(user_id: int, st: "AccountState | None" = None,
                          login: str | None = None) -> ReplyKeyboardMarkup:
     st = st or AccountState()
+    lang = L.get_lang(user_id)
     caps = expert_caps(user_id)
-    top_row = [BTN_ACCOUNT]
+    top_row = [L.t(lang, "btn_account")]
     if caps["has_bias"] or caps["has_mode"] or caps["has_trading"]:
-        top_row.insert(0, BTN_EA)
+        top_row.insert(0, L.t(lang, "btn_ea"))
     rows = [top_row]
     if heysolo_db.is_admin(user_id):
-        rows.append([BTN_ADMIN])
+        rows.append([BTN_ADMIN, L.t(lang, "btn_language")])
     else:
-        rows.append([BTN_SETTINGS])
+        rows.append([L.t(lang, "btn_settings"), L.t(lang, "btn_language")])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
 
-def bias_keyboard(login: str, st: AccountState) -> InlineKeyboardMarkup | None:
+def language_picker_view(user_id: int | None = None) -> dict:
+    current = L.get_lang(user_id) if L.has_lang(user_id) else None
+    return {"text": L.t("en", "lang_prompt"),
+            "reply_markup": InlineKeyboardMarkup(L.picker_rows(InlineKeyboardButton, current)),
+            "parse_mode": ParseMode.HTML}
+
+def bias_keyboard(login: str, st: AccountState, lang: str = "en") -> InlineKeyboardMarkup | None:
     syms = get_symbols_for_login(login)
     if not syms:
         return None
@@ -1637,7 +1647,7 @@ def bias_keyboard(login: str, st: AccountState) -> InlineKeyboardMarkup | None:
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton(f"{G_BACK} EA Controller", callback_data="EA_OPEN")])
+    rows.append([InlineKeyboardButton(L.t(lang, "bias_back_ea"), callback_data="EA_OPEN")])
     return InlineKeyboardMarkup(rows)
 
 def _account_tag(login: str) -> str:
@@ -1645,103 +1655,95 @@ def _account_tag(login: str) -> str:
         return f"<code>{login}</code>\n"
     return ""
 
-def bias_header(login: str, st: "AccountState") -> str:
+def bias_header(login: str, st: "AccountState", lang: str = "en") -> str:
     manual = (st.mode == "MANUAL")
     glyph = G_MANUAL if manual else G_AUTO
-    mode_line = (
-        f"{glyph} <b>Mode:</b> <b>Manual</b> - your picks below are what the EA uses."
-        if manual else
-        f"{glyph} <b>Mode:</b> <b>Auto</b> - the EA decides; switch to Manual to set a bias."
-    )
+    mode_line = L.t(lang, "bias_mode_manual" if manual else "bias_mode_auto", g=glyph)
     return (
         f"{_account_tag(login)}"
-        f"{G_BIAS} <b>Bias</b>\n"
+        f"{L.t(lang, 'bias_title')}\n"
         f"{mode_line}\n"
-        f"<i>{G_BULL} bullish  {G_BEAR} bearish  {G_FLAT} none  {G_NEUTRAL} from EA SymbolsInput</i>"
+        f"{L.t(lang, 'bias_legend')}"
     )
 
-def _ago_text(ts: int) -> str:
+def _ago_text(ts: int, lang: str = "en") -> str:
     ts = int(ts or 0)
     if ts <= 0:
-        return "time unknown"
-    age = max(0, int(time.time() - ts))
-    if age < 10:
-        return "just now"
-    if age < 60:
-        return f"{age}s ago"
-    if age < 3600:
-        return f"{age // 60}m ago"
-    if age < 86400:
-        return f"{age // 3600}h ago"
-    return f"{age // 86400}d ago"
+        return L.t(lang, "ago_unknown")
+    return L.ago(lang, time.time() - ts)
 
-def _last_control_line(login: str) -> str:
+def _last_control_line(login: str, lang: str = "en") -> str:
     info = heysolo_db.get_control_change(login)
     if not info or not info.get("user_id"):
-        return (f"{G_ROW} Last change: no one through the bot yet - the state below is "
-                f"what the EA reports.")
+        return L.t(lang, "last_change_none")
     who = user_label(info["user_id"], heysolo_db.get_user_names(), with_id=False)
     bits = [who]
     if info.get("action"):
-        bits.append(html.escape(info["action"]))
-    bits.append(_ago_text(info.get("changed_at") or 0))
-    return f"{G_ROW} Last change: {ltr(' \u00b7 '.join(bits))}"
+        bits.append(html.escape(L.translate_action(lang, info["action"])))
+    bits.append(_ago_text(info.get("changed_at") or 0, lang))
+    return L.t(lang, "last_change", bits=ltr(' \u00b7 '.join(bits)) if lang == "en"
+               else ' \u00b7 '.join(bits))
 
-def mode_label(mode: str) -> str:
-    return "Manual" if (mode or "").upper() == "MANUAL" else "Auto"
+def mode_label(mode: str, lang: str = "en") -> str:
+    return L.t(lang, "manual") if (mode or "").upper() == "MANUAL" else L.t(lang, "auto")
 
-def trading_label(on: bool) -> str:
-    return "On" if on else "Off"
+def trading_label(on: bool, lang: str = "en") -> str:
+    return L.t(lang, "on_cap") if on else L.t(lang, "off_cap")
 
-def _pending_note(st: "AccountState", key: str) -> str:
+def _pending_note(st: "AccountState", key: str, lang: str = "en") -> str:
     if key not in st.pending:
         return ""
-    return f"  {G_WAIT} <i>sent, waiting for the EA ({pending_age(st, key)}s)</i>"
+    return L.t(lang, "pending_note", n=pending_age(st, key))
 
 def ea_controller_view(user_id: int, login: str, st: "AccountState") -> dict:
     caps = expert_caps(user_id)
+    lang = L.get_lang(user_id)
 
     if not (caps["has_mode"] or caps["has_trading"] or caps["has_bias"]):
-        text = NO_EXPERT_TEXT if not caps.get("code") else (
-            f"{G_ROW} <b>{html.escape(caps.get('display_name') or 'This EA')}</b> "
-            f"has nothing to control from here.")
+        text = no_expert_text(lang) if not caps.get("code") else L.t(
+            lang, "ea_nothing", name=html.escape(caps.get('display_name') or L.t(lang, "this_ea")))
         return {"text": text, "parse_mode": ParseMode.HTML,
                 "reply_markup": InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("Close", callback_data="EA_CLOSE")]])}
+                    [[InlineKeyboardButton(L.t(lang, "btn_close"), callback_data="EA_CLOSE")]])}
 
     manual = (st.mode or "").upper() == "MANUAL"
-    mode_now, mode_next = mode_label(st.mode), ("Auto" if manual else "Manual")
-    trade_now, trade_next = trading_label(st.trading), ("Off" if st.trading else "On")
+    mode_now = mode_label(st.mode, lang)
+    mode_next = L.t(lang, "auto") if manual else L.t(lang, "manual")
+    trade_now = trading_label(st.trading, lang)
+    trade_next = L.t(lang, "off_cap") if st.trading else L.t(lang, "on_cap")
     mode_glyph = G_MANUAL if manual else G_AUTO
     trade_glyph = G_ON if st.trading else G_OFF
 
     lines = [f"{G_EXPERT} <b>{html.escape(str(login))} · "
              f"{html.escape(caps.get('display_name') or 'EA')}</b>", RULE]
     if caps["has_mode"]:
-        lines.append(f"{mode_glyph} <b>Mode:</b> <b>{mode_now}</b>{_pending_note(st, 'mode')}")
+        lines.append(L.t(lang, "ea_mode_line", g=mode_glyph, now=mode_now,
+                         note=_pending_note(st, 'mode', lang)))
     if caps["has_trading"]:
-        lines.append(f"{trade_glyph} <b>Trading:</b> <b>{trade_now}</b>{_pending_note(st, 'trading')}")
+        lines.append(L.t(lang, "ea_trading_line", g=trade_glyph, now=trade_now,
+                         note=_pending_note(st, 'trading', lang)))
     lines.append(RULE)
-    lines.append(_last_control_line(login))
-    lines.append(f"<i>{G_ROW} Read at {ltr(datetime.now(NY_TZ).strftime('%H:%M:%S'))}</i>")
+    lines.append(_last_control_line(login, lang))
+    lines.append(L.t(lang, "ea_read_at", time=ltr(datetime.now(NY_TZ).strftime('%H:%M:%S'))))
 
     rows = []
     if caps["has_mode"]:
         rows.append([
-            InlineKeyboardButton(f"Mode: {mode_now}", callback_data="EA_MODE_INFO"),
+            InlineKeyboardButton(L.t(lang, "mode_value", v=mode_now), callback_data="EA_MODE_INFO"),
             InlineKeyboardButton(f"→ {mode_next}", callback_data="EA_MODE_SET"),
         ])
     if caps["has_trading"]:
         rows.append([
-            InlineKeyboardButton(f"Trading: {trade_now}", callback_data="EA_TRADING_INFO"),
+            InlineKeyboardButton(L.t(lang, "trading_value", v=trade_now), callback_data="EA_TRADING_INFO"),
             InlineKeyboardButton(f"→ {trade_next}", callback_data="EA_TRADING_SET"),
         ])
     if caps["has_bias"]:
-        picker = f"{G_BIAS} Bias Picker · {mode_now}" if caps["has_mode"] else f"{G_BIAS} Bias Picker"
+        picker = (L.t(lang, "btn_bias_picker_mode", mode=mode_now) if caps["has_mode"]
+                  else L.t(lang, "btn_bias_picker"))
         rows.append([InlineKeyboardButton(picker, callback_data="EA_BIAS")])
 
-    rows.append([InlineKeyboardButton("🔄 Refresh", callback_data="EA_REFRESH"),
-                 InlineKeyboardButton(f"{G_DEL} Close", callback_data="EA_CLOSE")])
+    rows.append([InlineKeyboardButton(L.t(lang, "btn_refresh"), callback_data="EA_REFRESH"),
+                 InlineKeyboardButton(L.t(lang, "btn_close_x"), callback_data="EA_CLOSE")])
 
     return {"text": "\n".join(lines), "reply_markup": InlineKeyboardMarkup(rows),
             "parse_mode": ParseMode.HTML}
@@ -1752,18 +1754,19 @@ async def show_ea_panel(q, user_id: int, login: str, st: "AccountState") -> None
                                  parse_mode=v["parse_mode"])
 
 async def apply_control_toggle(q, uid: int, login: str, key: str) -> None:
+    lang = L.get_lang(uid)
     async with control_lock(login):
         st = await asyncio.to_thread(refresh_state, login)
         if key == "mode":
             target = "AUTO" if (st.mode or "").upper() == "MANUAL" else "MANUAL"
             st.mode = target
             action = f"Mode {mode_label(target)}"
-            toast = f"Mode: {mode_label(target)}"
+            toast = L.t(lang, "mode_value", v=mode_label(target, lang))
         else:
             target = not st.trading
             st.trading = target
             action = f"Trading {trading_label(target)}"
-            toast = f"Trading: {trading_label(target)}"
+            toast = L.t(lang, "trading_value", v=trading_label(target, lang))
         mark_pending(st, key, target)
         ok = await write_control(login, st)
         if not ok:
@@ -1772,13 +1775,13 @@ async def apply_control_toggle(q, uid: int, login: str, key: str) -> None:
     if ok:
         await asyncio.to_thread(heysolo_db.record_control_change, login, uid,
                                 action, st.mode, st.trading)
-        await q.answer(f"{G_OK} {toast} - sent to the EA")
+        await q.answer(L.t(lang, "toast_sent", toast=toast))
     else:
-        await q.answer(f"{G_BAD} Could not write the EA control file. Nothing changed.",
-                       show_alert=True)
+        await q.answer(L.t(lang, "write_failed"), show_alert=True)
     await show_ea_panel(q, uid, login, st)
 
 def accounts_list_view(user_id: int) -> dict:
+    lang = L.get_lang(user_id)
     accounts = visible_accounts(user_id)
     active = resolve_login(user_id)
     rows = []
@@ -1788,26 +1791,24 @@ def accounts_list_view(user_id: int) -> dict:
         bal = f"{d['balance']:,.0f}" if d else "-"
         label = f"{mark} {a['login']} \u00b7 {a['broker'] or '-'} \u00b7 {bal} {a['currency'] or ''}".strip()
         rows.append([InlineKeyboardButton(label, callback_data=f"ACC_VIEW_{a['login']}")])
-    text = (
-        f"<b>Accounts</b> ({len(accounts)})\n"
-        f"{G_ROW} Active: <code>{active or '-'}</code>\n"
-        "Tap an account to view it or make it active."
-    )
+    text = L.t(lang, "accounts_title", n=len(accounts), active=active or '-')
     return {"text": text, "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
 
 def account_detail_view(user_id: int, login: str) -> dict:
+    lang = L.get_lang(user_id)
     active = resolve_login(user_id)
-    text = format_account_info_message(login)
+    text = format_account_info_message(login, lang)
     kb_rows = []
     if login != active:
-        kb_rows.append([InlineKeyboardButton(f"{G_OK} Set as active", callback_data=f"ACC_SET_{login}")])
-    kb_rows.append([InlineKeyboardButton(LBL_STATUS, callback_data=f"STAT_VIEW_{login}")])
-    kb_rows.append([InlineKeyboardButton(LBL_PROP, callback_data=f"PROP_VIEW_{login}"),
-                    InlineKeyboardButton(LBL_EA_INPUTS, callback_data=f"SETT_VIEW_{login}")])
-    kb_rows.append([InlineKeyboardButton(f"{G_BACK} All accounts", callback_data="ACC_LIST")])
+        kb_rows.append([InlineKeyboardButton(L.t(lang, "set_active"), callback_data=f"ACC_SET_{login}")])
+    kb_rows.append([InlineKeyboardButton(L.t(lang, "lbl_status"), callback_data=f"STAT_VIEW_{login}")])
+    kb_rows.append([InlineKeyboardButton(L.t(lang, "lbl_prop"), callback_data=f"PROP_VIEW_{login}"),
+                    InlineKeyboardButton(L.t(lang, "lbl_ea_inputs"), callback_data=f"SETT_VIEW_{login}")])
+    kb_rows.append([InlineKeyboardButton(L.t(lang, "btn_all_accounts"), callback_data="ACC_LIST")])
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
 def prop_list_view(user_id: int) -> dict:
+    lang = L.get_lang(user_id)
     accounts = visible_accounts(user_id)
     active = resolve_login(user_id)
     rows = []
@@ -1821,33 +1822,33 @@ def prop_list_view(user_id: int) -> dict:
             mark = E_PROGRESS
         cur_login = a["login"]
         tag = f" {G_ROW}" if cur_login == active else ""
-        label = f"{mark} {cur_login} \u00b7 {d.get('target_pct', 0):.1f}% target{tag}"
+        label = L.t(lang, "prop_target_label", mark=mark, login=cur_login,
+                    pct=f"{d.get('target_pct', 0):.1f}", tag=tag)
         rows.append([InlineKeyboardButton(label, callback_data=f"PROP_VIEW_{cur_login}")])
-    text = (
-        f"{G_PROP} <b>Prop Panel</b> ({len(accounts)})\n"
-        f"{G_ROW} Active: <code>{active or '-'}</code>\n"
-        "Tap an account to see its challenge rules."
-    )
+    text = L.t(lang, "prop_list_title", n=len(accounts), active=active or '-')
     return {"text": text, "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
 
 def prop_detail_view(user_id: int, login: str) -> dict:
-    text = format_prop_panel_message(login)
+    lang = L.get_lang(user_id)
+    text = format_prop_panel_message(login, lang)
     kb_rows = [
-        [InlineKeyboardButton(f"🔄 Refresh", callback_data=f"PROP_VIEW_{login}")],
-        [InlineKeyboardButton(f"⚙️ Alert settings", callback_data=f"PROP_ALERTS_{login}")],
-        [InlineKeyboardButton(f"{G_BACK} Account", callback_data=f"ACC_VIEW_{login}")],
+        [InlineKeyboardButton(L.t(lang, "btn_refresh"), callback_data=f"PROP_VIEW_{login}")],
+        [InlineKeyboardButton(L.t(lang, "btn_alert_settings"), callback_data=f"PROP_ALERTS_{login}")],
+        [InlineKeyboardButton(L.t(lang, "btn_back_account"), callback_data=f"ACC_VIEW_{login}")],
     ]
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
 def settings_detail_view(user_id: int, login: str) -> dict:
-    text = format_settings_panel_message(login)
+    lang = L.get_lang(user_id)
+    text = format_settings_panel_message(login, lang)
     kb_rows = [
-        [InlineKeyboardButton(f"🔄 Refresh", callback_data=f"SETT_VIEW_{login}")],
-        [InlineKeyboardButton(f"{G_BACK} Account", callback_data=f"ACC_VIEW_{login}")],
+        [InlineKeyboardButton(L.t(lang, "btn_refresh"), callback_data=f"SETT_VIEW_{login}")],
+        [InlineKeyboardButton(L.t(lang, "btn_back_account"), callback_data=f"ACC_VIEW_{login}")],
     ]
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
 def status_list_view(user_id: int) -> dict:
+    lang = L.get_lang(user_id)
     accounts = visible_accounts(user_id)
     active = resolve_login(user_id)
     rows = []
@@ -1856,31 +1857,34 @@ def status_list_view(user_id: int) -> dict:
         link = read_link(cur_login)
         tag = f" {G_ROW}" if cur_login == active else ""
         rows.append([InlineKeyboardButton(
-            f"{_link_button_label(link)} · {cur_login}{tag}",
+            f"{_link_button_label(link, lang)} · {cur_login}{tag}",
             callback_data=f"STAT_VIEW_{cur_login}")])
-    text = (
-        f"🩺 <b>Status Live</b> ({len(accounts)})\n"
-        f"{G_ROW} Active: <code>{active or '-'}</code>\n"
-        "Tap an account to see its live status."
-    )
+    text = L.t(lang, "status_list_title", n=len(accounts), active=active or '-')
     return {"text": text, "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
 
 def status_detail_view(user_id: int, login: str) -> dict:
-    text = format_status_panel_message(login)
+    lang = L.get_lang(user_id)
+    text = format_status_panel_message(login, lang)
     kb_rows = [
-        [InlineKeyboardButton(f"🔄 Refresh", callback_data=f"STAT_VIEW_{login}")],
-        [InlineKeyboardButton(f"{G_BACK} Account", callback_data=f"ACC_VIEW_{login}")],
+        [InlineKeyboardButton(L.t(lang, "btn_refresh"), callback_data=f"STAT_VIEW_{login}")],
+        [InlineKeyboardButton(L.t(lang, "btn_back_account"), callback_data=f"ACC_VIEW_{login}")],
     ]
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
 TOPIC_KIND_LABELS = {"bias": "Bias", "trade": "Trades", "log": "Logs", "result": "Results"}
 
+def topic_label(kind: str, lang: str = "en") -> str:
+    if kind in TOPIC_KIND_LABELS:
+        return L.t(lang, f"topic_{kind}")
+    return kind
+
 def _dest_line(user_id: int) -> str:
+    lang = L.get_lang(user_id)
     dest = heysolo_db.get_user_dest(user_id)
     if dest["mode"] == "dm":
-        return f"{G_DM} here in this chat"
+        return L.t(lang, "dest_dm")
     chat = dest.get("chat_id") or CHAT_ID
-    return f"{G_GROUP} group <code>{chat}</code>" if chat else f"{G_GROUP} group (not set yet)"
+    return L.t(lang, "dest_group", chat=chat) if chat else L.t(lang, "dest_group_unset")
 
 
 def _active_kinds(user_id: int | None) -> list[str]:
@@ -1888,16 +1892,19 @@ def _active_kinds(user_id: int | None) -> list[str]:
     return [k for k in ("bias", "trade", "log", "result") if k in caps.get("notify_kinds", [])]
 
 def user_settings_view(user_id: int, login: str | None) -> dict:
+    lang = L.get_lang(user_id)
     kinds = _active_kinds(user_id)
+    lang_row = [InlineKeyboardButton(L.t(lang, "btn_lang_current"), callback_data=L.LANG_OPEN_CB)]
 
     if not kinds:
         caps = expert_caps(user_id)
         detail = (
-            f"{G_NEUTRAL} <b>{caps['display_name']}</b> doesn't produce any events to route."
-            if caps.get("code") else NO_EXPERT_TEXT
+            L.t(lang, "no_events", name=caps['display_name'])
+            if caps.get("code") else no_expert_text(lang)
         )
-        text = f"{G_SETTINGS} <b>My Settings</b>\n{detail}"
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"{G_BACK} Close", callback_data="SET_CLOSE")]])
+        text = f"{L.t(lang, 'my_settings')}\n{detail}"
+        kb = InlineKeyboardMarkup([lang_row, [InlineKeyboardButton(
+            L.t(lang, "btn_back_close"), callback_data="SET_CLOSE")]])
         return {"text": text, "reply_markup": kb, "parse_mode": ParseMode.HTML}
 
     dest = heysolo_db.get_user_dest(user_id)
@@ -1905,47 +1912,39 @@ def user_settings_view(user_id: int, login: str | None) -> dict:
     dm_mark = "" if in_group else f"{G_OK} "
     gr_mark = f"{G_OK} " if in_group else ""
     rows = [[
-        InlineKeyboardButton(f"{dm_mark}{G_DM} Here in the bot", callback_data="SET_DEST_DM"),
-        InlineKeyboardButton(f"{gr_mark}{G_GROUP} My group", callback_data="SET_DEST_GROUP"),
+        InlineKeyboardButton(f"{dm_mark}{L.t(lang, 'btn_here_bot')}", callback_data="SET_DEST_DM"),
+        InlineKeyboardButton(f"{gr_mark}{L.t(lang, 'btn_my_group')}", callback_data="SET_DEST_GROUP"),
     ]]
 
     text = (
-        f"{G_SETTINGS} <b>My Settings</b>\n"
-        f"{G_ROW} EA: <b>{expert_caps(user_id)['display_name'] or '-'}</b>\n"
-        f"{G_ROW} Account: <code>{login or '-'}</code>\n"
-        f"{G_ROW} Alerts go to: {_dest_line(user_id)}\n"
+        f"{L.t(lang, 'my_settings')}\n"
+        + L.t(lang, "settings_body", ea=expert_caps(user_id)['display_name'] or '-',
+              login=login or '-', dest=_dest_line(user_id))
     )
 
     switches = heysolo_db.get_user_notify(user_id)
     for k in kinds:
         on = switches.get(k, True)
         rows.append([
-            InlineKeyboardButton(f"{TOPIC_KIND_LABELS[k]}", callback_data=f"SET_NTOG_{k}"),
+            InlineKeyboardButton(topic_label(k, lang), callback_data=f"SET_NTOG_{k}"),
             InlineKeyboardButton(G_BELL if on else G_MUTE, callback_data=f"SET_NTOG_{k}"),
         ])
 
-    if in_group:
-        text += (
-            f"\n<i>I create and keep the topics in that group myself. "
-            f"Tap a name or {G_BELL}/{G_MUTE} to turn that category on or off.</i>"
-        )
-    else:
-        text += (
-            f"\n<i>Everything arrives right here. Tap {G_GROUP} My group to send it to a group "
-            f"instead. {G_BELL}/{G_MUTE} turns a category on or off.</i>"
-        )
+    text += L.t(lang, "settings_hint_group" if in_group else "settings_hint_dm")
 
-    rows.append([InlineKeyboardButton(f"{G_BACK} Close", callback_data="SET_CLOSE")])
+    rows.append(lang_row)
+    rows.append([InlineKeyboardButton(L.t(lang, "btn_back_close"), callback_data="SET_CLOSE")])
     return {"text": text, "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
 
 async def provision_user_topics(bot, chat_id: int, user_id: int,
                                 kinds: list[str]) -> tuple[int, int]:
     db = heysolo_db.get_db()
+    lang = L.get_lang(user_id)
     made, failed = 0, 0
     for k in kinds:
         try:
             topic = await bot.create_forum_topic(
-                chat_id=chat_id, name=TOPIC_KIND_LABELS.get(k, k))
+                chat_id=chat_id, name=topic_label(k, lang))
             db.set_user_thread(user_id, k, topic.message_thread_id)
             made += 1
         except TelegramError as exc:
@@ -1961,15 +1960,8 @@ async def provision_user_topics(bot, chat_id: int, user_id: int,
     return made, failed
 
 
-def group_prompt_text(bot_username: str) -> str:
-    return (
-        f"{G_GROUP} <b>Send to my group</b>\n\n"
-        f"<b>1.</b> Add <code>@{bot_username}</code> to the group.\n"
-        f"<b>2.</b> Send its id or any link from it here.\n\n"
-        f"<i>{G_ROW} Example: <code>-1001234567890</code></i>\n"
-        f"<i>{G_ROW} Or any link from the group.</i>\n"
-        f"<i>{G_ROW} I create the topics in there myself - no topic numbers needed.</i>"
-    )
+def group_prompt_text(bot_username: str, lang: str = "en") -> str:
+    return L.t(lang, "group_prompt", bot=bot_username)
 
 _name_seen: dict[int, tuple[str, str]] = {}
 
@@ -1997,7 +1989,11 @@ def user_label(uid: int, names: dict | None = None, with_id: bool = True) -> str
 async def guard(update: Update) -> bool:
     tg_user = update.effective_user
     if not is_allowed(tg_user.id):
-        await update.effective_message.reply_text(f"{G_BAD} Not authorized.")
+        if L.has_lang(tg_user.id):
+            denied = L.tu(tg_user.id, "not_authorized")
+        else:
+            denied = "\n".join(L.t(code, "not_authorized") for code in L.LANGS)
+        await update.effective_message.reply_text(denied)
         return False
     seen = (tg_user.full_name or "", tg_user.username or "")
     if _name_seen.get(tg_user.id) != seen:
@@ -2026,36 +2022,51 @@ async def resolve_missing_names(bot) -> None:
                                 getattr(chat, "full_name", None) or chat.title,
                                 getattr(chat, "username", None))
 
+async def build_home(uid: int) -> tuple[str, object]:
+    lang = L.get_lang(uid)
+    login = await asyncio.to_thread(resolve_login, uid)
+    st = await asyncio.to_thread(refresh_state, login) if login else AccountState()
+    caps = await asyncio.to_thread(expert_caps, uid)
+    text = L.t(lang, "start_ready")
+    if caps["has_mode"]:
+        text += "\n" + L.t(lang, "start_mode", mode=mode_label(st.mode, lang))
+    if caps["has_trading"]:
+        text += "\n" + L.t(lang, "start_trading", state=trading_label(st.trading, lang))
+
+    if not heysolo_db.get_admin_ids():
+        text += "\n\n" + L.t(lang, "start_no_admin")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(L.t(lang, "btn_claim"), callback_data="ADM_CLAIM")]])
+        return text, kb
+
+    if caps.get("code"):
+        text += "\n" + L.t(lang, "start_ea", name=caps['display_name'])
+    else:
+        text += "\n" + L.t(lang, "start_no_ea_admin" if heysolo_db.is_admin(uid) else "start_no_ea_user")
+    kb = await asyncio.to_thread(build_main_keyboard, uid, st, login)
+    return text, kb
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update):
         return
     uid = update.effective_user.id
-    login = await asyncio.to_thread(resolve_login, uid)
-    st = await asyncio.to_thread(refresh_state, login) if login else AccountState()
-    caps = await asyncio.to_thread(expert_caps, uid)
-    text = f"{G_OK} <b>Bot ready</b>"
-    if caps["has_mode"]:
-        text += f"\n{G_ROW} Mode: <b>{'Manual' if st.mode == 'MANUAL' else 'Auto'}</b>"
-    if caps["has_trading"]:
-        text += f"\n{G_ROW} Trading: <b>{'On' if st.trading else 'Off'}</b>"
-
-    if not heysolo_db.get_admin_ids():
-        text += f"\n\n{G_ADMIN} No admin set yet. Claim ownership below."
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"{G_OK} Claim Bot", callback_data="ADM_CLAIM")]])
-        await update.effective_message.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    if not L.has_lang(uid):
+        v = language_picker_view(uid)
+        await update.effective_message.reply_text(v["text"], reply_markup=v["reply_markup"],
+                                                  parse_mode=v["parse_mode"])
         return
-
-    if caps.get("code"):
-        text += f"\n{G_ROW} EA: <b>{caps['display_name']}</b>"
-    else:
-        text += (f"\n{G_WAIT} No EA assigned to you yet"
-                 + (" - assign yourself one under Admin \u203a Access."
-                    if heysolo_db.is_admin(uid) else " - ask an admin to assign one."))
-    kb = await asyncio.to_thread(build_main_keyboard, uid, st, login)
+    text, kb = await build_home(uid)
     await update.effective_message.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
+async def cmd_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await guard(update):
+        return
+    v = language_picker_view(update.effective_user.id)
+    await update.effective_message.reply_text(v["text"], reply_markup=v["reply_markup"],
+                                              parse_mode=v["parse_mode"])
+
 _pending: dict[int, str] = {}
-CANCEL_WORDS = {"cancel", "/cancel", "لغو"}
+_DIGITS_TO_ASCII = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٫", "01234567890123456789.")
+CANCEL_WORDS = {"cancel", "/cancel", "لغو", "انصراف"}
 
 def admin_panel_view() -> dict:
     kb = InlineKeyboardMarkup([
@@ -3065,12 +3076,18 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     text = (msg.text or "").strip()
     uid = update.effective_user.id
+    lang = L.get_lang(uid)
 
     if uid in _pending:
         action = _pending.pop(uid)
         if text.lower() in CANCEL_WORDS:
-            await msg.reply_text("Cancelled.")
-            await send_admin_panel(update)
+            await msg.reply_text(L.t(lang, "cancelled"))
+            if heysolo_db.is_admin(uid):
+                await send_admin_panel(update)
+            else:
+                v = user_settings_view(uid, resolve_login(uid))
+                await msg.reply_text(v["text"], reply_markup=v["reply_markup"],
+                                     parse_mode=v["parse_mode"])
             return
         if action.startswith("cp_"):
             if not heysolo_db.is_admin(uid):
@@ -3126,15 +3143,15 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parts = action.split(":")
             action_type = parts[0]
             target_login = ":".join(parts[1:]) if len(parts) > 1 else ""
-            raw = text.strip().rstrip("%").replace(",", ".")
+            raw = text.strip().rstrip("%").replace(",", ".").translate(_DIGITS_TO_ASCII)
             try:
                 value = float(raw)
             except ValueError:
                 value = 0
             if not 1 <= value <= 99:
                 await msg.reply_text(
-                    f"{G_BAD} Send a number from <code>1</code> to <code>99</code>.",
-                    reply_markup=cancel_kb(), parse_mode=ParseMode.HTML)
+                    L.t(lang, "num_1_99"),
+                    reply_markup=cancel_kb(lang=lang), parse_mode=ParseMode.HTML)
                 _pending[uid] = action
                 return
             kwargs = ({"daily_threshold": value} if action_type == "set_prop_daily_threshold"
@@ -3143,10 +3160,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 config = await asyncio.to_thread(heysolo_db.set_user_prop_alerts, uid, **kwargs)
             except Exception as exc:
                 await msg.reply_text(
-                    f"{G_BAD} Could not save that setting: <code>{html.escape(str(exc))}</code>",
+                    L.t(lang, "save_failed", err=html.escape(str(exc))),
                     parse_mode=ParseMode.HTML)
                 return
-            await msg.reply_text(f"{G_OK} Prop warning threshold set to {value:.0f}%.")
+            await msg.reply_text(L.t(lang, "threshold_set", v=f"{value:.0f}"))
             v = prop_notifications.settings_view(uid, config, target_login)
             await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         elif action == "set_chat":
@@ -3201,18 +3218,17 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             v = share_connect_result_view(host, share_user, password)
             await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         elif action == "set_dest_group":
-            parsed = _parse_group_target(text)
+            parsed = _parse_group_target(text.translate(_DIGITS_TO_ASCII))
             chat_id = parsed[0] if parsed else None
             if chat_id is None:
                 await msg.reply_text(
-                    f"{G_BAD} That is not a group. Send its id (like "
-                    "<code>-1001234567890</code>) or a link from it.",
-                    reply_markup=cancel_kb(), parse_mode=ParseMode.HTML)
+                    L.t(lang, "not_group"),
+                    reply_markup=cancel_kb(lang=lang), parse_mode=ParseMode.HTML)
                 _pending[uid] = action
                 return
-            ok, detail = await verify_group_target(msg.get_bot(), chat_id, None, "log")
+            ok, detail = await verify_group_target(msg.get_bot(), chat_id, None, "log", lang)
             if not ok:
-                await msg.reply_text(detail, reply_markup=cancel_kb(),
+                await msg.reply_text(detail, reply_markup=cancel_kb(lang=lang),
                                      parse_mode=ParseMode.HTML)
                 _pending[uid] = action
                 return
@@ -3220,17 +3236,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kinds = _active_kinds(uid)
             made, failed = await provision_user_topics(msg.get_bot(), chat_id, uid, kinds)
             summary = (
-                f"{G_OK} Alerts now go to group <code>{chat_id}</code>.\n"
-                + "\n".join(f"{G_ROW} {TOPIC_KIND_LABELS.get(k, k)}" for k in kinds)
+                L.t(lang, "dest_group_ok", chat=chat_id) + "\n"
+                + "\n".join(f"{G_ROW} {topic_label(k, lang)}" for k in kinds)
             )
             if failed:
-                summary += (
-                    f"\n\n{G_NEUTRAL} I could not create "
-                    + ("some topics" if made else "the topics")
-                    + " there, so those alerts land in the group itself. "
-                    "Make me an admin with <b>Manage Topics</b> and turn Topics on, "
-                    "then pick the group again."
-                )
+                summary += L.t(lang, "topics_failed_some" if made else "topics_failed_all")
             await msg.reply_text(summary, parse_mode=ParseMode.HTML)
             v = user_settings_view(uid, resolve_login(uid))
             await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
@@ -3243,7 +3253,12 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_admin_panel(update)
         return
 
-    if text == BTN_SETTINGS:
+    if is_button(text, "btn_language"):
+        v = language_picker_view(uid)
+        await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        return
+
+    if is_button(text, "btn_settings"):
         if heysolo_db.is_admin(uid):
             await send_admin_panel(update)
             return
@@ -3254,8 +3269,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     login = resolve_login(uid)
     if login is None:
         if not heysolo_db.is_admin(uid):
-            await msg.reply_text(
-                f"{G_WAIT} No account has been assigned to you yet.")
+            await msg.reply_text(L.t(lang, "no_account_user"))
             return
         if await asyncio.to_thread(account_count) > 0:
             await msg.reply_text(
@@ -3271,26 +3285,27 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     caps = expert_caps(uid)
 
-    if text == BTN_EA or text == BTN_BIAS or toggle_kind(text):
+    if is_button(text, "btn_ea") or is_button(text, "btn_bias") or toggle_kind(text):
         if not (caps["has_mode"] or caps["has_trading"] or caps["has_bias"]):
-            await msg.reply_text(caps_denied_text(caps, "EA controls"), parse_mode=ParseMode.HTML)
+            await msg.reply_text(caps_denied_text(caps, "what_ea_controls", lang),
+                                 parse_mode=ParseMode.HTML)
             return
         st = await asyncio.to_thread(refresh_state, login)
         v = await asyncio.to_thread(ea_controller_view, uid, login, st)
         await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
-    elif text == BTN_ACCOUNT:
+    elif is_button(text, "btn_account"):
         if len(await asyncio.to_thread(visible_accounts, uid)) > 1:
             v = await asyncio.to_thread(accounts_list_view, uid)
         else:
             v = await asyncio.to_thread(account_detail_view, uid, login)
         await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
-    elif text == BTN_PROP:
+    elif is_button(text, "btn_prop"):
         if len(await asyncio.to_thread(visible_accounts, uid)) > 1:
             v = await asyncio.to_thread(prop_list_view, uid)
         else:
             v = await asyncio.to_thread(prop_detail_view, uid, login)
         await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
-    elif text == BTN_STATUS:
+    elif is_button(text, "btn_status"):
         if len(await asyncio.to_thread(visible_accounts, uid)) > 1:
             v = await asyncio.to_thread(status_list_view, uid)
         else:
@@ -3303,10 +3318,35 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     data = q.data
 
+    if data == L.LANG_OPEN_CB:
+        await q.answer()
+        v = language_picker_view(update.effective_user.id)
+        await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"],
+                                     parse_mode=v["parse_mode"])
+        return
+
+    if data.startswith(L.LANG_CB_PREFIX):
+        uid = update.effective_user.id
+        code = data[len(L.LANG_CB_PREFIX):]
+        if code not in L.LANGS:
+            await q.answer()
+            return
+        first_time = not L.has_lang(uid)
+        if not await asyncio.to_thread(L.set_lang, uid, code):
+            await q.answer(L.t(code, "db_unreachable"), show_alert=True)
+            return
+        await q.answer(L.LANG_NAMES[code])
+        await safe_edit_message_text(q, L.t(code, "lang_saved"), parse_mode=ParseMode.HTML)
+        text, kb = await build_home(uid)
+        if first_time or not isinstance(kb, InlineKeyboardMarkup):
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=text,
+                                           reply_markup=kb, parse_mode=ParseMode.HTML)
+        return
+
     if data == CANCEL_CB:
         uid = update.effective_user.id
         action = _pending.pop(uid, None) or ""
-        await q.answer("Cancelled")
+        await q.answer(L.tu(uid, "cancelled_toast"))
         if action == "set_dest_group":
             v = user_settings_view(uid, resolve_login(uid))
         elif heysolo_db.is_admin(uid):
@@ -3322,6 +3362,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     uid = update.effective_user.id
+    lang = L.get_lang(uid)
 
     if data == "ACC_LIST":
         await q.answer()
@@ -3333,7 +3374,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_login = data[len("ACC_VIEW_"):]
         visible = await asyncio.to_thread(visible_accounts, uid)
         if target_login not in {a["login"] for a in visible}:
-            await q.answer("Not your account.", show_alert=True)
+            await q.answer(L.t(lang, "not_your_account"), show_alert=True)
             return
         await q.answer()
         v = await asyncio.to_thread(account_detail_view, uid, target_login)
@@ -3350,7 +3391,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_login = data[len("PROP_VIEW_"):]
         visible = await asyncio.to_thread(visible_accounts, uid)
         if target_login not in {a["login"] for a in visible}:
-            await q.answer("Not your account.", show_alert=True)
+            await q.answer(L.t(lang, "not_your_account"), show_alert=True)
             return
         await q.answer()
         v = await asyncio.to_thread(prop_detail_view, uid, target_login)
@@ -3361,7 +3402,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_login = data[len("SETT_VIEW_"):]
         visible = await asyncio.to_thread(visible_accounts, uid)
         if target_login not in {a["login"] for a in visible}:
-            await q.answer("Not your account.", show_alert=True)
+            await q.answer(L.t(lang, "not_your_account"), show_alert=True)
             return
         await q.answer()
         v = await asyncio.to_thread(settings_detail_view, uid, target_login)
@@ -3378,7 +3419,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_login = data[len("STAT_VIEW_"):]
         visible = await asyncio.to_thread(visible_accounts, uid)
         if target_login not in {a["login"] for a in visible}:
-            await q.answer("Not your account.", show_alert=True)
+            await q.answer(L.t(lang, "not_your_account"), show_alert=True)
             return
         await q.answer()
         v = await asyncio.to_thread(status_detail_view, uid, target_login)
@@ -3389,7 +3430,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_login = data[len("PROP_ALERTS_"):]
         visible = await asyncio.to_thread(visible_accounts, uid)
         if target_login not in {a["login"] for a in visible}:
-            await q.answer("Not your account.", show_alert=True)
+            await q.answer(L.t(lang, "not_your_account"), show_alert=True)
             return
         config = await asyncio.to_thread(heysolo_db.get_user_prop_alerts, uid)
         v = prop_notifications.settings_view(uid, config, target_login)
@@ -3401,12 +3442,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_login = data[len("PROP_SET_TOGGLE_"):]
         visible = await asyncio.to_thread(visible_accounts, uid)
         if target_login not in {a["login"] for a in visible}:
-            await q.answer("Not your account.", show_alert=True)
+            await q.answer(L.t(lang, "not_your_account"), show_alert=True)
             return
         config = await asyncio.to_thread(heysolo_db.get_user_prop_alerts, uid)
         config = await asyncio.to_thread(
             heysolo_db.set_user_prop_alerts, uid, enabled=not config.get("enabled", True))
-        await q.answer(f"Prop alerts {'on' if config['enabled'] else 'off'}")
+        await q.answer(L.t(lang, "prop_alerts_toast", state=L.t(lang, "on" if config['enabled'] else "off")))
         v = prop_notifications.settings_view(uid, config, target_login)
         await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         return
@@ -3416,20 +3457,18 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_login = data[len("PROP_SET_DAILY_" if is_daily else "PROP_SET_OVERALL_"):]
         visible = await asyncio.to_thread(visible_accounts, uid)
         if target_login not in {a["login"] for a in visible}:
-            await q.answer("Not your account.", show_alert=True)
+            await q.answer(L.t(lang, "not_your_account"), show_alert=True)
             return
         action = "set_prop_daily_threshold" if is_daily else "set_prop_overall_threshold"
         _pending[uid] = f"{action}:{target_login}"
-        label = "daily loss" if is_daily else "total loss"
         config = await asyncio.to_thread(heysolo_db.get_user_prop_alerts, uid)
         key = "daily_threshold" if is_daily else "overall_threshold"
         await q.answer()
         await safe_edit_message_text(
             q,
-            f"🏆 <b>{label.title()} warning</b>\n"
-            f"Current: <code>{config[key]:.0f}%</code> of the allowed limit.\n"
-            "Send a percentage from <code>1</code> to <code>99</code>.",
-            reply_markup=cancel_kb(),
+            L.t(lang, "threshold_prompt_daily" if is_daily else "threshold_prompt_total",
+                v=f"{config[key]:.0f}"),
+            reply_markup=cancel_kb(lang=lang),
             parse_mode=ParseMode.HTML,
         )
         return
@@ -3438,21 +3477,21 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_login = data[len("ACC_SET_"):]
         visible = await asyncio.to_thread(visible_accounts, uid)
         if target_login not in {a["login"] for a in visible}:
-            await q.answer("That account is no longer reporting, or isn't yours.", show_alert=True)
+            await q.answer(L.t(lang, "account_gone"), show_alert=True)
             return
         _active_login[uid] = target_login
         try:
             heysolo_db.get_db().set_active_login(uid, target_login)
         except Exception as e:
             log.warning("Could not persist active login for %s: %s", uid, e)
-        await q.answer(f"Active account: {target_login}")
+        await q.answer(L.t(lang, "account_switched_toast", login=target_login))
         st = await asyncio.to_thread(get_state, target_login)
         v = await asyncio.to_thread(account_detail_view, uid, target_login)
         await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         kb = await asyncio.to_thread(build_main_keyboard, uid, st, target_login)
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"{G_OK} Switched to account <code>{target_login}</code>.",
+            text=L.t(lang, "account_switched", login=target_login),
             reply_markup=kb,
             parse_mode=ParseMode.HTML,
         )
@@ -3461,73 +3500,67 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("EA_"):
         login = resolve_login(uid)
         if login is None:
-            await q.answer("No account is assigned to you yet.", show_alert=True)
+            await q.answer(L.t(lang, "no_account_assigned"), show_alert=True)
             return
         caps = expert_caps(uid)
 
         if data == "EA_CLOSE":
             await q.answer()
             await safe_edit_message_text(
-                q, f"{G_OK} EA Controller closed. Use {BTN_EA} to reopen.")
+                q, L.t(lang, "ea_closed", btn=L.t(lang, "btn_ea")))
             return
 
         if data in ("EA_MODE_INFO", "EA_TRADING_INFO"):
             st = await asyncio.to_thread(refresh_state, login)
             if data == "EA_MODE_INFO":
                 key = "mode"
-                note = (f"Mode: Manual\n\nYour Bias Picker choices are what the EA trades."
-                        if (st.mode or "").upper() == "MANUAL" else
-                        f"Mode: Auto\n\nThe EA decides the bias itself. "
-                        f"Bias Picker is locked until you switch to Manual.")
+                note = L.t(lang, "info_manual" if (st.mode or "").upper() == "MANUAL" else "info_auto")
             else:
                 key = "trading"
-                note = ("Trading: On\n\nThe EA may open new trades."
-                        if st.trading else
-                        "Trading: Off\n\nNo new trades. Open positions stay untouched.")
+                note = L.t(lang, "info_on" if st.trading else "info_off")
             if key in st.pending:
-                note += (f"\n\nSent {pending_age(st, key)}s ago - waiting for the EA "
-                         f"to confirm it on its next export.")
+                note += L.t(lang, "info_pending", n=pending_age(st, key))
             await q.answer(note, show_alert=True)
             return
 
         if data in ("EA_MODE_SET", "EA_TRADING_SET"):
             key = "mode" if data == "EA_MODE_SET" else "trading"
             if key == "mode" and not caps["has_mode"]:
-                await q.answer("This EA has no Manual/Auto mode.", show_alert=True)
+                await q.answer(L.t(lang, "no_mode"), show_alert=True)
                 return
             if key == "trading" and not caps["has_trading"]:
-                await q.answer("This EA has no remote Trading on/off.", show_alert=True)
+                await q.answer(L.t(lang, "no_trading"), show_alert=True)
                 return
             await apply_control_toggle(q, uid, login, key)
             return
 
         if data == "EA_BIAS":
             if not caps["has_bias"]:
-                await q.answer("This EA has no bias to set.", show_alert=True)
+                await q.answer(L.t(lang, "no_bias"), show_alert=True)
                 return
             st = await asyncio.to_thread(refresh_state, login)
-            kb = await asyncio.to_thread(bias_keyboard, login, st)
+            kb = await asyncio.to_thread(bias_keyboard, login, st, lang)
             await q.answer()
             if kb is None:
                 await safe_edit_message_text(
-                    q, NO_SYMBOLS_TEXT, parse_mode=ParseMode.HTML,
+                    q, no_symbols_text(lang), parse_mode=ParseMode.HTML,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
-                        f"{G_BACK} EA Controller", callback_data="EA_OPEN")]]))
+                        L.t(lang, "bias_back_ea"), callback_data="EA_OPEN")]]))
                 return
-            await safe_edit_message_text(q, bias_header(login, st), reply_markup=kb,
+            await safe_edit_message_text(q, bias_header(login, st, lang), reply_markup=kb,
                                       parse_mode=ParseMode.HTML)
             return
 
         st = await asyncio.to_thread(refresh_state, login)
-        await q.answer("Re-read from the account" if data == "EA_REFRESH" else None)
+        await q.answer(L.t(lang, "reread") if data == "EA_REFRESH" else None)
         await show_ea_panel(q, uid, login, st)
         return
 
     if data == "SET_DEST_DM":
         if not await asyncio.to_thread(heysolo_db.set_user_dest, uid, "dm"):
-            await q.answer("Could not save that - the database is unreachable.", show_alert=True)
+            await q.answer(L.t(lang, "db_unreachable"), show_alert=True)
             return
-        await q.answer(f"{G_DM} Alerts come here now")
+        await q.answer(L.t(lang, "alerts_here_toast"))
         v = user_settings_view(uid, resolve_login(uid))
         await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         return
@@ -3536,27 +3569,27 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _pending[uid] = "set_dest_group"
         await q.answer()
         me = (await q.get_bot().get_me()).username
-        await safe_edit_message_text(q, group_prompt_text(me), reply_markup=cancel_kb(),
+        await safe_edit_message_text(q, group_prompt_text(me, lang), reply_markup=cancel_kb(lang=lang),
                                   parse_mode=ParseMode.HTML)
         return
 
     if data.startswith("SET_NTOG_"):
         kind = data[len("SET_NTOG_"):]
         if kind not in _active_kinds(uid):
-            await q.answer("Your EA does not send that.", show_alert=True)
+            await q.answer(L.t(lang, "ea_not_send"), show_alert=True)
             return
         now_on = await asyncio.to_thread(heysolo_db.toggle_user_notify, uid, kind)
         if now_on is None:
-            await q.answer("Could not save that - the database is unreachable.", show_alert=True)
+            await q.answer(L.t(lang, "db_unreachable"), show_alert=True)
             return
-        await q.answer(f"{TOPIC_KIND_LABELS.get(kind, kind)}: {'on' if now_on else 'off'}")
+        await q.answer(f"{topic_label(kind, lang)}: {L.t(lang, 'on' if now_on else 'off')}")
         v = user_settings_view(uid, resolve_login(uid))
         await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         return
 
     if data == "SET_CLOSE":
         await q.answer()
-        await safe_edit_message_text(q, f"{G_OK} Settings closed. Use {BTN_SETTINGS} to reopen.")
+        await safe_edit_message_text(q, L.t(lang, "settings_closed", btn=L.t(lang, "btn_settings")))
         return
 
     if not data.startswith(("SYM_", "BIAS_")):
@@ -3565,40 +3598,40 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     login = await asyncio.to_thread(resolve_login, uid)
     if login is None:
-        await q.answer("No account is assigned to you yet.", show_alert=True)
+        await q.answer(L.t(lang, "no_account_assigned"), show_alert=True)
         return
 
     caps = await asyncio.to_thread(expert_caps, uid)
     if not caps["has_bias"]:
-        await q.answer("This EA has no bias to set.", show_alert=True)
-        await safe_edit_message_text(q, caps_denied_text(caps, "bias to set"),
+        await q.answer(L.t(lang, "no_bias"), show_alert=True)
+        await safe_edit_message_text(q, caps_denied_text(caps, "what_bias", lang),
                                   parse_mode=ParseMode.HTML)
         return
     st = await asyncio.to_thread(refresh_state, login)
 
     if data == "BIAS_BACK":
         await q.answer()
-        kb = await asyncio.to_thread(bias_keyboard, login, st)
+        kb = await asyncio.to_thread(bias_keyboard, login, st, lang)
         if kb is None:
-            await safe_edit_message_text(q, NO_SYMBOLS_TEXT, parse_mode=ParseMode.HTML)
+            await safe_edit_message_text(q, no_symbols_text(lang), parse_mode=ParseMode.HTML)
             return
-        await safe_edit_message_text(q, bias_header(login, st), reply_markup=kb, parse_mode=ParseMode.HTML)
+        await safe_edit_message_text(q, bias_header(login, st, lang), reply_markup=kb, parse_mode=ParseMode.HTML)
 
     elif data.startswith("SYM_"):
         if (st.mode or "").upper() != "MANUAL":
-            await q.answer("Bias Picker is locked while Mode is Auto.", show_alert=True)
+            await q.answer(L.t(lang, "bias_locked"), show_alert=True)
             return
         await q.answer()
         sym = data[4:]
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"{G_BULL} Bullish", callback_data=f"BIAS_{sym}_1"),
-             InlineKeyboardButton(f"{G_BEAR} Bearish", callback_data=f"BIAS_{sym}_-1")],
-            [InlineKeyboardButton(f"{G_FLAT} None", callback_data=f"BIAS_{sym}_0")],
-            [InlineKeyboardButton(f"{G_BACK} Back", callback_data="BIAS_BACK")],
+            [InlineKeyboardButton(f"{G_BULL} {L.t(lang, 'bullish')}", callback_data=f"BIAS_{sym}_1"),
+             InlineKeyboardButton(f"{G_BEAR} {L.t(lang, 'bearish')}", callback_data=f"BIAS_{sym}_-1")],
+            [InlineKeyboardButton(f"{G_FLAT} {L.t(lang, 'none')}", callback_data=f"BIAS_{sym}_0")],
+            [InlineKeyboardButton(L.t(lang, "btn_back"), callback_data="BIAS_BACK")],
         ])
         current_emoji = {1: G_BULL, -1: G_BEAR, 0: G_FLAT}[st.bias.get(sym, 0)]
         await safe_edit_message_text(q,
-            f"{G_BIAS} <b>{sym}</b>\n<i>Current: {current_emoji}</i>\nPick a direction.",
+            L.t(lang, "bias_sym_pick", sym=sym, e=current_emoji),
             reply_markup=kb, parse_mode=ParseMode.HTML,
         )
 
@@ -3607,10 +3640,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sym, val = data[5:].rsplit("_", 1)
             val = int(val)
         except ValueError:
-            await q.answer("That button is out of date. Reopen the Bias Picker.", show_alert=True)
+            await q.answer(L.t(lang, "bias_outdated"), show_alert=True)
             return
         if (st.mode or "").upper() != "MANUAL":
-            await q.answer("Bias Picker is locked while Mode is Auto.", show_alert=True)
+            await q.answer(L.t(lang, "bias_locked"), show_alert=True)
             await show_ea_panel(q, uid, login, st)
             return
         async with control_lock(login):
@@ -3623,19 +3656,19 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 st.bias[sym] = previous
                 clear_pending(st, f"bias_{sym}")
         if not ok:
-            await q.answer(f"{G_BAD} Could not write the EA control file. Nothing changed.",
-                           show_alert=True)
+            await q.answer(L.t(lang, "write_failed"), show_alert=True)
             return
         word = {1: "Bullish", -1: "Bearish", 0: "None"}[val]
+        word_shown = L.t(lang, {1: "bullish", -1: "bearish", 0: "none"}[val])
         glyph = {1: G_BULL, -1: G_BEAR, 0: G_FLAT}[val]
         await asyncio.to_thread(heysolo_db.record_control_change, login, uid,
                                 f"Bias {sym} {word}", st.mode, st.trading)
-        await q.answer(f"{glyph} {sym}: {word}")
-        kb = await asyncio.to_thread(bias_keyboard, login, st)
+        await q.answer(f"{glyph} {sym}: {word_shown}")
+        kb = await asyncio.to_thread(bias_keyboard, login, st, lang)
         if kb is None:
-            await safe_edit_message_text(q, NO_SYMBOLS_TEXT, parse_mode=ParseMode.HTML)
+            await safe_edit_message_text(q, no_symbols_text(lang), parse_mode=ParseMode.HTML)
             return
-        await safe_edit_message_text(q, bias_header(login, st), reply_markup=kb, parse_mode=ParseMode.HTML)
+        await safe_edit_message_text(q, bias_header(login, st, lang), reply_markup=kb, parse_mode=ParseMode.HTML)
 
 STARTUP_TEXT = (
     "🤖 <b>Bot is running</b>\n"
@@ -3740,6 +3773,7 @@ def main():
         .build()
     )
     app.add_handler(CommandHandler(["start", "menu"], cmd_start))
+    app.add_handler(CommandHandler(["language", "lang"], cmd_language))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_error_handler(on_error)

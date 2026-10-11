@@ -40,6 +40,7 @@ def _get_default_settings() -> dict:
         "db_password": DEFAULT_DB_PASSWORD,
         "installed_at": "",
         "copier": {},
+        "user_langs": {},
     }
 
 def _load() -> dict:
@@ -283,6 +284,23 @@ def is_first_run() -> bool:
 def mark_installed():
     data = _load()
     data["installed_at"] = __import__("datetime").datetime.now().isoformat()
+    _save(data)
+
+def get_user_lang(user_id) -> str:
+    langs = _load().get("user_langs") or {}
+    try:
+        key = str(int(user_id))
+    except (TypeError, ValueError):
+        return ""
+    return str(langs.get(key) or "")
+
+def set_user_lang(user_id, lang: str):
+    data = _load()
+    langs = data.get("user_langs")
+    if not isinstance(langs, dict):
+        langs = {}
+    langs[str(int(user_id))] = str(lang)
+    data["user_langs"] = langs
     _save(data)
 
 def get_config() -> Dict:

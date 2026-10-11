@@ -1,0 +1,605 @@
+# NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
+import heysolo_settings as settings
+
+DEFAULT_LANG = "en"
+LANGS = ("en", "fa")
+LANG_NAMES = {"en": "🇬🇧 English", "fa": "🇮🇷 فارسی"}
+LANG_CB_PREFIX = "LANG_SET_"
+LANG_OPEN_CB = "LANG_OPEN"
+
+_LRI, _PDI = "\u2066", "\u2069"
+
+TEXTS = {
+    "en": {
+        "lang_prompt": "🌐 <b>Choose your language</b>\n🌐 <b>زبان خود را انتخاب کنید</b>",
+        "lang_saved": "✔ Language set to <b>English</b>.",
+        "btn_language": "🌐 Language",
+        "btn_lang_current": "🌐 Language: English",
+        "not_authorized": "✖ Not authorized.",
+        "btn_cancel": "✕ Cancel",
+        "cancelled": "Cancelled.",
+        "cancelled_toast": "Cancelled",
+        "not_your_account": "Not your account.",
+        "btn_refresh": "🔄 Refresh",
+        "btn_back": "← Back",
+        "btn_close": "Close",
+        "btn_close_x": "✕ Close",
+        "btn_back_close": "← Close",
+        "btn_back_account": "← Account",
+        "btn_all_accounts": "← All accounts",
+        "db_unreachable": "Could not save that - the database is unreachable.",
+        "on": "on",
+        "off": "off",
+        "on_cap": "On",
+        "off_cap": "Off",
+        "on_upper": "ON",
+        "off_upper": "OFF",
+        "manual": "Manual",
+        "auto": "Auto",
+        "updated": "updated {when}",
+
+        "btn_ea": "EA Controller",
+        "btn_account": "Account",
+        "btn_settings": "🛠 Settings",
+        "btn_bias": "◈ Bias",
+        "btn_prop": "🏆 Prop Panel",
+        "btn_status": "🩺 Status Live",
+        "lbl_ea_inputs": "🛠 EA Inputs",
+        "lbl_status": "🩺 Status Live",
+        "lbl_prop": "🏆 Prop Panel",
+
+        "start_ready": "✔ <b>Bot ready</b>",
+        "start_mode": "▸ Mode: <b>{mode}</b>",
+        "start_trading": "▸ Trading: <b>{state}</b>",
+        "start_no_admin": "⚙ No admin set yet. Claim ownership below.",
+        "btn_claim": "✔ Claim Bot",
+        "start_ea": "▸ EA: <b>{name}</b>",
+        "start_no_ea_admin": "⋯ No EA assigned to you yet - assign yourself one under Admin › Access.",
+        "start_no_ea_user": "⋯ No EA assigned to you yet - ask an admin to assign one.",
+
+        "no_expert": "⋯ No EA has been assigned to you yet, so this feature is closed. An admin assigns it under Admin › Access.",
+        "caps_denied": "✖ <b>{name}</b> has no {what}.",
+        "what_ea_controls": "EA controls",
+        "what_bias": "bias to set",
+        "no_symbols": "⋯ No symbols yet.\nSymbols are read from the EA input <code>SymbolsInput</code> and refresh automatically on every export. Edit them on the chart, not here.",
+        "no_account_assigned": "No account is assigned to you yet.",
+        "no_account_user": "⋯ No account has been assigned to you yet.",
+
+        "acc_no_data": "⏳ No data exported for this account yet (enable <code>ExportAccountCard</code> in the EA).",
+        "acc_title": "<b>Account {login}</b>",
+        "acc_expert": "🧩 Expert {name} · <code>{code}</code>",
+        "acc_owner": "👤 Owner {owner}",
+        "unassigned": "<i>unassigned</i>",
+        "acc_balance": "💵 Balance <b>{v}</b>",
+        "acc_equity": "📈 Equity <b>{v}</b>",
+        "acc_today": "{e} Today <b>{v}</b> ({p})",
+        "acc_open": "📌 Open trades <b>{n}</b>",
+        "acc_mode_trading": "⚙️ Mode <b>{mode}</b> · 🚦 Trading <b>{trading}</b>",
+        "acc_symbols": "💠 Symbols <code>{s}</code>",
+        "waiting_for_ea": "waiting for EA",
+
+        "bias_back_ea": "← EA Controller",
+        "bias_mode_manual": "{g} <b>Mode:</b> <b>Manual</b> - your picks below are what the EA uses.",
+        "bias_mode_auto": "{g} <b>Mode:</b> <b>Auto</b> - the EA decides; switch to Manual to set a bias.",
+        "bias_title": "◈ <b>Bias</b>",
+        "bias_legend": "<i>🟢 bullish  🔴 bearish  ○ none  · from EA SymbolsInput</i>",
+        "bullish": "Bullish",
+        "bearish": "Bearish",
+        "none": "None",
+        "bias_sym_pick": "◈ <b>{sym}</b>\n<i>Current: {e}</i>\nPick a direction.",
+        "bias_locked": "Bias Picker is locked while Mode is Auto.",
+        "bias_outdated": "That button is out of date. Reopen the Bias Picker.",
+        "no_bias": "This EA has no bias to set.",
+        "write_failed": "✖ Could not write the EA control file. Nothing changed.",
+
+        "ago_unknown": "time unknown",
+        "ago_now": "just now",
+        "ago_s": "{n}s ago",
+        "ago_m": "{n}m ago",
+        "ago_h": "{n}h ago",
+        "ago_d": "{n}d ago",
+        "never": "never",
+
+        "last_change_none": "▸ Last change: no one through the bot yet - the state below is what the EA reports.",
+        "last_change": "▸ Last change: {bits}",
+        "pending_note": "  ⋯ <i>sent, waiting for the EA ({n}s)</i>",
+
+        "ea_nothing": "▸ <b>{name}</b> has nothing to control from here.",
+        "this_ea": "This EA",
+        "ea_mode_line": "{g} <b>Mode:</b> <b>{now}</b>{note}",
+        "ea_trading_line": "{g} <b>Trading:</b> <b>{now}</b>{note}",
+        "ea_read_at": "<i>▸ Read at {time}</i>",
+        "mode_value": "Mode: {v}",
+        "trading_value": "Trading: {v}",
+        "btn_bias_picker": "◈ Bias Picker",
+        "btn_bias_picker_mode": "◈ Bias Picker · {mode}",
+        "toast_sent": "✔ {toast} - sent to the EA",
+        "ea_closed": "✔ EA Controller closed. Use {btn} to reopen.",
+        "info_manual": "Mode: Manual\n\nYour Bias Picker choices are what the EA trades.",
+        "info_auto": "Mode: Auto\n\nThe EA decides the bias itself. Bias Picker is locked until you switch to Manual.",
+        "info_on": "Trading: On\n\nThe EA may open new trades.",
+        "info_off": "Trading: Off\n\nNo new trades. Open positions stay untouched.",
+        "info_pending": "\n\nSent {n}s ago - waiting for the EA to confirm it on its next export.",
+        "no_mode": "This EA has no Manual/Auto mode.",
+        "no_trading": "This EA has no remote Trading on/off.",
+        "reread": "Re-read from the account",
+
+        "accounts_title": "<b>Accounts</b> ({n})\n▸ Active: <code>{active}</code>\nTap an account to view it or make it active.",
+        "set_active": "✔ Set as active",
+        "prop_list_title": "🏆 <b>Prop Panel</b> ({n})\n▸ Active: <code>{active}</code>\nTap an account to see its challenge rules.",
+        "prop_target_label": "{mark} {login} · {pct}% target{tag}",
+        "btn_alert_settings": "⚙️ Alert settings",
+        "status_list_title": "🩺 <b>Status Live</b> ({n})\n▸ Active: <code>{active}</code>\nTap an account to see its live status.",
+        "account_switched_toast": "Active account: {login}",
+        "account_switched": "✔ Switched to account <code>{login}</code>.",
+        "account_gone": "That account is no longer reporting, or isn't yours.",
+
+        "topic_bias": "Bias",
+        "topic_trade": "Trades",
+        "topic_log": "Logs",
+        "topic_result": "Results",
+
+        "dest_dm": "📩 here in this chat",
+        "dest_group": "👥 group <code>{chat}</code>",
+        "dest_group_unset": "👥 group (not set yet)",
+        "my_settings": "🛠 <b>My Settings</b>",
+        "no_events": "· <b>{name}</b> doesn't produce any events to route.",
+        "btn_here_bot": "📩 Here in the bot",
+        "btn_my_group": "👥 My group",
+        "settings_body": "▸ EA: <b>{ea}</b>\n▸ Account: <code>{login}</code>\n▸ Alerts go to: {dest}\n",
+        "settings_hint_group": "\n<i>I create and keep the topics in that group myself. Tap a name or 🔔/🔕 to turn that category on or off.</i>",
+        "settings_hint_dm": "\n<i>Everything arrives right here. Tap 👥 My group to send it to a group instead. 🔔/🔕 turns a category on or off.</i>",
+        "settings_closed": "✔ Settings closed. Use {btn} to reopen.",
+        "alerts_here_toast": "📩 Alerts come here now",
+        "ea_not_send": "Your EA does not send that.",
+
+        "group_prompt": "👥 <b>Send to my group</b>\n\n<b>1.</b> Add <code>@{bot}</code> to the group.\n<b>2.</b> Send its id or any link from it here.\n\n<i>▸ Example: <code>-1001234567890</code></i>\n<i>▸ Or any link from the group.</i>\n<i>▸ I create the topics in there myself - no topic numbers needed.</i>",
+        "not_group": "✖ That is not a group. Send its id (like <code>-1001234567890</code>) or a link from it.",
+        "dest_group_ok": "✔ Alerts now go to group <code>{chat}</code>.",
+        "topics_failed_some": "\n\n· I could not create some topics there, so those alerts land in the group itself. Make me an admin with <b>Manage Topics</b> and turn Topics on, then pick the group again.",
+        "topics_failed_all": "\n\n· I could not create the topics there, so those alerts land in the group itself. Make me an admin with <b>Manage Topics</b> and turn Topics on, then pick the group again.",
+
+        "vg_no_group": "✖ No reporting group is configured yet, so there is no group to send a thread id for. Paste the group's link instead, or ask an admin to set the group up.",
+        "vg_cant_see": "✖ I cannot see chat <code>{target}</code>.\n▸ <b>Add me to that group first</b>, then send this again. I have to be a member before I can post there.",
+        "vg_probe": "✔ Routing check - {label} alerts will appear here.",
+        "vg_thread_hint": "▸ Thread <code>{tid}</code> may not exist in that group.",
+        "vg_member_hint": "▸ Make sure I am a member and allowed to send messages there.",
+        "vg_post_failed": "✖ I reached <b>{title}</b> but could not post: {exc}\n{hint}",
+        "vg_ok": "✔ Verified - posting to <b>{where}</b>{thread}.",
+        "vg_thread": ", thread <code>{tid}</code>",
+
+        "num_1_99": "✖ Send a number from <code>1</code> to <code>99</code>.",
+        "save_failed": "✖ Could not save that setting: <code>{err}</code>",
+        "threshold_set": "✔ Prop warning threshold set to {v}%.",
+        "prop_alerts_toast": "Prop alerts {state}",
+        "threshold_prompt_daily": "🏆 <b>Daily loss warning</b>\nCurrent: <code>{v}%</code> of the allowed limit.\nSend a percentage from <code>1</code> to <code>99</code>.",
+        "threshold_prompt_total": "🏆 <b>Total loss warning</b>\nCurrent: <code>{v}%</code> of the allowed limit.\nSend a percentage from <code>1</code> to <code>99</code>.",
+
+        "n_failed": "ACCOUNT FAILED",
+        "n_passed": "CHALLENGE PASSED",
+        "n_daily_warning": "DAILY LOSS WARNING",
+        "n_overall_warning": "TOTAL LOSS WARNING",
+        "n_account": "🏷️ Account <code>{login}</code> · <i>{mode}</i>",
+        "n_failed_1": "This challenge has been marked as <b>failed</b>.",
+        "n_failed_2": "The Prop Panel has the full breakdown.",
+        "n_total_loss": "🛡️ Total loss {pair}",
+        "n_daily_loss": "📆 Daily loss {pair}",
+        "n_passed_1": "Huge win. Your prop challenge is officially <b>passed</b> 🎉",
+        "n_passed_2": "Keep the risk boring from here. Boring is profitable.",
+        "n_target": "🎯 Target <b>{v}</b> reached",
+        "n_days": "🗓️ Trading days <b>{n}</b>",
+        "n_at": "You are at <b>{pct}%</b> of the allowed {label}.",
+        "n_label_daily": "daily loss",
+        "n_label_total": "total loss",
+        "n_slow": "Slow down before the limit makes the decision for you.",
+        "n_used": "📉 Used {pair}",
+        "n_threshold": "🔔 Warning threshold <b>{v}%</b>",
+        "n_balance": "💰 Balance <b>{v}</b>",
+        "n_open_prop": "📊 Open Prop Panel",
+        "n_settings": "⚙️ <b>Alert settings</b>\nProp challenge alerts: passed, failed, and near-limit warnings, on every account you can see.\n\n{dot} Status: <b>{state}</b>\n📆 Daily warning: <b>{daily}%</b> of the allowed daily loss\n🛡️ Total warning: <b>{overall}%</b> of the allowed total loss\n\nWarnings fire once per day/account state, so you do not get spammed.",
+        "n_btn_disable": "🔕 Disable alerts",
+        "n_btn_enable": "🔔 Enable alerts",
+        "n_btn_daily": "📆 Daily: {v}%",
+        "n_btn_total": "🛡️ Total: {v}%",
+
+        "pp_no_data": "⏳ No prop data exported for this account yet (enable <code>ExportAccountCard</code> in the EA).",
+        "pp_failed": "FAILED",
+        "pp_passed": "PASSED",
+        "pp_progress": "IN PROGRESS",
+        "pp_title": "🏆 <b>Prop Panel</b> · <code>{login}</code>",
+        "pp_account_kind": "<i>{mode} account</i>",
+        "pp_rules": "{e} <b>{head}</b>  ·  {n}/4 rules on track",
+        "pp_resets": "⏳ Resets in <b>{t}</b>",
+        "pp_target": "Target",
+        "pp_total_loss": "Total loss",
+        "pp_daily_loss": "Daily loss",
+        "pp_days": "Trading days",
+        "pp_consistency": "Consistency",
+        "pp_trading_day": "<i>▸ Trading day {n}</i>",
+        "pp_initial": "<i>▸ Initial balance {v}</i>",
+        "pp_current": "<i>▸ Current balance {v}</i>",
+        "pp_yesterday_bal": "<i>▸ Yesterday balance {v}</i>",
+        "pp_today": "Today",
+        "pp_yesterday": "Yesterday",
+        "pp_week": "This week",
+        "pp_max_day_drop": "Max day drop",
+        "pp_total_drop": "Total drop",
+
+        "ps_title": "🛠️ <b>EA Inputs</b>  ·  <b>{login}</b>",
+        "ps_none": "⏳ No live inputs exported yet for this account (the EA writes this file automatically once it's running with <b>dashprop</b> enabled).",
+        "ps_sub": "<i>Everything switched on right now that can change what happens to a trade.</i>",
+        "ps_stale": "⚠️ <i>EA not exporting right now, showing the last known inputs.</i>",
+
+        "st_unknown": "Unknown",
+        "st_offline": "Offline",
+        "st_no_broker": "No broker",
+        "st_online": "Online",
+        "st_broker": "broker {ping}",
+        "st_ea": "EA {age}",
+        "st_title": "🩺 <b>Status Live</b>  ·  <b>{login}</b>",
+        "st_not_reported": "⏳ <i>The EA hasn't reported its live state yet (it starts once it runs with <b>dashprop</b> on).</i>",
+        "st_blocked_head": "<b>BLOCKED</b> · <i>a new entry would be refused right now</i>",
+        "st_close_limit": "<b>ALLOWED · CLOSE TO A LIMIT</b>",
+        "st_allowed": "<b>ALLOWED</b> · <i>every gate is clear</i>",
+        "st_stale": "⚠️ <i>The EA is not reporting right now: everything below is the last state it exported.</i>",
+        "st_blocked": "<b>BLOCKED</b>",
+        "st_terminal": "Terminal or broker is not allowing trading",
+        "st_ea_last": "EA last reported {age}",
+        "st_watch": "<i>Watch</i>",
+        "st_gates": "▦ <b>Gates in use</b>",
+        "st_guards_off": "⚠️ <b>Protections switched off</b>",
+    },
+    "fa": {
+        "lang_prompt": "🌐 <b>Choose your language</b>\n🌐 <b>زبان خود را انتخاب کنید</b>",
+        "lang_saved": "✔ زبان ربات روی <b>فارسی</b> تنظیم شد.",
+        "btn_language": "🌐 زبان",
+        "btn_lang_current": "🌐 زبان: فارسی",
+        "not_authorized": "✖ شما به این ربات دسترسی ندارید.",
+        "btn_cancel": "✕ لغو",
+        "cancelled": "لغو شد.",
+        "cancelled_toast": "لغو شد",
+        "not_your_account": "این حساب متعلق به شما نیست.",
+        "btn_refresh": "🔄 بروزرسانی",
+        "btn_back": "← بازگشت",
+        "btn_close": "بستن",
+        "btn_close_x": "✕ بستن",
+        "btn_back_close": "← بستن",
+        "btn_back_account": "← حساب",
+        "btn_all_accounts": "← همه حساب‌ها",
+        "db_unreachable": "ذخیره نشد؛ دسترسی به دیتابیس ممکن نیست.",
+        "on": "روشن",
+        "off": "خاموش",
+        "on_cap": "روشن",
+        "off_cap": "خاموش",
+        "on_upper": "روشن",
+        "off_upper": "خاموش",
+        "manual": "دستی",
+        "auto": "خودکار",
+        "updated": "بروزرسانی {when}",
+
+        "btn_ea": "کنترل اکسپرت",
+        "btn_account": "حساب",
+        "btn_settings": "🛠 تنظیمات",
+        "btn_bias": "◈ بایاس",
+        "btn_prop": "🏆 پنل پراپ",
+        "btn_status": "🩺 وضعیت زنده",
+        "lbl_ea_inputs": "🛠 ورودی‌های اکسپرت",
+        "lbl_status": "🩺 وضعیت زنده",
+        "lbl_prop": "🏆 پنل پراپ",
+
+        "start_ready": "✔ <b>ربات آماده است</b>",
+        "start_mode": "▸ حالت: <b>{mode}</b>",
+        "start_trading": "▸ معامله: <b>{state}</b>",
+        "start_no_admin": "⚙ هنوز مدیری برای ربات تعیین نشده است. با دکمه زیر مالکیت ربات را بگیرید.",
+        "btn_claim": "✔ گرفتن مالکیت ربات",
+        "start_ea": "▸ اکسپرت: <b>{name}</b>",
+        "start_no_ea_admin": "⋯ هنوز اکسپرتی به شما اختصاص داده نشده است؛ از مسیر Admin › Access یکی برای خودتان تعیین کنید.",
+        "start_no_ea_user": "⋯ هنوز اکسپرتی به شما اختصاص داده نشده است؛ از مدیر بخواهید یکی برایتان تعیین کند.",
+
+        "no_expert": "⋯ هنوز اکسپرتی به شما اختصاص داده نشده، بنابراین این بخش بسته است. مدیر از مسیر Admin › Access آن را تعیین می‌کند.",
+        "caps_denied": "✖ <b>{name}</b> {what} ندارد.",
+        "what_ea_controls": "قابلیت کنترل از راه دور",
+        "what_bias": "بایاسی برای تنظیم",
+        "no_symbols": "⋯ هنوز نمادی وجود ندارد.\nنمادها از ورودی <code>SymbolsInput</code> اکسپرت خوانده می‌شوند و با هر خروجی به‌طور خودکار بروز می‌شوند. آن‌ها را روی چارت ویرایش کنید، نه اینجا.",
+        "no_account_assigned": "هنوز حسابی به شما اختصاص داده نشده است.",
+        "no_account_user": "⋯ هنوز حسابی به شما اختصاص داده نشده است.",
+
+        "acc_no_data": "⏳ هنوز داده‌ای برای این حساب ارسال نشده است (گزینه <code>ExportAccountCard</code> را در اکسپرت فعال کنید).",
+        "acc_title": "<b>حساب {login}</b>",
+        "acc_expert": "🧩 اکسپرت {name} · <code>{code}</code>",
+        "acc_owner": "👤 مالک {owner}",
+        "unassigned": "<i>تعیین نشده</i>",
+        "acc_balance": "💵 بالانس <b>{v}</b>",
+        "acc_equity": "📈 اکوییتی <b>{v}</b>",
+        "acc_today": "{e} امروز <b>{v}</b> ({p})",
+        "acc_open": "📌 معاملات باز <b>{n}</b>",
+        "acc_mode_trading": "⚙️ حالت <b>{mode}</b> · 🚦 معامله <b>{trading}</b>",
+        "acc_symbols": "💠 نمادها <code>{s}</code>",
+        "waiting_for_ea": "در انتظار اکسپرت",
+
+        "bias_back_ea": "← کنترل اکسپرت",
+        "bias_mode_manual": "{g} <b>حالت:</b> <b>دستی</b> - اکسپرت از همین انتخاب‌های زیر استفاده می‌کند.",
+        "bias_mode_auto": "{g} <b>حالت:</b> <b>خودکار</b> - اکسپرت خودش تصمیم می‌گیرد؛ برای تعیین بایاس به حالت دستی بروید.",
+        "bias_title": "◈ <b>بایاس</b>",
+        "bias_legend": "<i>🟢 صعودی  🔴 نزولی  ○ بدون جهت  · از SymbolsInput اکسپرت</i>",
+        "bullish": "صعودی",
+        "bearish": "نزولی",
+        "none": "بدون جهت",
+        "bias_sym_pick": "◈ <b>{sym}</b>\n<i>فعلی: {e}</i>\nجهت را انتخاب کنید.",
+        "bias_locked": "تا وقتی حالت روی خودکار است، انتخاب بایاس قفل است.",
+        "bias_outdated": "این دکمه قدیمی شده است. انتخاب بایاس را دوباره باز کنید.",
+        "no_bias": "این اکسپرت بایاسی برای تنظیم ندارد.",
+        "write_failed": "✖ فایل کنترل اکسپرت نوشته نشد. چیزی تغییر نکرد.",
+
+        "ago_unknown": "زمان نامشخص",
+        "ago_now": "همین الان",
+        "ago_s": "{n} ثانیه پیش",
+        "ago_m": "{n} دقیقه پیش",
+        "ago_h": "{n} ساعت پیش",
+        "ago_d": "{n} روز پیش",
+        "never": "هرگز",
+
+        "last_change_none": "▸ آخرین تغییر: هنوز کسی از طریق ربات تغییری نداده است؛ وضعیت زیر همان گزارش اکسپرت است.",
+        "last_change": "▸ آخرین تغییر: {bits}",
+        "pending_note": "  ⋯ <i>ارسال شد، در انتظار تأیید اکسپرت ({n} ثانیه)</i>",
+
+        "ea_nothing": "▸ <b>{name}</b> چیزی برای کنترل از اینجا ندارد.",
+        "this_ea": "این اکسپرت",
+        "ea_mode_line": "{g} <b>حالت:</b> <b>{now}</b>{note}",
+        "ea_trading_line": "{g} <b>معامله:</b> <b>{now}</b>{note}",
+        "ea_read_at": "<i>▸ زمان خواندن {time}</i>",
+        "mode_value": "حالت: {v}",
+        "trading_value": "معامله: {v}",
+        "btn_bias_picker": "◈ انتخاب بایاس",
+        "btn_bias_picker_mode": "◈ انتخاب بایاس · {mode}",
+        "toast_sent": "✔ {toast} - برای اکسپرت ارسال شد",
+        "ea_closed": "✔ کنترل اکسپرت بسته شد. برای باز کردن دوباره از دکمه «{btn}» استفاده کنید.",
+        "info_manual": "حالت: دستی\n\nاکسپرت بر اساس بایاس‌هایی که شما انتخاب کرده‌اید معامله می‌کند.",
+        "info_auto": "حالت: خودکار\n\nاکسپرت خودش بایاس را تعیین می‌کند. تا وقتی به حالت دستی نروید، انتخاب بایاس قفل است.",
+        "info_on": "معامله: روشن\n\nاکسپرت می‌تواند معامله جدید باز کند.",
+        "info_off": "معامله: خاموش\n\nمعامله جدیدی باز نمی‌شود. پوزیشن‌های باز دست‌نخورده می‌مانند.",
+        "info_pending": "\n\n{n} ثانیه پیش ارسال شد؛ در انتظار تأیید اکسپرت در خروجی بعدی.",
+        "no_mode": "این اکسپرت حالت دستی/خودکار ندارد.",
+        "no_trading": "این اکسپرت امکان روشن/خاموش کردن معامله از راه دور را ندارد.",
+        "reread": "دوباره از حساب خوانده شد",
+
+        "accounts_title": "<b>حساب‌ها</b> ({n})\n▸ حساب فعال: <code>{active}</code>\nروی یک حساب بزنید تا آن را ببینید یا فعالش کنید.",
+        "set_active": "✔ فعال کردن این حساب",
+        "prop_list_title": "🏆 <b>پنل پراپ</b> ({n})\n▸ حساب فعال: <code>{active}</code>\nروی یک حساب بزنید تا قوانین چالش آن را ببینید.",
+        "prop_target_label": "{mark} {login} · هدف {pct}%{tag}",
+        "btn_alert_settings": "⚙️ تنظیمات هشدار",
+        "status_list_title": "🩺 <b>وضعیت زنده</b> ({n})\n▸ حساب فعال: <code>{active}</code>\nروی یک حساب بزنید تا وضعیت زنده آن را ببینید.",
+        "account_switched_toast": "حساب فعال: {login}",
+        "account_switched": "✔ حساب فعال به <code>{login}</code> تغییر کرد.",
+        "account_gone": "این حساب دیگر گزارش نمی‌دهد یا متعلق به شما نیست.",
+
+        "topic_bias": "بایاس",
+        "topic_trade": "معاملات",
+        "topic_log": "لاگ‌ها",
+        "topic_result": "نتایج",
+
+        "dest_dm": "📩 همین‌جا در این چت",
+        "dest_group": "👥 گروه <code>{chat}</code>",
+        "dest_group_unset": "👥 گروه (هنوز تنظیم نشده)",
+        "my_settings": "🛠 <b>تنظیمات من</b>",
+        "no_events": "· <b>{name}</b> رویدادی برای ارسال تولید نمی‌کند.",
+        "btn_here_bot": "📩 همین‌جا در ربات",
+        "btn_my_group": "👥 گروه من",
+        "settings_body": "▸ اکسپرت: <b>{ea}</b>\n▸ حساب: <code>{login}</code>\n▸ مقصد هشدارها: {dest}\n",
+        "settings_hint_group": "\n<i>تاپیک‌های آن گروه را خودم می‌سازم و نگه می‌دارم. برای روشن یا خاموش کردن هر دسته، روی نام آن یا 🔔/🔕 بزنید.</i>",
+        "settings_hint_dm": "\n<i>همه‌چیز همین‌جا می‌رسد. برای ارسال به یک گروه روی «👥 گروه من» بزنید. 🔔/🔕 هر دسته را روشن یا خاموش می‌کند.</i>",
+        "settings_closed": "✔ تنظیمات بسته شد. برای باز کردن دوباره از دکمه «{btn}» استفاده کنید.",
+        "alerts_here_toast": "📩 از این به بعد هشدارها همین‌جا می‌آیند",
+        "ea_not_send": "اکسپرت شما این مورد را ارسال نمی‌کند.",
+
+        "group_prompt": "👥 <b>ارسال به گروه من</b>\n\n<b>۱.</b> ربات <code>@{bot}</code> را به گروه اضافه کنید.\n<b>۲.</b> آیدی گروه یا هر لینکی از داخل آن را اینجا بفرستید.\n\n<i>▸ مثال: <code>-1001234567890</code></i>\n<i>▸ یا هر لینکی از داخل گروه.</i>\n<i>▸ تاپیک‌ها را خودم آنجا می‌سازم؛ نیازی به شماره تاپیک نیست.</i>",
+        "not_group": "✖ این یک گروه نیست. آیدی گروه (مثل <code>-1001234567890</code>) یا لینکی از داخل آن را بفرستید.",
+        "dest_group_ok": "✔ از این به بعد هشدارها به گروه <code>{chat}</code> ارسال می‌شوند.",
+        "topics_failed_some": "\n\n· نتوانستم بعضی از تاپیک‌ها را آنجا بسازم، پس آن هشدارها مستقیم در خود گروه می‌آیند. من را با دسترسی <b>Manage Topics</b> ادمین کنید، Topics را روشن کنید و دوباره گروه را انتخاب کنید.",
+        "topics_failed_all": "\n\n· نتوانستم تاپیک‌ها را آنجا بسازم، پس هشدارها مستقیم در خود گروه می‌آیند. من را با دسترسی <b>Manage Topics</b> ادمین کنید، Topics را روشن کنید و دوباره گروه را انتخاب کنید.",
+
+        "vg_no_group": "✖ هنوز گروه گزارشی تنظیم نشده است. به‌جای آن لینک گروه را بفرستید یا از مدیر بخواهید گروه را تنظیم کند.",
+        "vg_cant_see": "✖ نمی‌توانم چت <code>{target}</code> را ببینم.\n▸ <b>اول من را به آن گروه اضافه کنید</b> و بعد دوباره بفرستید. برای ارسال پیام باید عضو گروه باشم.",
+        "vg_probe": "✔ بررسی مسیر - هشدارهای «{label}» اینجا نمایش داده می‌شوند.",
+        "vg_thread_hint": "▸ ممکن است تاپیک <code>{tid}</code> در آن گروه وجود نداشته باشد.",
+        "vg_member_hint": "▸ مطمئن شوید که عضو گروه هستم و اجازه ارسال پیام دارم.",
+        "vg_post_failed": "✖ به <b>{title}</b> دسترسی دارم اما نتوانستم پیام بفرستم: {exc}\n{hint}",
+        "vg_ok": "✔ تأیید شد - ارسال به <b>{where}</b>{thread}.",
+        "vg_thread": "، تاپیک <code>{tid}</code>",
+
+        "num_1_99": "✖ عددی بین <code>1</code> تا <code>99</code> بفرستید.",
+        "save_failed": "✖ این تنظیم ذخیره نشد: <code>{err}</code>",
+        "threshold_set": "✔ آستانه هشدار پراپ روی {v}% تنظیم شد.",
+        "prop_alerts_toast": "هشدارهای پراپ {state} شد",
+        "threshold_prompt_daily": "🏆 <b>هشدار ضرر روزانه</b>\nمقدار فعلی: <code>{v}%</code> از حد مجاز.\nدرصدی بین <code>1</code> تا <code>99</code> بفرستید.",
+        "threshold_prompt_total": "🏆 <b>هشدار ضرر کل</b>\nمقدار فعلی: <code>{v}%</code> از حد مجاز.\nدرصدی بین <code>1</code> تا <code>99</code> بفرستید.",
+
+        "n_failed": "حساب رد شد",
+        "n_passed": "چالش با موفقیت پاس شد",
+        "n_daily_warning": "هشدار ضرر روزانه",
+        "n_overall_warning": "هشدار ضرر کل",
+        "n_account": "🏷️ حساب <code>{login}</code> · <i>{mode}</i>",
+        "n_failed_1": "این چالش به‌عنوان <b>رد شده</b> ثبت شد.",
+        "n_failed_2": "جزئیات کامل در پنل پراپ موجود است.",
+        "n_total_loss": "🛡️ ضرر کل {pair}",
+        "n_daily_loss": "📆 ضرر روزانه {pair}",
+        "n_passed_1": "تبریک! چالش پراپ شما رسماً <b>پاس شد</b> 🎉",
+        "n_passed_2": "از اینجا به بعد ریسک را ساده و کم نگه دارید؛ معامله آرام سودآور است.",
+        "n_target": "🎯 هدف <b>{v}</b> محقق شد",
+        "n_days": "🗓️ روزهای معاملاتی <b>{n}</b>",
+        "n_at": "شما به <b>{pct}%</b> از {label} مجاز رسیده‌اید.",
+        "n_label_daily": "ضرر روزانه",
+        "n_label_total": "ضرر کل",
+        "n_slow": "قبل از اینکه حد ضرر به‌جای شما تصمیم بگیرد، سرعتتان را کم کنید.",
+        "n_used": "📉 مصرف‌شده {pair}",
+        "n_threshold": "🔔 آستانه هشدار <b>{v}%</b>",
+        "n_balance": "💰 بالانس <b>{v}</b>",
+        "n_open_prop": "📊 باز کردن پنل پراپ",
+        "n_settings": "⚙️ <b>تنظیمات هشدار</b>\nهشدارهای چالش پراپ: پاس شدن، رد شدن و نزدیک شدن به حد مجاز، برای همه حساب‌هایی که می‌بینید.\n\n{dot} وضعیت: <b>{state}</b>\n📆 هشدار روزانه: <b>{daily}%</b> از حد ضرر روزانه مجاز\n🛡️ هشدار کل: <b>{overall}%</b> از حد ضرر کل مجاز\n\nهر هشدار برای هر روز/وضعیت حساب فقط یک بار ارسال می‌شود تا پیام‌ها زیاد نشوند.",
+        "n_btn_disable": "🔕 غیرفعال کردن هشدارها",
+        "n_btn_enable": "🔔 فعال کردن هشدارها",
+        "n_btn_daily": "📆 روزانه: {v}%",
+        "n_btn_total": "🛡️ کل: {v}%",
+
+        "pp_no_data": "⏳ هنوز داده پراپی برای این حساب ارسال نشده است (گزینه <code>ExportAccountCard</code> را در اکسپرت فعال کنید).",
+        "pp_failed": "رد شده",
+        "pp_passed": "پاس شده",
+        "pp_progress": "در حال انجام",
+        "pp_title": "🏆 <b>پنل پراپ</b> · <code>{login}</code>",
+        "pp_account_kind": "<i>حساب {mode}</i>",
+        "pp_rules": "{e} <b>{head}</b>  ·  {n} از 4 قانون در مسیر درست",
+        "pp_resets": "⏳ ریست روزانه تا <b>{t}</b> دیگر",
+        "pp_target": "هدف",
+        "pp_total_loss": "ضرر کل",
+        "pp_daily_loss": "ضرر روزانه",
+        "pp_days": "روزهای معاملاتی",
+        "pp_consistency": "ثبات",
+        "pp_trading_day": "<i>▸ روز معاملاتی {n}</i>",
+        "pp_initial": "<i>▸ بالانس اولیه {v}</i>",
+        "pp_current": "<i>▸ بالانس فعلی {v}</i>",
+        "pp_yesterday_bal": "<i>▸ بالانس دیروز {v}</i>",
+        "pp_today": "امروز",
+        "pp_yesterday": "دیروز",
+        "pp_week": "این هفته",
+        "pp_max_day_drop": "بیشترین افت روزانه",
+        "pp_total_drop": "افت کل",
+
+        "ps_title": "🛠️ <b>ورودی‌های اکسپرت</b>  ·  <b>{login}</b>",
+        "ps_none": "⏳ هنوز ورودی زنده‌ای برای این حساب ارسال نشده است (اکسپرت وقتی با <b>dashprop</b> فعال اجرا شود، این فایل را خودکار می‌نویسد).",
+        "ps_sub": "<i>همه تنظیمات روشنی که همین الان می‌توانند روی سرنوشت یک معامله اثر بگذارند.</i>",
+        "ps_stale": "⚠️ <i>اکسپرت در حال حاضر خروجی نمی‌دهد؛ آخرین ورودی‌های شناخته‌شده نمایش داده می‌شود.</i>",
+
+        "st_unknown": "نامشخص",
+        "st_offline": "آفلاین",
+        "st_no_broker": "بدون اتصال به بروکر",
+        "st_online": "آنلاین",
+        "st_broker": "بروکر {ping}",
+        "st_ea": "اکسپرت {age}",
+        "st_title": "🩺 <b>وضعیت زنده</b>  ·  <b>{login}</b>",
+        "st_not_reported": "⏳ <i>اکسپرت هنوز وضعیت زنده‌اش را گزارش نکرده است (وقتی با <b>dashprop</b> روشن اجرا شود شروع می‌کند).</i>",
+        "st_blocked_head": "<b>مسدود</b> · <i>ورود جدید در این لحظه رد می‌شود</i>",
+        "st_close_limit": "<b>مجاز · نزدیک به یک محدودیت</b>",
+        "st_allowed": "<b>مجاز</b> · <i>همه فیلترها باز هستند</i>",
+        "st_stale": "⚠️ <i>اکسپرت در حال حاضر گزارش نمی‌دهد: همه موارد زیر آخرین وضعیتی است که ارسال کرده.</i>",
+        "st_blocked": "<b>مسدود</b>",
+        "st_terminal": "ترمینال یا بروکر اجازه معامله نمی‌دهد",
+        "st_ea_last": "آخرین گزارش اکسپرت {age}",
+        "st_watch": "<i>مراقب باشید</i>",
+        "st_gates": "▦ <b>فیلترهای فعال</b>",
+        "st_guards_off": "⚠️ <b>محافظ‌های خاموش</b>",
+    },
+}
+
+STATUS_LABELS = {
+    "fa": {
+        "right now": "پنجره خبری",
+        "next event": "خبر پیش رو",
+        "block window": "عرض پنجره خبری",
+        "session filter": "بازه سشن",
+        "trading": "توقف محافظتی",
+        "daily loss used": "ضرر روزانه",
+        "weekly loss used": "ضرر هفتگی",
+        "daily target": "هدف سود روزانه",
+        "challenge target": "هدف چالش",
+        "streak losing sl": "زنجیره ضرر",
+        "daily max sl": "حد ضررهای امروز",
+        "risk cut rule": "کاهش ریسک",
+        "9:30 liquidity block": "بلاک بازگشایی 9:30",
+        "loss / profit limits": "حدود سود / ضرر",
+        "losing-streak shield": "محافظ زنجیره ضرر",
+    },
+}
+
+_ACTION_WORDS = {
+    "fa": {
+        "Mode": "حالت", "Trading": "معامله", "Bias": "بایاس",
+        "Manual": "دستی", "Auto": "خودکار", "On": "روشن", "Off": "خاموش",
+        "Bullish": "صعودی", "Bearish": "نزولی", "None": "بدون جهت",
+    },
+}
+
+
+def norm(lang) -> str:
+    return lang if lang in LANGS else DEFAULT_LANG
+
+
+def has_lang(user_id) -> bool:
+    if user_id is None:
+        return False
+    try:
+        return settings.get_user_lang(user_id) in LANGS
+    except Exception:
+        return False
+
+
+def get_lang(user_id) -> str:
+    if user_id is None or isinstance(user_id, bool) or not isinstance(user_id, (int, str)):
+        return DEFAULT_LANG
+    try:
+        return norm(settings.get_user_lang(user_id))
+    except Exception:
+        return DEFAULT_LANG
+
+
+def set_lang(user_id, lang) -> bool:
+    if lang not in LANGS:
+        return False
+    try:
+        settings.set_user_lang(user_id, lang)
+        return True
+    except Exception:
+        return False
+
+
+def t(lang, key, **kwargs) -> str:
+    table = TEXTS.get(norm(lang), TEXTS[DEFAULT_LANG])
+    text = table.get(key)
+    if text is None:
+        text = TEXTS[DEFAULT_LANG].get(key, key)
+    return text.format(**kwargs) if kwargs else text
+
+
+def tu(user_id, key, **kwargs) -> str:
+    return t(get_lang(user_id), key, **kwargs)
+
+
+def variants(key) -> set:
+    return {TEXTS[lang][key] for lang in LANGS if key in TEXTS[lang]}
+
+
+def ltr(value) -> str:
+    return f"{_LRI}{value}{_PDI}"
+
+
+def ago(lang, seconds) -> str:
+    if seconds is None:
+        return t(lang, "never")
+    seconds = max(0, int(seconds))
+    if seconds < 10:
+        return t(lang, "ago_now")
+    if seconds < 60:
+        return t(lang, "ago_s", n=seconds)
+    if seconds < 3600:
+        return t(lang, "ago_m", n=seconds // 60)
+    if seconds < 86400:
+        return t(lang, "ago_h", n=seconds // 3600)
+    return t(lang, "ago_d", n=seconds // 86400)
+
+
+def status_label(lang, label) -> str | None:
+    return STATUS_LABELS.get(norm(lang), {}).get(label.strip().lower())
+
+
+def translate_action(lang, action: str) -> str:
+    words = _ACTION_WORDS.get(norm(lang))
+    if not words or not action:
+        return action
+    return " ".join(words.get(w, w) for w in action.split(" "))
+
+
+def picker_rows(button_cls, current=None) -> list:
+    row = []
+    for code in LANGS:
+        mark = "✔ " if code == current else ""
+        row.append(button_cls(f"{mark}{LANG_NAMES[code]}", callback_data=f"{LANG_CB_PREFIX}{code}"))
+    return [row]
