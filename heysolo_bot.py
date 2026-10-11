@@ -37,6 +37,7 @@ for _noisy in ("httpx", "httpcore", "telegram", "telegram.ext", "telegram.bot", 
 import heysolo_settings as settings
 import language as L
 import logger_bot
+import ea_settings
 from db import database as heysolo_db
 from prop import notifications as prop_notifications
 from copier import server as copier_server
@@ -1595,11 +1596,11 @@ BTN_BIAS = f"{G_BIAS} Bias"
 BTN_EA = "EA Controller"
 BTN_ACCOUNT = f"Account"
 BTN_PROP = f"{G_PROP} Prop Panel"
-BTN_STATUS = "🩺 Status Live"
+BTN_STATUS = "📊 Running Panel"
 BTN_ADMIN = f"{G_ADMIN} Admin"
 BTN_SETTINGS = f"{G_SETTINGS} Settings"
-LBL_EA_INPUTS = f"{G_SETTINGS} EA Inputs"
-LBL_STATUS = "🩺 Status Live"
+LBL_EA_INPUTS = "📊 Running Panel"
+LBL_STATUS = "📊 Running Panel"
 LBL_PROP = f"{G_PROP} Prop Panel"
 LBL_ACCOUNT = f"{G_ACCOUNT} Account info"
 
@@ -1621,7 +1622,7 @@ def build_main_keyboard(user_id: int, st: "AccountState | None" = None,
     top_row = [L.t(lang, "btn_account")]
     if caps["has_bias"] or caps["has_mode"] or caps["has_trading"]:
         top_row.insert(0, L.t(lang, "btn_ea"))
-    rows = [top_row]
+    rows = [top_row, [L.t(lang, "btn_eas")]]
     if heysolo_db.is_admin(user_id):
         rows.append([BTN_ADMIN, L.t(lang, "btn_language")])
     else:
@@ -1803,7 +1804,7 @@ def account_detail_view(user_id: int, login: str) -> dict:
         kb_rows.append([InlineKeyboardButton(L.t(lang, "set_active"), callback_data=f"ACC_SET_{login}")])
     kb_rows.append([InlineKeyboardButton(L.t(lang, "lbl_status"), callback_data=f"STAT_VIEW_{login}")])
     kb_rows.append([InlineKeyboardButton(L.t(lang, "lbl_prop"), callback_data=f"PROP_VIEW_{login}"),
-                    InlineKeyboardButton(L.t(lang, "lbl_ea_inputs"), callback_data=f"SETT_VIEW_{login}")])
+                    InlineKeyboardButton(L.t(lang, "btn_eas"), callback_data=f"EAS_L_{login}")])
     kb_rows.append([InlineKeyboardButton(L.t(lang, "btn_all_accounts"), callback_data="ACC_LIST")])
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
@@ -1842,7 +1843,8 @@ def settings_detail_view(user_id: int, login: str) -> dict:
     lang = L.get_lang(user_id)
     text = format_settings_panel_message(login, lang)
     kb_rows = [
-        [InlineKeyboardButton(L.t(lang, "btn_refresh"), callback_data=f"SETT_VIEW_{login}")],
+        [InlineKeyboardButton(L.t(lang, "btn_refresh"), callback_data=f"SETT_VIEW_{login}"),
+         InlineKeyboardButton(L.t(lang, "btn_run_compact"), callback_data=f"STAT_VIEW_{login}")],
         [InlineKeyboardButton(L.t(lang, "btn_back_account"), callback_data=f"ACC_VIEW_{login}")],
     ]
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
@@ -1866,7 +1868,8 @@ def status_detail_view(user_id: int, login: str) -> dict:
     lang = L.get_lang(user_id)
     text = format_status_panel_message(login, lang)
     kb_rows = [
-        [InlineKeyboardButton(L.t(lang, "btn_refresh"), callback_data=f"STAT_VIEW_{login}")],
+        [InlineKeyboardButton(L.t(lang, "btn_refresh"), callback_data=f"STAT_VIEW_{login}"),
+         InlineKeyboardButton(L.t(lang, "btn_run_full"), callback_data=f"SETT_VIEW_{login}")],
         [InlineKeyboardButton(L.t(lang, "btn_back_account"), callback_data=f"ACC_VIEW_{login}")],
     ]
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
@@ -3080,6 +3083,9 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if uid in _pending:
         action = _pending.pop(uid)
+        if ea_settings.is_pending_action(action):
+            await ea_settings.handle_text(update, action, text, _pending)
+            return
         if text.lower() in CANCEL_WORDS:
             await msg.reply_text(L.t(lang, "cancelled"))
             if heysolo_db.is_admin(uid):
@@ -3258,6 +3264,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         return
 
+    if is_button(text, "btn_eas"):
+        v = await asyncio.to_thread(ea_settings.entry_view, uid)
+        await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        return
+
     if is_button(text, "btn_settings"):
         if heysolo_db.is_admin(uid):
             await send_admin_panel(update)
@@ -3359,6 +3370,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("ADM_"):
         await handle_admin_callback(update, context, data)
+        return
+
+    if data.startswith("EAS_"):
+        await ea_settings.handle_callback(update, context, data, _pending)
         return
 
     uid = update.effective_user.id
@@ -3749,6 +3764,13 @@ async def post_init(app: Application):
     logger_bot.install(app, lambda: CHAT_ID, lambda: THREAD_LOG, level=logging.WARNING,
                         on_missing_thread=lambda: _recreate_missing_topic(app.bot, "log"))
     asyncio.create_task(watch_outbox(app))
+    ea_settings.setup(
+        roots_fn=lambda: list(ROOTS or [primary_root()]),
+        visible_fn=visible_accounts,
+        edit_fn=safe_edit_message_text,
+        label_fn=lambda u: user_label(u, heysolo_db.get_user_names(), with_id=True),
+    )
+    asyncio.create_task(ea_settings.watch(app))
     asyncio.create_task(
         prop_notifications.watch_prop_alerts(
             app, read_dashboard, list_accounts, heysolo_db, CHAT_ID))

@@ -233,6 +233,30 @@ Settings and channel tokens live in `heysolo_settings.json` (key `copier`);
 live signals are kept in `copier_signals.json` next to it, so a bot restart
 does not lose open trades.
 
+## EA Settings from Telegram (admin approved)
+Users can change the Hey Solo ATM **Control Center** settings that matter for
+trading and copy trading straight from the bot: **⚙️ EA Settings** (main
+keyboard, or the button on any account card).
+- Sections offered: Risk & Lot, Loss & Profit Limits, Trade Limits, Break Even,
+ Partial Exit, Trailing Stop, Copier (local + server), News Filter, Sessions,
+ Reverse on SL, Fast Scalp, Prop Account. The **Display**, **Heysolo**,
+ **Check List** and **Telegram/Web** tabs, all colors and pure layout values are
+ never exposed - the EA refuses them even if a file asks for them.
+- Flow: pick chart → section → setting (toggle, option list, ± steps or type a
+ value) → **Review & send** → every admin gets the request with
+ **✔ Approve / ✖ Reject** → on approve the bot drops the change for the EA →
+ the EA applies it live (same as editing the panel), saves it, and confirms →
+ user and admins see **✅ Applied in the EA**.
+- Requests from an admin skip the approval step.
+- Requirement: in the EA set **Telegram › Send Via = SEND PY BOT** (the same
+ switch that already sends logs/trades through the bot). Each chart shows up
+ separately (settings are per chart symbol). If the chart is offline, approved
+ changes wait and apply as soon as the EA runs again.
+- Files live in `Common\Files\TelegramBridge\EASettings`
+ (`State_*` from the EA, `Apply_*` from the bot, `Ack_*` back from the EA);
+ request history is kept in `ea_settings_requests.json` next to
+ `heysolo_settings.json`.
+
 ## Service Management
 
 ```bash

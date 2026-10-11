@@ -2720,6 +2720,25 @@ list_local_installers(){
 
 declare -a AVAILABLE_EXES=()
 declare -a SELECTED_EXES=()
+declare -A REINSTALL_OK=()
+
+# Prints the terminal64.exe of an installed terminal (registered path first, then its own prefix).
+# Empty output = not installed.
+installed_termpath(){
+  local slug="$1" line rec_path p
+  line=$(grep -m1 "^${slug}|" "${TERMINALS_FILE}" 2>/dev/null || true)
+  if [[ -n "${line}" ]]; then
+    rec_path="${line##*|}"
+    if [[ -n "${rec_path}" && -f "${rec_path}" ]]; then echo "${rec_path}"; return 0; fi
+  fi
+  p=$(resolve_terminal_exe "$(wineprefix_for_slug "${slug}")")
+  [[ -n "${p}" ]] && echo "${p}"
+  return 0
+}
+
+terminal_is_installed(){
+  [[ -n "$(installed_termpath "$1")" ]]
+}
 
 fetch_available_installers(){
   ensure_local_mt5_dir
@@ -2739,38 +2758,65 @@ select_installers(){
   header
   title "SELECT TERMINALS TO INSTALL   (from ${MT5_LOCAL_DIR})"
   header
-  local i=1 st slug col
+  local i=1 st slug col missing=0
+  local -A IS_INST=()
   for f in "${AVAILABLE_EXES[@]}"; do
     slug=$(slugify "$f")
-    if grep -q "^${slug}|" "${TERMINALS_FILE}" 2>/dev/null; then
-      st="INSTALLED"; col="$GREEN"
+    if terminal_is_installed "${slug}"; then
+      st="INSTALLED"; col="$GREEN"; IS_INST["$f"]=1
     else
-      st="NOT INSTALLED"; col="$RED"
+      st="NOT INSTALLED"; col="$RED"; missing=$((missing+1))
     fi
     printf "  %2d) %-34s [%b%-17s%b]\n" "$i" "$f" "$col" "$st" "$NC"
     i=$((i+1))
   done
-  echo "   a) All"
+  echo "   a) All not installed (${missing})"
   echo
-  read -rp "Enter numbers separated by commas (e.g. 1,3) or 'a' for all: " CHOICE || CHOICE=""
+  read -rp "Enter numbers separated by commas (e.g. 1,3) or 'a' for all not installed: " CHOICE || CHOICE=""
   SELECTED_EXES=()
+  REINSTALL_OK=()
+  local -a picked=()
   if [[ "${CHOICE,,}" == "a" ]]; then
-    SELECTED_EXES=("${AVAILABLE_EXES[@]}")
+    for f in "${AVAILABLE_EXES[@]}"; do
+      [[ -n "${IS_INST[$f]:-}" ]] || SELECTED_EXES+=("$f")
+    done
+    if [[ ${#SELECTED_EXES[@]} -eq 0 ]]; then
+      ok "Every installer here is already installed - nothing to do."
+      info "To reinstall one on purpose, pick its number instead of 'a'."
+      return 1
+    fi
   else
     IFS=',' read -ra IDXS <<< "$CHOICE"
     for idx in "${IDXS[@]}"; do
       idx=$(echo "$idx" | tr -d '[:space:]')
       if [[ "$idx" =~ ^[0-9]+$ ]] && (( idx >= 1 && idx <= ${#AVAILABLE_EXES[@]} )); then
-        SELECTED_EXES+=("${AVAILABLE_EXES[$((idx-1))]}")
+        picked+=("${AVAILABLE_EXES[$((idx-1))]}")
+      fi
+    done
+    if [[ ${#picked[@]} -gt 0 ]]; then
+      mapfile -t picked < <(printf '%s\n' "${picked[@]}" | awk '!seen[$0]++')
+    fi
+    local ans
+    for f in "${picked[@]}"; do
+      if [[ -n "${IS_INST[$f]:-}" ]]; then
+        ans=""
+        if [[ "${NONINTERACTIVE}" != "1" ]]; then
+          read -rp "${f} is already installed. Reinstall it anyway? [y/N]: " ans || ans=""
+        fi
+        if [[ "${ans,,}" == "y" || "${ans,,}" == "yes" ]]; then
+          REINSTALL_OK["$f"]=1
+          SELECTED_EXES+=("$f")
+        else
+          info "Skipping ${f} (already installed)."
+        fi
+      else
+        SELECTED_EXES+=("$f")
       fi
     done
   fi
 
-  if [[ ${#SELECTED_EXES[@]} -gt 0 ]]; then
-    mapfile -t SELECTED_EXES < <(printf '%s\n' "${SELECTED_EXES[@]}" | awk '!seen[$0]++')
-  fi
   if [[ ${#SELECTED_EXES[@]} -eq 0 ]]; then
-    warn "Nothing selected."
+    warn "Nothing to install."
     return 1
   fi
   ok "Selected: ${SELECTED_EXES[*]}"
@@ -2791,6 +2837,15 @@ install_selected(){
     slug=$(slugify "$exe")
     wineprefix="$(wineprefix_for_slug "${slug}")"
     src="${MT5_LOCAL_DIR}/${exe}"
+
+    local have_path
+    have_path="$(installed_termpath "${slug}")"
+    if [[ -n "${have_path}" && -z "${REINSTALL_OK[$exe]:-}" ]]; then
+      grep -q "^${slug}|" "${TERMINALS_FILE}" 2>/dev/null \
+        || register_terminal "${slug}" "${exe}" "${wineprefix}" "${have_path}"
+      ok "${exe} is already installed (${have_path}) - skipped, nothing reinstalled."
+      continue
+    fi
 
     echo
     header
