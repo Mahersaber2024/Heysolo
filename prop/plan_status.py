@@ -1,5 +1,7 @@
 import html
 
+from language import t, ltr, status_label
+
 RULE = "─" * 27
 THIN = "┄" * 23
 
@@ -63,17 +65,17 @@ def _bar(ratio):
     return BAR_FULL * filled + BAR_EMPTY * (BAR_WIDTH - filled)
 
 
-def _age_text(age):
+def _age_text(age, lang="en"):
     if age is None:
-        return "never"
+        return t(lang, "never")
     age = max(0.0, float(age))
     if age < 90:
-        return f"{int(age)}s ago"
+        return t(lang, "ago_s", n=int(age))
     if age < 5400:
-        return f"{int(age // 60)}m ago"
+        return t(lang, "ago_m", n=int(age // 60))
     if age < 172800:
-        return f"{int(age // 3600)}h ago"
-    return f"{int(age // 86400)}d ago"
+        return t(lang, "ago_h", n=int(age // 3600))
+    return t(lang, "ago_d", n=int(age // 86400))
 
 
 def _ping_text(link):
@@ -83,34 +85,40 @@ def _ping_text(link):
     return f"{ping:.0f} ms" if ping else ""
 
 
-def link_state(link):
+def _link_code(link):
     if not link or not link.get("known"):
-        return L_UNKNOWN, "Unknown"
+        return L_UNKNOWN, "st_unknown"
     if not link.get("fresh"):
-        return L_OFFLINE, "Offline"
+        return L_OFFLINE, "st_offline"
     if link.get("connected") is False:
-        return L_NO_BROKER, "No broker"
-    return L_ONLINE, "Online"
+        return L_NO_BROKER, "st_no_broker"
+    return L_ONLINE, "st_online"
 
 
-def link_button_label(link):
-    dot, word = link_state(link)
+def link_state(link, lang="en"):
+    dot, code = _link_code(link)
+    return dot, t(lang, code)
+
+
+def link_button_label(link, lang="en"):
+    dot, code = _link_code(link)
+    word = t(lang, code)
     ping = _ping_text(link)
-    if word == "Online" and ping:
-        return f"{dot} {word} · {ping}"
-    if word == "Offline":
-        return f"{dot} {word} · {_age_text((link or {}).get('age_s'))}"
+    if code == "st_online" and ping:
+        return f"{dot} {word} · {ltr(ping)}"
+    if code == "st_offline":
+        return f"{dot} {word} · {_age_text((link or {}).get('age_s'), lang)}"
     return f"{dot} {word}"
 
 
-def link_headline(link):
-    dot, word = link_state(link)
+def link_headline(link, lang="en"):
+    dot, word = link_state(link, lang)
     bits = []
     ping = _ping_text(link)
     if ping:
-        bits.append(f"broker {ping}")
+        bits.append(t(lang, "st_broker", ping=ltr(ping)))
     if link and link.get("known"):
-        bits.append(f"EA {_age_text(link.get('age_s'))}")
+        bits.append(t(lang, "st_ea", age=_age_text(link.get('age_s'), lang)))
     tail = ("  ·  " + " · ".join(bits)) if bits else ""
     return f"{dot} <b>{word}</b>{tail}"
 
@@ -159,13 +167,13 @@ def _classify(group_title, label, value, state, ratio):
     return None
 
 
-def _label(label):
+def _label(label, lang="en"):
     label = label.strip()
-    return LABEL_ALIAS.get(label.lower(), label)
+    return status_label(lang, label) or LABEL_ALIAS.get(label.lower(), label)
 
 
-def _reason(label, value, tip=""):
-    shown = html.escape(_label(label))
+def _reason(label, value, tip="", lang="en"):
+    shown = html.escape(_label(label, lang))
     value = _short_value(value)
     # a bare BLOCKED/PAUSED tells the trader nothing: use the panel's own tooltip
     if value.upper().startswith(("BLOCK", "PAUSED")) and tip:
@@ -199,21 +207,20 @@ def _gate_rows(settings_data):
     return blocks, warns, guards, meters
 
 
-def format_status_panel_message(login, read_settings, read_link, dashboard_footer):
+def format_status_panel_message(login, read_settings, read_link, dashboard_footer, lang="en"):
     link = read_link(login) or {}
     settings_data = read_settings(login)
     safe_login = html.escape(str(login))
     symbol = (settings_data or {}).get("symbol", "")
 
-    head = f"🩺 <b>Status Live</b>  ·  <b>{safe_login}</b>"
+    head = t(lang, "st_title", login=safe_login)
     if symbol:
         head += f"  ·  <code>{html.escape(symbol)}</code>"
-    lines = [head, link_headline(link)]
+    lines = [head, link_headline(link, lang)]
 
     if not settings_data or not settings_data.get("groups"):
         lines.append(RULE)
-        lines.append("⏳ <i>The EA hasn't reported its live state yet "
-                     "(it starts once it runs with <b>dashprop</b> on).</i>")
+        lines.append(t(lang, "st_not_reported"))
         return "\n".join(lines)
 
     blocks, warns, guards, meters = _gate_rows(settings_data)
@@ -222,33 +229,32 @@ def format_status_panel_message(login, read_settings, read_link, dashboard_foote
 
     lines.append(RULE)
     if hard_stop:
-        lines.append(f"{M_BLOCK} <b>BLOCKED</b> · <i>a new entry would be refused right now</i>")
+        lines.append(f"{M_BLOCK} {t(lang, 'st_blocked_head')}")
     elif warns:
-        lines.append(f"{M_WARN} <b>ALLOWED · CLOSE TO A LIMIT</b>")
+        lines.append(f"{M_WARN} {t(lang, 'st_close_limit')}")
     else:
-        lines.append(f"{M_OK} <b>ALLOWED</b> · <i>every gate is clear</i>")
+        lines.append(f"{M_OK} {t(lang, 'st_allowed')}")
 
     if not link.get("fresh") and link.get("known"):
-        lines.append("⚠️ <i>The EA is not reporting right now: everything below is "
-                     "the last state it exported.</i>")
+        lines.append(t(lang, "st_stale"))
 
     if link.get("trade_allowed") is False:
-        lines.append(f"{M_BLOCK} <b>BLOCKED</b> · Terminal or broker is not allowing trading")
+        lines.append(f"{M_BLOCK} {t(lang, 'st_blocked')} · {t(lang, 'st_terminal')}")
     if dead_link:
-        _, word = link_state(link)
-        lines.append(f"{M_BLOCK} <b>BLOCKED</b> · {word} · "
-                     f"EA last reported {_age_text(link.get('age_s'))}")
+        _, word = link_state(link, lang)
+        lines.append(f"{M_BLOCK} {t(lang, 'st_blocked')} · {word} · "
+                     f"{t(lang, 'st_ea_last', age=_age_text(link.get('age_s'), lang))}")
     for title, label, value, _, _st, tip in blocks:
-        lines.append(f"{M_BLOCK} <b>BLOCKED</b> · {_icon_for(title)} {_reason(label, value, tip)}")
+        lines.append(f"{M_BLOCK} {t(lang, 'st_blocked')} · {_icon_for(title)} {_reason(label, value, tip, lang)}")
 
     if warns:
         lines.append(THIN)
         for title, label, value, _, _st, tip in warns:
-            lines.append(f"{M_WARN} <i>Watch</i> · {_icon_for(title)} {_reason(label, value, tip)}")
+            lines.append(f"{M_WARN} {t(lang, 'st_watch')} · {_icon_for(title)} {_reason(label, value, tip, lang)}")
 
     if meters:
         lines.append(RULE)
-        lines.append("▦ <b>Gates in use</b>")
+        lines.append(t(lang, "st_gates"))
         for title, label, value, ratio, state, _tip in meters:
             if state == 3 or (ratio is not None and ratio >= 1.0):
                 mark = M_BLOCK
@@ -256,15 +262,15 @@ def format_status_panel_message(login, read_settings, read_link, dashboard_foote
                 mark = M_WARN
             else:
                 mark = M_OK
-            lines.append(f"{_bar(ratio)} {html.escape(_label(label))} "
+            lines.append(f"{_bar(ratio)} {html.escape(_label(label, lang))} "
                          f"<b>{html.escape(_short_value(value))}</b> {mark}")
 
     if guards:
         lines.append(RULE)
-        lines.append("⚠️ <b>Protections switched off</b>")
+        lines.append(t(lang, "st_guards_off"))
         for title, label, value, _, _st, tip in guards:
             detail = tip or _short_value(value)
-            lines.append(f"▸ {_icon_for(title)} <b>{html.escape(_label(label))}</b> "
+            lines.append(f"▸ {_icon_for(title)} <b>{html.escape(_label(label, lang))}</b> "
                          f"<i>{html.escape(detail)}</i>")
 
     lines += dashboard_footer(settings_data, login)

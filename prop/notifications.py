@@ -6,6 +6,9 @@ from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+import language
+from language import t, ltr
+
 log = logging.getLogger("heysolo_prop_notifications")
 NY_TZ = ZoneInfo("America/New_York")
 DEFAULT_POLL_SECONDS = 20
@@ -107,87 +110,95 @@ def _overall_warning_event(data, threshold):
     return {"kind": "overall_warning", "used": used, "limit": limit, "threshold": threshold}
 
 
-def _header(kind):
-    return {
-        "failed": ("🚨", "ACCOUNT FAILED"),
-        "passed": ("🏆", "CHALLENGE PASSED"),
-        "daily_warning": ("⚠️", "DAILY LOSS WARNING"),
-        "overall_warning": ("🛡️", "TOTAL LOSS WARNING"),
+def _header(kind, lang="en"):
+    emoji = {
+        "failed": "🚨",
+        "passed": "🏆",
+        "daily_warning": "⚠️",
+        "overall_warning": "🛡️",
     }[kind]
+    return emoji, t(lang, f"n_{kind}")
 
 
-def format_alert(login, data, event):
+def format_alert(login, data, event, lang="en"):
     kind = event["kind"]
-    emoji, title = _header(kind)
+    emoji, title = _header(kind, lang)
     safe_login = html.escape(str(login))
     currency = html.escape(str(data.get("currency") or "USD"))
     mode = html.escape(str(data.get("mode") or "Prop"))
     lines = [
         f"{emoji} <b>{title}</b>",
-        f"🏷️ Account <code>{safe_login}</code> · <i>{mode}</i>",
+        t(lang, "n_account", login=safe_login, mode=mode),
         "",
     ]
     if kind == "failed":
         lines += [
-            "This challenge has been marked as <b>failed</b>.",
-            "The Prop Panel has the full breakdown.",
+            t(lang, "n_failed_1"),
+            t(lang, "n_failed_2"),
             "",
-            f"🛡️ Total loss <b>{_pct(data.get('loss_pct'))}</b> / {_pct(data.get('loss_max_pct'))}",
-            f"📆 Daily loss <b>{_pct(_daily_used(data))}</b> / {_pct(data.get('daily_max_pct'))}",
+            t(lang, "n_total_loss", pair=_pair(data.get('loss_pct'), data.get('loss_max_pct'))),
+            t(lang, "n_daily_loss", pair=_pair(_daily_used(data), data.get('daily_max_pct'))),
         ]
     elif kind == "passed":
         lines += [
-            "Huge win. Your prop challenge is officially <b>passed</b> 🎉",
-            "Keep the risk boring from here. Boring is profitable.",
+            t(lang, "n_passed_1"),
+            t(lang, "n_passed_2"),
             "",
-            f"🎯 Target <b>{_pct(data.get('target_pct'))}</b> reached",
-            f"🗓️ Trading days <b>{int(_number(data.get('trading_days')))}</b>",
+            t(lang, "n_target", v=ltr(_pct(data.get('target_pct')))),
+            t(lang, "n_days", n=int(_number(data.get('trading_days')))),
         ]
     else:
-        label = "Daily loss" if kind == "daily_warning" else "Total loss"
+        label = t(lang, "n_label_daily" if kind == "daily_warning" else "n_label_total")
         lines += [
-            f"You are at <b>{event['used'] / event['limit'] * 100:.1f}%</b> of the allowed {label.lower()}.",
-            "Slow down before the limit makes the decision for you.",
+            t(lang, "n_at", pct=f"{event['used'] / event['limit'] * 100:.1f}", label=label),
+            t(lang, "n_slow"),
             "",
-            f"📉 Used <b>{_pct(event['used'])}</b> / {_pct(event['limit'])}",
-            f"🔔 Warning threshold <b>{event['threshold']:.0f}%</b>",
+            t(lang, "n_used", pair=_pair(event['used'], event['limit'])),
+            t(lang, "n_threshold", v=f"{event['threshold']:.0f}"),
         ]
     lines += [
         "",
-        f"💰 Balance <b>{_money(data.get('balance'), currency)}</b>",
+        t(lang, "n_balance", v=ltr(_money(data.get('balance'), currency))),
     ]
     return "\n".join(lines)
 
 
-def alert_keyboard(login):
+def _pair(used, limit):
+    return ltr(f"<b>{_pct(used)}</b> / {_pct(limit)}")
+
+
+def alert_keyboard(login, lang="en"):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 Open Prop Panel", callback_data=f"PROP_VIEW_{login}")],
+        [InlineKeyboardButton(t(lang, "n_open_prop"), callback_data=f"PROP_VIEW_{login}")],
     ])
 
 
-def settings_view(uid, config, login=""):
+def settings_view(uid, config=None, login="", lang=None):
+    if config is None and isinstance(uid, dict):
+        uid, config = None, uid
+    config = config or {}
+    if lang is None:
+        lang = language.get_lang(uid) if isinstance(uid, int) else language.DEFAULT_LANG
     enabled = bool(config.get("enabled", True))
     daily = _number(config.get("daily_threshold"), 80.0)
     overall = _number(config.get("overall_threshold"), 80.0)
-    text = (
-        "⚙️ <b>Alert settings</b>\n"
-        "Prop challenge alerts: passed, failed, and near-limit warnings, "
-        "on every account you can see.\n\n"
-        f"{'🟢' if enabled else '⚪'} Status: <b>{'ON' if enabled else 'OFF'}</b>\n"
-        f"📆 Daily warning: <b>{daily:.0f}%</b> of the allowed daily loss\n"
-        f"🛡️ Total warning: <b>{overall:.0f}%</b> of the allowed total loss\n\n"
-        "Warnings fire once per day/account state, so you do not get spammed."
+    text = t(
+        lang, "n_settings",
+        dot="🟢" if enabled else "⚪",
+        state=t(lang, "on_upper" if enabled else "off_upper"),
+        daily=f"{daily:.0f}",
+        overall=f"{overall:.0f}",
     )
     login = str(login or "")
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(
-            f"{'🔕 Disable' if enabled else '🔔 Enable'} alerts",
+            t(lang, "n_btn_disable" if enabled else "n_btn_enable"),
             callback_data=f"PROP_SET_TOGGLE_{login}",
         )],
-        [InlineKeyboardButton(f"📆 Daily: {daily:.0f}%", callback_data=f"PROP_SET_DAILY_{login}")],
-        [InlineKeyboardButton(f"🛡️ Total: {overall:.0f}%", callback_data=f"PROP_SET_OVERALL_{login}")],
+        [InlineKeyboardButton(t(lang, "n_btn_daily", v=f"{daily:.0f}"), callback_data=f"PROP_SET_DAILY_{login}")],
+        [InlineKeyboardButton(t(lang, "n_btn_total", v=f"{overall:.0f}"), callback_data=f"PROP_SET_OVERALL_{login}")],
         [InlineKeyboardButton(
-            "← Back", callback_data=f"PROP_VIEW_{login}" if login else "PROP_LIST",
+            t(lang, "btn_back"), callback_data=f"PROP_VIEW_{login}" if login else "PROP_LIST",
         )],
     ])
     return {"text": text, "reply_markup": keyboard, "parse_mode": "HTML"}
@@ -262,14 +273,15 @@ async def watch_prop_alerts(app, read_dashboard, list_accounts, db_module,
                         if dest_key in sent:
                             continue
                         sent.add(dest_key)
-                        text = format_alert(login, data, event)
+                        user_lang = language.get_lang(user_id)
+                        text = format_alert(login, data, event, user_lang)
                         try:
                             await app.bot.send_message(
                                 chat_id=chat_id,
                                 message_thread_id=thread_id,
                                 text=text,
                                 parse_mode="HTML",
-                                reply_markup=alert_keyboard(login),
+                                reply_markup=alert_keyboard(login, user_lang),
                             )
                         except Exception as exc:
                             log.warning("Could not send prop %s alert for %s to %s: %s",

@@ -1,5 +1,7 @@
 import html
 
+from language import t
+
 RULE = "┄" * 23
 
 GROUP_ICON = {
@@ -34,28 +36,24 @@ def _format_group(group):
     return "\n".join(lines)
 
 
-def format_settings_panel_message(login, read_settings, dashboard_footer, link_line=None) -> str:
+def format_settings_panel_message(login, read_settings, dashboard_footer, link_line=None, lang="en") -> str:
     data = read_settings(login)
     safe_login = html.escape(str(login))
     if not data or not data.get("groups"):
-        head = [f"🛠️ <b>EA Inputs</b>  ·  <b>{safe_login}</b>"]
+        head = [t(lang, "ps_title", login=safe_login)]
         if link_line:
             head.append(link_line)
-        head.append(
-            "⏳ No live inputs exported yet for this account "
-            "(the EA writes this file automatically once it's running with "
-            "<b>dashprop</b> enabled)."
-        )
+        head.append(t(lang, "ps_none"))
         return "\n".join(head)
 
     lines = [
-        f"🛠️ <b>EA Inputs</b>  ·  <b>{safe_login}</b>",
-        "<i>Everything switched on right now that can change what happens to a trade.</i>",
+        t(lang, "ps_title", login=safe_login),
+        t(lang, "ps_sub"),
     ]
     if link_line:
         lines.append(link_line)
     if data.get("stale"):
-        lines.append("⚠️ <i>EA not exporting right now — showing the last known inputs.</i>")
+        lines.append(t(lang, "ps_stale"))
     lines.append(RULE)
 
     groups = data["groups"]
