@@ -1023,6 +1023,7 @@ panel_dock = 0
 wm_menu = 1
 panel_layer = top
 strut_policy = follow_size
+panel_monitor = all
 autohide = 0
 autohide_show_timeout = 0
 autohide_hide_timeout = 0
@@ -1503,6 +1504,7 @@ strip_fullscreen(){
     command -v xdotool >/dev/null 2>&1 && xdotool windowactivate "${active}" >/dev/null 2>&1 || true
     command -v wmctrl >/dev/null 2>&1 && wmctrl -ia "${active}" >/dev/null 2>&1 || true
   fi
+  raise_panel
 }
 
 pids_for_prefix(){
@@ -3120,8 +3122,10 @@ fit_new_window_to_workarea(){
   done
   [[ -n "${wid}" ]] || return 0
   as_mt5 "wmctrl -ir ${wid} -b remove,fullscreen" 2>/dev/null || true
-  as_mt5 "wmctrl -ir ${wid} -b remove,maximized_vert,maximized_horz" 2>/dev/null || true
-  as_mt5 "wmctrl -ir ${wid} -e 0,0,0,${sw},${wh}" 2>/dev/null || true
+  as_mt5 "wmctrl -ir ${wid} -b remove,maximized_vert,maximized_horz,above" 2>/dev/null || true
+  as_mt5 "wmctrl -ir ${wid} -e 0,0,0,$((sw - 4)),$((wh - 4))" 2>/dev/null || true
+  as_mt5 "xdotool windowmove ${wid} 0 0; xdotool windowsize ${wid} $((sw - 4)) $((wh - 4))" 2>/dev/null || true
+  as_mt5 "for t in \$(wmctrl -lx 2>/dev/null | awk 'tolower(\$3) ~ /tint2/ {print \$1}'); do wmctrl -ir \"\$t\" -b add,above; done" 2>/dev/null || true
   show_terminal_window "${slug}" "${wid}"
 }
 
