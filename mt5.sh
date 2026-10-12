@@ -1010,7 +1010,7 @@ panel_position = bottom center horizontal
 panel_size = 100% 40
 panel_margin = 0 0
 panel_padding = 4 2 4
-panel_dock = 0
+panel_dock = 1
 wm_menu = 1
 panel_layer = top
 strut_policy = follow_size
@@ -1409,8 +1409,8 @@ while true; do
     fi
     sleep 3
   fi
-  if ! pgrep -x tint2 >/dev/null 2>&1; then
-    flock -w 5 "\${LOCK}" -c 'pgrep -x tint2 >/dev/null 2>&1 || setsid tint2 -c "'"\${CONF}"'" >>"'"${TINT2_LOG}"'" 2>&1 &'
+  if ! pgrep -x tint2 >/dev/null 2>&1 || ! wmctrl -lx 2>/dev/null | awk 'tolower(\$3) ~ /tint2/' | grep -q .; then
+    flock -w 5 "\${LOCK}" -c 'pkill -x tint2 >/dev/null 2>&1 || true; sleep 1; setsid tint2 -c "'"\${CONF}"'" >>"'"${TINT2_LOG}"'" 2>&1 &'
     sleep 2
   fi
   if command -v wmctrl >/dev/null 2>&1; then
@@ -1433,7 +1433,9 @@ EOF
 
 desktop_ensure_panel_watchdog(){
   local script; script=$(desktop_write_panel_watchdog)
-  as_mt5 "screen -ls" 2>/dev/null | grep -q '\.panelwatch\b' && return 0
+  if as_mt5 "screen -S panelwatch -Q windows" >/dev/null 2>&1; then
+    return 0
+  fi
   as_mt5 "screen -dmS panelwatch bash -c 'export DISPLAY=:${DISPLAY_NUM}; ${script}'"
 }
 
@@ -1555,7 +1557,9 @@ desktop_ensure_window_guard(){
   fi
   command -v xprop >/dev/null 2>&1 || warn "xprop missing (x11-utils) - the window guard may misjudge maximized windows."
   local script; script=$(desktop_write_window_guard)
-  as_mt5 "screen -ls" 2>/dev/null | grep -q '\.windowguard\b' && return 0
+  if as_mt5 "screen -S windowguard -Q windows" >/dev/null 2>&1; then
+    return 0
+  fi
   as_mt5 "screen -dmS windowguard bash -c 'export DISPLAY=:${DISPLAY_NUM}; ${script} >>\"${WINDOW_GUARD_LOG}\" 2>&1'"
 }
 
