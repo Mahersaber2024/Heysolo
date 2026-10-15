@@ -38,7 +38,7 @@ HeySolo Manager ابزاری برای نصب و مدیریت متاتریدر ۵
 </div>
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/HeysoloPublic/main/heysolo.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main/heysolo.sh)
 ```
 
 <div dir="rtl">
