@@ -73,7 +73,7 @@ title " ███████║█████╗ ╚████╔╝ ██�
 title " ██╔══██║██╔══╝ ╚██╔╝ ╚════██║██║ ██║██║ ██║ ██║"
 title " ██║ ██║███████╗ ██║ ███████║╚██████╔╝███████╗╚██████╔╝"
 title " ╚═╝ ╚═╝╚══════╝ ╚═╝ ╚══════╝ ╚═════╝ ╚══════╝ ╚═════╝ "
-title " heysolo_bot Installer - ACHCMBias Telegram Bridge"
+title " heysolo_bot Installer - Liquidity Hunter Telegram Bridge"
 header
 echo
 }
@@ -83,7 +83,7 @@ info "Installing system dependencies..."
 apt-get update -y 2>/dev/null || true
 apt-get install -y \
 python3 python3-venv python3-pip python3-dev \
-git curl wget build-essential \
+git curl wget build-essential openssl \
 iputils-ping htop net-tools \
 postgresql postgresql-contrib libpq-dev \
 2>/dev/null || true
@@ -423,6 +423,7 @@ else
 
 pip install "python-telegram-bot==20.7" "psycopg2-binary==2.9.9" -q
 fi
+pip install "certbot>=2.6" "certbot-dns-cloudflare>=2.6" -q 2>/dev/null || warn "certbot could not be installed now - the bot installs it itself when it needs a certificate."
 deactivate
 ok "Python environment ready."
 }
