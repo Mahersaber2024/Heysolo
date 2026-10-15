@@ -44,6 +44,7 @@ from copier import server as copier_server
 from copier import panel as copier_panel
 from biasfeed import server as bias_server
 from biasfeed import panel as bias_panel
+from backup import panel as backup_panel
 from prop.plan_prop import format_prop_panel_message as _format_prop_panel_message
 from prop.plan_settings import format_settings_panel_message as _format_settings_panel_message
 from prop.plan_status import (
@@ -417,8 +418,8 @@ def read_card(login: str) -> dict | None:
         "ea_mode": raw.get("eaMode", ""),
         "ea_trading": raw.get("eaTrading", ""),
         "ea_bias": raw.get("eaBias", ""),
-        "ea": raw.get("ea", ""),
-        "ea_name": raw.get("eaName", ""),
+        "ea": heysolo_db.canon_expert_code(raw.get("ea", "")),
+        "ea_name": heysolo_db.canon_expert_name(raw.get("ea", ""), raw.get("eaName", "")),
         "balance": _f(raw, "balance"),
         "equity": _f(raw, "equity"),
         "open_positions": _i(raw, "openPositions"),
@@ -516,8 +517,8 @@ def read_prop_data(login: str) -> dict | None:
         "ea_mode": "",
         "ea_trading": "",
         "ea_bias": "",
-        "ea": _pstr(meta, "ea"),
-        "ea_name": _pstr(meta, "eaName"),
+        "ea": heysolo_db.canon_expert_code(_pstr(meta, "ea")),
+        "ea_name": heysolo_db.canon_expert_name(_pstr(meta, "ea"), _pstr(meta, "eaName")),
         "balance": _pnum(general, "currentBalance"),
         "equity": _pnum(general, "currentEquity"),
         "open_positions": int(_pnum(general, "openPositions")),
@@ -1253,7 +1254,7 @@ def relay_targets(login: str, kind: str, fallback_thread: int | None,
             user_exp = user_expert(uid) or {}
             if kind not in (user_exp.get("notify_kinds") or []):
                 continue
-            if ea_code and str(user_exp.get("code") or "").strip().lower() != ea_code:
+            if ea_code and heysolo_db.canon_expert_code(user_exp.get("code")) != heysolo_db.canon_expert_code(ea_code):
                 continue
             if not heysolo_db.is_user_notify_enabled(uid, kind):
                 continue
@@ -1294,8 +1295,8 @@ def _account_ea(account: str) -> tuple[str, str]:
     code, name = "", ""
     try:
         card = read_card(account) or {}
-        code = str(card.get("ea") or "").strip().lower()
-        name = str(card.get("ea_name") or "").strip()
+        code = heysolo_db.canon_expert_code(card.get("ea"))
+        name = heysolo_db.canon_expert_name(card.get("ea"), card.get("ea_name")).strip()
     except Exception as e:
         log.warning("Could not read the EA card for account %s: %s", account, e)
     if not code and not name:
@@ -2079,7 +2080,8 @@ def admin_panel_view() -> dict:
          InlineKeyboardButton("📓 Chat Journal", callback_data="ADM_REPORT")],
         [InlineKeyboardButton("🗂 Files", callback_data="ADM_COMMON"),
          InlineKeyboardButton("📡 Copy Server", callback_data="ADM_CP")],
-        [InlineKeyboardButton("🧭 ACHCMBias API", callback_data="ADM_BF")],
+        [InlineKeyboardButton("🧭 Liquidity Hunter Feed", callback_data="ADM_BF"),
+         InlineKeyboardButton("💾 Backup", callback_data="ADM_BK")],
     ])
     return {
         "text": f"{G_ADMIN} <b>Admin</b>\nPick an option.",
@@ -3078,6 +3080,29 @@ async def _handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
             await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"],
                                          parse_mode=v["parse_mode"], disable_web_page_preview=True)
 
+    elif data.startswith("ADM_BK"):
+        working = backup_panel.needs_working(data)
+        if working:
+            await q.answer()
+            await show_working(q, working)
+        res = await backup_panel.handle_callback(data, uid, _pending)
+        if not working:
+            await q.answer(res["answer"] or None, show_alert=res["alert"])
+        elif res["alert"] and res["answer"] and not res["view"]:
+            await context.bot.send_message(chat_id=q.message.chat_id, text=res["answer"])
+        for doc in res["docs"]:
+            if not await backup_panel.send_doc(context.bot, uid, doc):
+                await context.bot.send_message(
+                    chat_id=q.message.chat_id,
+                    text="✖ Could not send the backup to your private chat - open the bot "
+                         "privately, press Start, then try again.")
+        v = res["view"]
+        if v:
+            await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"],
+                                         parse_mode=v["parse_mode"], disable_web_page_preview=True)
+        if res["restart"]:
+            backup_panel.restart_soon()
+
     elif data == "ADM_COMMON_TEST":
         await q.answer("Testing...")
         await show_working(q, "Running connection test...")
@@ -3127,6 +3152,18 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text(f"{G_BAD} Admins only.")
                 return
             res = await bias_panel.handle_text(action, text, uid, _pending)
+            for line in res["send"]:
+                await msg.reply_text(line, disable_web_page_preview=True)
+            v = res["view"]
+            if v:
+                await msg.reply_text(v["text"], reply_markup=v["reply_markup"],
+                                     parse_mode=v["parse_mode"], disable_web_page_preview=True)
+            return
+        if action.startswith("bk_"):
+            if not heysolo_db.is_admin(uid):
+                await msg.reply_text(f"{G_BAD} Admins only.")
+                return
+            res = await backup_panel.handle_text(action, text, uid, _pending)
             for line in res["send"]:
                 await msg.reply_text(line, disable_web_page_preview=True)
             v = res["view"]
@@ -3801,13 +3838,31 @@ async def post_init(app: Application):
     asyncio.create_task(
         prop_notifications.watch_prop_alerts(
             app, read_dashboard, list_accounts, heysolo_db, CHAT_ID))
-    bias_panel.setup(accounts_fn=list_accounts,
-                     control_dir_fn=lambda login: root_for_login(str(login)).control)
+    bias_panel.setup(roots_fn=lambda: list(ROOTS or [primary_root()]))
     await asyncio.to_thread(copier_server.start_from_settings)
     await asyncio.to_thread(bias_server.start_from_settings)
+    asyncio.create_task(backup_panel.watch(app, heysolo_db.get_admin_ids))
     await send_startup_notice(app.bot)
     log.debug("Bot started. Watching %d folder(s): %s", len(ROOTS),
              " | ".join(f"{r.source}:{r.path}" for r in ROOTS))
+
+async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await guard(update):
+        return
+    uid = update.effective_user.id
+    doc = update.effective_message.document
+    if not doc or not heysolo_db.is_admin(uid):
+        return
+    if not backup_panel.wants_document(uid, _pending, doc.file_name or ""):
+        return
+    note = await update.effective_message.reply_text("⏳ Checking the backup file...")
+    v = await backup_panel.receive_document(context.bot, uid, _pending, doc)
+    try:
+        await note.delete()
+    except TelegramError:
+        pass
+    await update.effective_message.reply_text(v["text"], reply_markup=v["reply_markup"],
+                                              parse_mode=v["parse_mode"], disable_web_page_preview=True)
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     # Transient network/DNS hiccups: PTB retries on its own, don't spam the log topic
@@ -3828,6 +3883,7 @@ def main():
     app.add_handler(CommandHandler(["language", "lang"], cmd_language))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    app.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, on_document))
     app.add_error_handler(on_error)
     app.run_polling(close_loop=False)
 

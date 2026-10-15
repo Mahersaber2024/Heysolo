@@ -41,6 +41,7 @@ def _get_default_settings() -> dict:
         "installed_at": "",
         "copier": {},
         "biasfeed": {},
+        "backup": {},
         "user_langs": {},
     }
 
@@ -286,6 +287,15 @@ def get_biasfeed_config() -> Dict[str, Any]:
 def set_biasfeed_config(config: Dict[str, Any]):
     data = _load()
     data["biasfeed"] = dict(config)
+    _save(data)
+
+def get_backup_config() -> Dict[str, Any]:
+    value = _load().get("backup")
+    return dict(value) if isinstance(value, dict) else {}
+
+def set_backup_config(config: Dict[str, Any]):
+    data = _load()
+    data["backup"] = dict(config)
     _save(data)
 
 def is_first_run() -> bool:

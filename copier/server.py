@@ -271,6 +271,11 @@ class _Handler(BaseHTTPRequestHandler):
         return parts[0], cid, action
 
     def do_GET(self):
+        if self.path.startswith("/.well-known/acme-challenge/"):
+            from biasfeed import server as _bias
+            body = _bias.acme_challenge(self.path)
+            self._send(200 if body is not None else 404, (body or b"").decode("ascii", "ignore"), "text/plain")
+            return
         role, cid, action = self._route()
         if cid is None:
             self._send(404 if role is None else 403, '{"ok":false,"error":"unknown link"}')

@@ -1,4 +1,8 @@
-"""Telegram admin panel: Admin -> 🧭 ACHCMBias API.
+"""Telegram admin panel: Admin -> 🧭 Liquidity Hunter Feed.
+
+The bot only makes feed links. Liquidity Hunter runs on this server and writes its
+signed file; every link serves that feed over HTTPS on your domain. Give a link
+to any customer: they paste it into Hey Solo [ATM] and that's it.
 
 Same contract as copier/panel.py:
     handle_callback(data, uid, pending) -> {"answer", "alert", "send", "view"}
@@ -11,7 +15,7 @@ import asyncio
 import html
 import logging
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
@@ -21,95 +25,19 @@ from biasfeed import server as bf
 log = logging.getLogger("biasfeed.panel")
 
 CANCEL_CB = "CANCEL_PENDING"
-ASSIGN_PREFIX = "BiasFeed_"          # <Common>/Files/TelegramBridge/Control/BiasFeed_<login>.txt
-KEY = {"tx": "TX_URL", "rx": "RX_URL"}
-ROLE_NAME = {"tx": "📤 ACHCMBias (sends)", "rx": "📥 Hey Solo (receives)"}
-
-_accounts_fn: Callable[[], list[dict]] = lambda: []
-_control_dir_fn: Callable[[str], Path] | None = None
 
 
-def setup(accounts_fn: Callable[[], list[dict]], control_dir_fn: Callable[[str], Path]) -> None:
-    global _accounts_fn, _control_dir_fn
-    _accounts_fn = accounts_fn
-    _control_dir_fn = control_dir_fn
-
-
-# ----------------------------------------------------------------- assignment files
-def _assign_path(login: str) -> Path | None:
-    if _control_dir_fn is None:
-        return None
-    return Path(_control_dir_fn(login)) / f"{ASSIGN_PREFIX}{login}.txt"
-
-
-def read_assign(login: str) -> dict:
-    p = _assign_path(login)
-    out = {}
-    if not p or not p.exists():
-        return out
+def setup(accounts_fn: Callable | None = None, control_dir_fn: Callable | None = None,
+          roots_fn: Callable[[], Iterable] | None = None) -> None:
+    """roots_fn -> the bot's Common/Files roots (Root objects or paths). The other args are kept for compatibility."""
+    bf.set_roots_fn(roots_fn)
     try:
-        for ln in p.read_text(encoding="utf-8", errors="ignore").splitlines():
-            k, _, v = ln.partition("=")
-            if k.strip():
-                out[k.strip()] = v.strip()
-    except OSError:
-        pass
-    return out
+        bf.cleanup_old_relay_files(Path(r) / "TelegramBridge" / "Control" for r in bf.common_roots())
+    except Exception:
+        log.exception("biasfeed: cleanup of old link files failed")
 
 
-def write_assign(login: str, key: str, value: str | None) -> bool:
-    p = _assign_path(login)
-    if not p:
-        return False
-    data = read_assign(login)
-    if value:
-        data[key] = value
-    else:
-        data.pop(key, None)
-    try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        if not data:
-            p.unlink(missing_ok=True)
-            return True
-        tmp = p.with_suffix(".tmp")
-        tmp.write_text("".join(f"{k}={v}\n" for k, v in sorted(data.items())), encoding="ascii", errors="replace")
-        tmp.replace(p)
-        return True
-    except OSError as e:
-        log.error("Could not write %s: %s", p, e)
-        return False
-
-
-def _set_role(cid: str, role: str, login: str, on: bool) -> bool:
-    cfg = bf.get_config()
-    ch = cfg["channels"].get(cid)
-    if not ch:
-        return False
-    field = f"{role}_logins"
-    for other in cfg["channels"].values():          # one account = one channel per role
-        if login in other[field]:
-            other[field].remove(login)
-    if on:
-        ch[field].append(login)
-    bf.save_config(cfg)
-    tx, rx = bf.links(ch)
-    return write_assign(login, KEY[role], (tx if role == "tx" else rx) if on else None)
-
-
-def _rewrite_links(ch: dict) -> None:
-    tx, rx = bf.links(ch)
-    for login in ch.get("tx_logins", []):
-        write_assign(login, "TX_URL", tx)
-    for login in ch.get("rx_logins", []):
-        write_assign(login, "RX_URL", rx)
-
-
-def _rewrite_all() -> None:
-    for ch in bf.get_config()["channels"].values():
-        _rewrite_links(ch)
-
-
-# ----------------------------------------------------------------- views
+# ----------------------------------------------------------------- helpers
 def _B(text: str, cb: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text, callback_data=cb)
 
@@ -122,143 +50,253 @@ def _res(view=None, answer="", alert=False, send=None) -> dict:
     return {"view": view, "answer": answer, "alert": alert, "send": send or []}
 
 
+def _e(s) -> str:
+    return html.escape(str(s))
+
+
 def _age(sec: int) -> str:
     if sec < 60:
         return f"{sec}s"
     if sec < 3600:
         return f"{sec // 60}m"
-    return f"{sec // 3600}h"
+    if sec < 86400:
+        return f"{sec // 3600}h"
+    return f"{sec // 86400}d"
 
 
-def _server_line() -> str:
+def _server_line(cfg: dict) -> str:
     if bf.SERVER.running:
-        return f"✔ running on port <code>{bf.SERVER.port}</code>"
+        return f"✔ online · port <code>{bf.SERVER.port}</code>"
+    if not cfg.get("domain"):
+        return "■ off - set the domain first"
     if bf.SERVER.error:
-        return f"✖ not running: {html.escape(bf.SERVER.error)}"
+        return f"✖ not running: {_e(bf.SERVER.error)}"
     return "■ off"
 
 
+def _cert_line() -> str:
+    st = bf.cert_status()
+    if st["letsencrypt"] and st["not_after"]:
+        return f"🔒 Let's Encrypt · valid until <code>{st['not_after']:%Y-%m-%d}</code>"
+    if st["busy"]:
+        return "⏳ temporary certificate · getting Let's Encrypt now..."
+    last = st["last"]
+    if last and not last.get("ok"):
+        return f"⚠️ temporary certificate · last try failed (see 🔒 HTTPS)"
+    return "⏳ temporary certificate" if st["domain"] else "-"
+
+
+def _source_line(cfg: dict) -> str:
+    src = bf.active_sources(cfg)
+    if not src:
+        pinned = cfg.get("source")
+        return "✖ no Liquidity Hunter feed found" + (f" for <code>{_e(pinned)}</code>" if pinned else "")
+    return " · ".join(
+        f"<code>{s['login']}</code> {len(s['lines'])} sym {_age(s['age'])}" + (" ⚠️" if s["age"] > bf.STALE_SEC else " ✔")
+        for s in src[:3])
+
+
+def _cancel_rows(back: str) -> list[list[InlineKeyboardButton]]:
+    return [[_B("✖ Cancel", CANCEL_CB)], [_B("← Back", back)]]
+
+
+# ----------------------------------------------------------------- views
 def main_view() -> dict:
     cfg = bf.get_config()
-    chans = list(cfg["channels"].values())
-    port = int(cfg.get("port") or bf.DEFAULT_PORT)
+    links = list(cfg["links"].values())
+    dom = cfg.get("domain") or ""
+    dns = ""
+    if dom:
+        d = bf.dns_info(dom)
+        dns = " ☁️" if d["cloudflare"] else (" ⚠️ not proxied" if d["ok"] else " ✖ no DNS")
+    online = sum(bf.online_count(l["id"]) for l in links)
     lines = [
-        "🧭 <b>ACHCMBias Signals - API</b>",
-        "Own server, separate from the Copy Server. Sends the ACHCMBias scanner from one MT5 "
-        "to Hey Solo [ATM] on any other server/PC.",
+        "🧭 <b>Liquidity Hunter Feed</b>",
+        "Liquidity Hunter on this server → Hey Solo [ATM] anywhere. One HTTPS link per customer.",
         "",
-        f"▸ Status: {_server_line()}",
-        f"▸ Address: <code>{html.escape(bf.base_url(cfg))}</code>",
-        f"▸ Channels: <code>{len(chans)}</code>",
+        f"▸ Server: {_server_line(cfg)}",
+        f"▸ Domain: " + (f"<code>{_e(dom)}</code>{dns}" if dom else "<i>not set</i>"),
+        f"▸ HTTPS: {_cert_line()}",
+        f"▸ Liquidity Hunter here: {_source_line(cfg)}",
+        f"▸ 📍 Iran mirror: " + (f"<code>{_e(bf.mirror_base(cfg))}</code>" if bf.mirror_base(cfg) else "<i>not set</i>"),
+        f"▸ Feed links: <code>{len(links)}</code> · connected now: <code>{online}</code>",
     ]
-    lines.append(f"<i>Own port, never the Copy Server's ({bf.copier_port()}). Add "
-                 f"<code>{html.escape(bf.allow_list_url(cfg))}</code> (with the port) to "
-                 "Allow WebRequest in every MT5.</i>")
+    if dom:
+        lines.append(f"\n<i>Customers add <code>{_e(bf.allow_list_url(cfg))}</code> to Allow WebRequest.</i>")
     toggle = _B("■ Turn off", "ADM_BF_OFF") if cfg.get("enabled") else _B("▶ Turn on", "ADM_BF_ON")
-    rows = [[toggle, _B("🔁 Restart", "ADM_BF_RESTART")]]
-    for ch in chans:
-        n = len(bf.feeds_summary(ch["id"]))
-        rows.append([_B(f"{'🟢' if n else '⚪'} {ch['name']} · {n} live", f"ADM_BF_C:{ch['id']}")])
-    rows.append([_B("＋ New channel", "ADM_BF_NEW")])
-    rows.append([_B(f"✎ Port: {port}", "ADM_BF_PORT"), _B("✎ Address", "ADM_BF_ADDR")])
-    rows.append([_B("❔ Guide", "ADM_BF_HELP"), _B("← Back", "ADM_PANEL")])
+    rows = [[toggle, _B("🔁 Restart", "ADM_BF_RESTART")],
+            [_B("🌐 Domain", "ADM_BF_DOM"), _B("🔒 HTTPS", "ADM_BF_TLS"), _B(f"🔌 {cfg['port']}", "ADM_BF_PORT")],
+            [_B("📍 Iran mirror", "ADM_BF_MIR")]]
+    for l in links:
+        n = bf.online_count(l["id"])
+        dot = "⏸" if not l.get("enabled", True) else ("🟢" if n else "⚪")
+        rows.append([_B(f"{dot} {l['name']}" + (f" · {n} online" if n else ""), f"ADM_BF_L:{l['id']}")])
+    rows.append([_B("＋ New feed link", "ADM_BF_NEW")])
+    if cfg.get("source") or len(bf.sources()) > 1:
+        rows.append([_B("📡 Source: " + (cfg.get("source") or "all Liquidity Hunter"), "ADM_BF_SRC")])
+    rows.append([_B("🧪 Test", "ADM_BF_TEST"), _B("🔄 Refresh", "ADM_BF"), _B("❔ Guide", "ADM_BF_HELP")])
+    rows.append([_B("← Back", "ADM_PANEL")])
     return _view("\n".join(lines), rows)
 
 
-def channel_view(cid: str) -> dict:
-    ch = bf.get_config()["channels"].get(cid)
-    if not ch:
+def link_view(lid: str) -> dict:
+    cfg = bf.get_config()
+    link = cfg["links"].get(lid)
+    if not link:
         return main_view()
-    tx, rx = bf.links(ch)
-    feeds = bf.feeds_summary(cid)
-    if feeds:
-        live = "\n".join(
-            f"  • <code>{f['login']}</code> · {f['symbols']} symbols · {_age(f['age'])} ago"
-            + ("  ⚠️ stale" if f["age"] > 120 else "")
-            for f in feeds)
+    url = bf.link_url(link, cfg)
+    mirror = bf.mirror_url(link, cfg)
+    on = link.get("enabled", True)
+    cl = bf.clients(lid)
+    if cl:
+        conn = "\n".join(
+            f"  {'🟢' if c['age'] <= bf.ONLINE_SEC else '⚪'} "
+            + (f"<code>{c['login']}</code> · " if c.get("login") else "")
+            + f"{_e(c['ip'])}" + (" · via Iran" if c.get("via") == "mirror" else "") + f" · {_age(c['age'])} ago" for c in cl[:15])
     else:
-        live = "  none yet - ACHCMBias has not sent anything"
-    txl = ", ".join(f"<code>{l}</code>" for l in ch["tx_logins"]) or "-"
-    rxl = ", ".join(f"<code>{l}</code>" for l in ch["rx_logins"]) or "-"
+        conn = "  nobody yet"
     text = (
-        f"📡 <b>{html.escape(ch['name'])}</b>\n\n"
-        f"📤 <b>Transmitter link</b> (ACHCMBias → <i>Bias API URL</i>):\n<code>{html.escape(tx)}</code>\n\n"
-        f"📥 <b>Receiver link</b> (Hey Solo → Control Center › Copier › <i>ACHCMBias API URL</i>):\n"
-        f"<code>{html.escape(rx)}</code>\n\n"
-        f"<b>Live feeds:</b>\n{live}\n\n"
-        f"<b>Set from bot</b> - sends: {txl} · receives: {rxl}\n\n"
-        f"Add <code>{html.escape(bf.allow_list_url())}</code> in every MT5: Tools › Options › "
-        "Expert Advisors › Allow WebRequest."
+        f"🔗 <b>{_e(link['name'])}</b> · {'🟢 active' if on else '⏸ paused'}\n\n"
+        + (f"🌍 <code>{_e(url)}</code>\n" if url else "⚠️ Set the domain first.\n")
+        + (f"📍 <code>{_e(mirror)}</code>\n" if mirror else "")
+        + "\n"
+        + "Hey Solo [ATM] → Control Center › Copier: <b>Liquidity Hunter over API</b> = ON, "
+          "<b>Liquidity Hunter API URL</b> = this link.\n"
+        + (f"MT5 › Allow WebRequest: <code>{_e(bf.allow_list_url(cfg))}</code>"
+           + (f" (Iran: <code>{_e(bf.mirror_base(cfg))}</code>)" if mirror else "") + "\n\n" if url else "\n")
+        + f"<b>Connected (since bot start):</b>\n{conn}"
     )
     rows = [
-        [_B("📤 ACHCMBias account", f"ADM_BF_PK:tx:{cid}"), _B("📥 Hey Solo account", f"ADM_BF_PK:rx:{cid}")],
-        [_B("📨 Send links", f"ADM_BF_SEND:{cid}"), _B("🧪 Test", f"ADM_BF_TEST:{cid}")],
-        [_B("🔄 Refresh", f"ADM_BF_C:{cid}")],
-        [_B("🔑 New links", f"ADM_BF_ROT:{cid}"), _B("✎ Rename", f"ADM_BF_REN:{cid}")],
-        [_B("✕ Delete", f"ADM_BF_DEL:{cid}")],
+        [_B("📨 Send to customer", f"ADM_BF_SEND:{lid}"), _B("🔄 Refresh", f"ADM_BF_L:{lid}")],
+        [_B("⏸ Pause" if on else "▶ Resume", f"ADM_BF_PAU:{lid}"), _B("✎ Rename", f"ADM_BF_REN:{lid}")],
+        [_B("🔑 New link (old one stops)", f"ADM_BF_ROT:{lid}")],
+        [_B("✕ Delete", f"ADM_BF_DEL:{lid}")],
         [_B("← Back", "ADM_BF")],
     ]
     return _view(text, rows)
 
 
-def pick_view(role: str, cid: str) -> dict:
-    ch = bf.get_config()["channels"].get(cid)
-    if not ch:
-        return main_view()
-    mine = set(ch[f"{role}_logins"])
-    try:
-        accounts = _accounts_fn() or []
-    except Exception:
-        log.exception("accounts list failed")
-        accounts = []
-    logins, seen = [], set()
-    for a in accounts:
-        l = str(a.get("login") or "")
-        if l and l not in seen:
-            seen.add(l)
-            logins.append((l, a.get("broker", "")))
-    for l in sorted(mine - seen):
-        logins.append((l, "not seen by the bot"))
+def tls_view() -> dict:
+    cfg = bf.get_config()
+    st = bf.cert_status()
+    last = st["last"]
+    if st["letsencrypt"] and st["not_after"]:
+        now = f"🔒 Let's Encrypt, valid until <code>{st['not_after']:%Y-%m-%d}</code> (auto-renews)"
+    else:
+        now = "⏳ temporary self-signed (Cloudflare accepts it in SSL mode <b>Full</b>)"
+    if st["busy"]:
+        lastl = "⏳ working on it right now..."
+    elif last:
+        lastl = f"{'✔' if last.get('ok') else '✖'} {_e(last.get('at', ''))} · {_e(last.get('msg', ''))}"
+    else:
+        lastl = "-"
+    method = ("Cloudflare DNS (API token) - works whatever Cloudflare settings are"
+              if st["method"] == "dns" else "HTTP through Cloudflare (port 80)")
     text = (
-        f"{ROLE_NAME[role]} · <b>{html.escape(ch['name'])}</b>\n\n"
-        "Tap an account to switch it on/off for this channel. The bot drops the link "
-        "into that MT5's bridge folder and the EA picks it up by itself within a few seconds.\n\n"
-        "Account not in the list (its MT5 folder isn't shared with the bot)? Use "
-        "<b>📨 Send links</b> and paste the link into the EA by hand."
+        "🔒 <b>HTTPS certificate</b>\n\n"
+        f"Domain: <code>{_e(st['domain'] or '-')}</code>\n"
+        f"Now: {now}\n"
+        f"Method: {method}\n"
+        f"Last try: {lastl}\n"
+        f"E-mail for Let's Encrypt: <code>{_e(cfg.get('email') or '-')}</code>\n\n"
+        "<b>Cloudflare:</b> DNS record → <b>Proxied</b> (orange cloud). SSL/TLS mode → <b>Full</b>, "
+        "and <b>Full (strict)</b> once Let's Encrypt shows here.\n"
+        "If it keeps failing, add a Cloudflare API token (My Profile › API Tokens › "
+        "<i>Edit zone DNS</i> template, your zone) - then nothing else matters."
     )
-    rows = []
-    for l, broker in logins[:40]:
-        mark = "✅" if l in mine else "▫️"
-        label = f"{mark} {l}" + (f" · {broker}"[:28] if broker else "")
-        rows.append([_B(label, f"ADM_BF_T:{role}:{cid}:{l}")])
-    rows.append([_B("✍ Type a login", f"ADM_BF_TL:{role}:{cid}")])
-    rows.append([_B("← Back", f"ADM_BF_C:{cid}")])
+    rows = [[_B("🔄 Get certificate now", "ADM_BF_ISSUE"), _B("♻️ Force renew", "ADM_BF_FORCE")],
+            [_B("☁️ Cloudflare token" + (" ✔" if cfg.get("cf_token") else ""), "ADM_BF_CFT"),
+             _B("✉️ E-mail", "ADM_BF_MAIL")]]
+    if cfg.get("cf_token"):
+        rows.append([_B("🗑 Remove Cloudflare token", "ADM_BF_CFTX")])
+    rows.append([_B("🔄 Refresh", "ADM_BF_TLS"), _B("← Back", "ADM_BF")])
+    return _view(text, rows)
+
+
+def port_view() -> dict:
+    cfg = bf.get_config()
+    cp = bf.copier_port()
+    text = ("🔌 <b>HTTPS port</b>\n\nOnly ports Cloudflare proxies for HTTPS. <b>443</b> is best: the link "
+            "then has no port in it. Copy Server port <code>%d</code> is never used." % cp)
+    row, rows = [], []
+    for p in bf.CF_HTTPS_PORTS:
+        if p == cp:
+            continue
+        row.append(_B(("✅ " if p == cfg["port"] else "") + str(p), f"ADM_BF_P:{p}"))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([_B("← Back", "ADM_BF")])
+    return _view(text, rows)
+
+
+def source_view() -> dict:
+    cfg = bf.get_config()
+    cur = cfg.get("source") or ""
+    text = ("📡 <b>Which Liquidity Hunter to send</b>\n\n<b>All</b> (recommended): every Liquidity Hunter running on this "
+            "server; Hey Solo keeps the best/newest line per symbol.")
+    rows = [[_B(("✅ " if not cur else "") + "All Liquidity Hunter", "ADM_BF_S:")]]
+    logins = {s["login"]: s for s in bf.sources()}
+    if cur and cur not in logins:
+        logins[cur] = None
+    for l, s in sorted(logins.items()):
+        info = f" · {len(s['lines'])} sym · {_age(s['age'])}" if s else " · not running"
+        rows.append([_B(("✅ " if l == cur else "") + l + info, f"ADM_BF_S:{l}")])
+    rows.append([_B("← Back", "ADM_BF")])
     return _view(text, rows)
 
 
 def help_view() -> dict:
     text = (
-        "❔ <b>ACHCMBias API - how it works</b>\n\n"
-        "1. <b>▶ Turn on</b>, then <b>＋ New channel</b> → you get 2 links.\n"
-        "2. <b>📤 ACHCMBias account</b>: pick the MT5 running ACHCMBias. "
-        "(Or paste the transmitter link into the ACHCMBias input <i>Bias API URL</i>.)\n"
-        "3. <b>📥 Hey Solo account</b>: pick the MT5 running Hey Solo [ATM]. "
-        "(Or paste the receiver link in Control Center › Copier › <i>ACHCMBias API URL</i> "
-        "and turn <i>ACHCMBias over API</i> ON - also possible from ⚙️ EA Settings.)\n"
-        "4. In <b>both</b> MT5: Tools › Options › Expert Advisors › Allow WebRequest → add the address.\n\n"
-        "The feed stays signed by ACHCMBias - the bot only relays it, it can't change a signal. "
-        "If ACHCMBias stops sending for 2 minutes, Hey Solo blocks new trades like before. "
-        "Local file mode keeps working too: when both EAs share a PC, Hey Solo reads both.\n\n"
-        f"This server is independent from the Copy Server and always uses its own port "
-        f"(default <code>{bf.DEFAULT_PORT}</code>, Copy Server stays on its own). The bot refuses the "
-        "Copy Server's port, so the two never mix. Allow WebRequest with the port, e.g. "
-        f"<code>http://IP:{bf.DEFAULT_PORT}</code>."
+        "❔ <b>Liquidity Hunter Feed - how it works</b>\n\n"
+        "Liquidity Hunter runs on <b>this</b> server and writes its signed feed file. The bot reads that file and "
+        "serves it over HTTPS on your domain. Nothing to set in Liquidity Hunter.\n\n"
+        "<b>Once:</b>\n"
+        "1. Cloudflare → DNS: <code>A</code> record for your domain → this server's IP, <b>Proxied</b>.\n"
+        "2. Cloudflare → SSL/TLS: <b>Full</b> (later <b>Full (strict)</b>).\n"
+        "3. Here: <b>🌐 Domain</b> → send it. The bot goes online at once and gets a Let's Encrypt "
+        "certificate by itself (and renews it).\n\n"
+        "<b>Per customer:</b> <b>＋ New feed link</b> → <b>📨 Send to customer</b>. They:\n"
+        "• MT5 › Tools › Options › Expert Advisors › Allow WebRequest → add your <code>https://domain</code>\n"
+        "• Hey Solo [ATM] › Control Center › Copier: <i>Liquidity Hunter over API</i> ON, paste the link in "
+        "<i>Liquidity Hunter API URL</i>.\n\n"
+        "Pause / New link / Delete cuts one customer off without touching the others. "
+        "The feed stays signed by Liquidity Hunter - the bot can't change a signal. If Liquidity Hunter stops, "
+        "Hey Solo blocks new trades after 2 minutes, like before.\n\n"
+        "<i>Cloudflare Bot Fight Mode can block MT5. If a customer sees \"blocked by Cloudflare\", "
+        "turn it off or add a WAF skip rule for path <code>/feed/</code>.</i>"
     )
     return _view(text, [[_B("← Back", "ADM_BF")]])
 
 
-def _cancel_rows(back: str) -> list[list[InlineKeyboardButton]]:
-    return [[_B("✖ Cancel", CANCEL_CB)], [_B("← Back", back)]]
+def _customer_msgs(link: dict) -> list[str]:
+    cfg = bf.get_config()
+    url = bf.link_url(link, cfg)
+    mirror = bf.mirror_url(link, cfg)
+    if not mirror:
+        return [
+            "🧭 Liquidity Hunter feed for Hey Solo [ATM]\n\n"
+            f"1) MT5 › Tools › Options › Expert Advisors › Allow WebRequest → add:\n{bf.allow_list_url(cfg)}\n\n"
+            "2) Hey Solo [ATM] › Control Center › Copier:\n"
+            "   • Liquidity Hunter over API = ON\n"
+            "   • Liquidity Hunter API URL = the link below",
+            url,
+        ]
+    return [
+        "🧭 Liquidity Hunter feed for Hey Solo [ATM]\n\n"
+        "Pick ONE link: 📍 Iran if your MT5 runs in Iran, 🌍 for everywhere else.\n\n"
+        "1) MT5 › Tools › Options › Expert Advisors › Allow WebRequest → add its address:\n"
+        f"📍 Iran: {bf.mirror_base(cfg)}\n🌍 {bf.allow_list_url(cfg)}\n\n"
+        "2) Hey Solo [ATM] › Control Center › Copier:\n"
+        "   • Liquidity Hunter over API = ON\n"
+        "   • Liquidity Hunter API URL = the link",
+        "📍 Iran:",
+        mirror,
+        "🌍 Other countries:",
+        url,
+    ]
 
 
 # ----------------------------------------------------------------- callbacks
@@ -271,91 +309,110 @@ def _handle_callback(data: str, uid: int, pending: dict) -> dict:
         return _res(main_view())
     if data == "ADM_BF_HELP":
         return _res(help_view())
+    if data == "ADM_BF_TLS":
+        return _res(tls_view())
+    if data == "ADM_BF_PORT":
+        return _res(port_view())
+    if data == "ADM_BF_SRC":
+        return _res(source_view())
+    if data == "ADM_BF_TEST":
+        return _res(None, answer="Testing...", send=["\n".join(bf.self_test())])
     if data == "ADM_BF_NEW":
-        ch = bf.create_channel()
-        return _res(channel_view(ch["id"]), answer="Channel created")
+        link = bf.create_link()
+        return _res(link_view(link["id"]), answer="Feed link created")
+
     if data in ("ADM_BF_ON", "ADM_BF_OFF", "ADM_BF_RESTART"):
         cfg = bf.get_config()
+        if data == "ADM_BF_ON" and not cfg.get("domain"):
+            return _res(main_view(), answer="Set the domain first (🌐 Domain)", alert=True)
         if data != "ADM_BF_RESTART":
-            cfg["enabled"] = data == "ADM_BF_ON"
-            bf.save_config(cfg)
+            cfg = bf.update_config(enabled=(data == "ADM_BF_ON"))
         ok, msg = bf.SERVER.apply()
-        _rewrite_all()
         if not ok:
             return _res(main_view(), answer=f"Could not start: {msg}", alert=True)
         if not cfg.get("enabled"):
             return _res(main_view(), answer="Turned off")
-        return _res(main_view(), answer=("Running" + (f" · {msg}" if msg else "")))
-    if data == "ADM_BF_PORT":
-        pending[uid] = "bf_port"
-        return _res(_view(f"✎ Send the port for the ACHCMBias API server (e.g. <code>{bf.DEFAULT_PORT}</code>). "
-                          f"It must differ from the Copy Server port <code>{bf.copier_port()}</code>.",
-                          _cancel_rows("ADM_BF")))
-    if data == "ADM_BF_ADDR":
-        pending[uid] = "bf_addr"
-        return _res(_view("🌐 Send the public IP / domain the MT5 terminals use to reach this server, "
-                          "e.g. <code>203.0.113.7</code> or <code>https://bias.example.com</code>.\n"
-                          "Send <code>auto</code> to detect the public IP.",
-                          _cancel_rows("ADM_BF")))
+        if not bf.cert_status()["letsencrypt"]:
+            bf.issue_certificate_async()
+        return _res(main_view(), answer="Online" + (f" · {msg}" if msg else ""))
 
-    head, _, rest = data.partition(":")
-    args = rest.split(":") if rest else []
-    cfg = bf.get_config()
+    if data == "ADM_BF_DOM":
+        pending[uid] = "bf_domain"
+        return _res(_view("🌐 Send your domain, e.g. <code>trade.heysolo.online</code>\n\n"
+                          "In Cloudflare it needs an <code>A</code> record to this server's IP with the orange "
+                          "cloud ON, and SSL/TLS mode <b>Full</b>.", _cancel_rows("ADM_BF")))
+    if data in ("ADM_BF_ISSUE", "ADM_BF_FORCE"):
+        if not bf.get_config().get("domain"):
+            return _res(tls_view(), answer="Set the domain first", alert=True)
+        started = bf.issue_certificate_async(force=(data == "ADM_BF_FORCE"))
+        return _res(tls_view(), answer=("Requested - tap Refresh in about a minute" if started else "Already running"))
+    if data == "ADM_BF_CFT":
+        pending[uid] = "bf_cftoken"
+        return _res(_view("☁️ Send a Cloudflare API token with <b>Zone › DNS › Edit</b> for your domain's zone "
+                          "(My Profile › API Tokens › Create Token › <i>Edit zone DNS</i>).\n"
+                          "Delete your message with the token afterwards.", _cancel_rows("ADM_BF_TLS")))
+    if data == "ADM_BF_CFTX":
+        bf.update_config(cf_token="")
+        try:
+            bf.CF_INI.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return _res(tls_view(), answer="Token removed")
+    if data == "ADM_BF_MIR":
+        pending[uid] = "bf_mirror"
+        cur = bf.mirror_base()
+        return _res(_view("📍 <b>Iran mirror</b>\n\nThe address of your Iranian host where <code>index.php</code> "
+                          "(with the <code>/feed/</code> route) is installed, e.g. <code>https://heysolo.ir</code>.\n"
+                          "Customers in Iran use <code>that-address/feed/&lt;token&gt;</code>: same token, same pause/delete.\n\n"
+                          + (f"Now: <code>{_e(cur)}</code>\n" if cur else "")
+                          + "Send <code>-</code> to remove it.", _cancel_rows("ADM_BF")))
+    if data == "ADM_BF_MAIL":
+        pending[uid] = "bf_email"
+        return _res(_view("✉️ Send an e-mail for Let's Encrypt expiry notices, or <code>-</code> for none.",
+                          _cancel_rows("ADM_BF_TLS")))
 
-    if head == "ADM_BF_C" and args:
-        return _res(channel_view(args[0]))
-    if head == "ADM_BF_PK" and len(args) == 2 and args[0] in KEY:
-        return _res(pick_view(args[0], args[1]))
-    if head == "ADM_BF_T" and len(args) == 3 and args[0] in KEY:
-        role, cid, login = args
-        ch = cfg["channels"].get(cid)
-        if not ch:
-            return _res(main_view(), answer="Channel not found")
-        on = login not in ch[f"{role}_logins"]
-        ok = _set_role(cid, role, login, on)
-        msg = (f"{login}: {'ON' if on else 'OFF'}") if ok else "Saved, but the bot can't write to that MT5 folder"
-        return _res(pick_view(role, cid), answer=msg, alert=not ok)
-    if head == "ADM_BF_TL" and len(args) == 2 and args[0] in KEY:
-        pending[uid] = f"bf_login:{args[0]}:{args[1]}"
-        return _res(_view("✍ Send the MT5 login number.", _cancel_rows(f"ADM_BF_PK:{args[0]}:{args[1]}")))
-    if head == "ADM_BF_SEND" and args:
-        ch = cfg["channels"].get(args[0])
-        if not ch:
+    head, _, arg = data.partition(":")
+
+    if head == "ADM_BF_P" and arg.isdigit():
+        p = int(arg)
+        if p not in bf.CF_HTTPS_PORTS or p == bf.copier_port():
+            return _res(port_view(), answer="Not allowed", alert=True)
+        bf.update_config(port=p)
+        ok, msg = bf.SERVER.apply()
+        return _res(main_view(), answer=(f"Port {p}" if ok else f"Saved, but: {msg}"), alert=not ok)
+    if head == "ADM_BF_S":
+        bf.update_config(source=arg)
+        return _res(main_view(), answer="Source: " + (arg or "all"))
+    if head == "ADM_BF_L" and arg:
+        return _res(link_view(arg))
+    if head == "ADM_BF_SEND" and arg:
+        link = bf.get_link(arg)
+        if not link:
             return _res(main_view())
-        tx, rx = bf.links(ch)
-        return _res(None, answer="Links sent", send=[
-            f"📡 {ch['name']}\n\n📤 ACHCMBias → input \"Bias API URL\":\n{tx}",
-            f"📥 Hey Solo [ATM] → Control Center › Copier › \"ACHCMBias API URL\":\n{rx}",
-            f"Allow WebRequest in both MT5 for:\n{bf.allow_list_url()}",
-        ])
-    if head == "ADM_BF_TEST" and args:
-        ch = cfg["channels"].get(args[0])
-        if not ch:
+        if not bf.base_url():
+            return _res(link_view(arg), answer="Set the domain first", alert=True)
+        return _res(None, answer="Sent - forward both messages", send=_customer_msgs(link))
+    if head == "ADM_BF_PAU" and arg:
+        link = bf.get_link(arg)
+        if not link:
             return _res(main_view())
-        ok, body = bf.self_test(ch)
-        return _res(None, answer=("✔ Server answers" if ok else f"✖ {body}")[:190], alert=True)
-    if head == "ADM_BF_ROT" and args:
-        ch = bf.rotate_channel(args[0])
-        if ch:
-            _rewrite_links(ch)
-        return _res(channel_view(args[0]), answer="New links made - old links stopped working", alert=True)
-    if head == "ADM_BF_REN" and args:
-        pending[uid] = f"bf_ren:{args[0]}"
-        return _res(_view("✎ Send the new channel name.", _cancel_rows(f"ADM_BF_C:{args[0]}")))
-    if head == "ADM_BF_DEL" and args:
-        ch = cfg["channels"].get(args[0])
-        if not ch:
+        on = not link.get("enabled", True)
+        bf.update_link(arg, enabled=on)
+        return _res(link_view(arg), answer=("Resumed" if on else "Paused - this customer gets no signals"))
+    if head == "ADM_BF_ROT" and arg:
+        bf.rotate_link(arg)
+        return _res(link_view(arg), answer="New link made - the old one stopped working", alert=True)
+    if head == "ADM_BF_REN" and arg:
+        pending[uid] = f"bf_ren:{arg}"
+        return _res(_view("✎ Send the new name (e.g. the customer's name).", _cancel_rows(f"ADM_BF_L:{arg}")))
+    if head == "ADM_BF_DEL" and arg:
+        link = bf.get_link(arg)
+        if not link:
             return _res(main_view())
-        return _res(_view(f"✕ Delete <b>{html.escape(ch['name'])}</b>? Its links stop working and the "
-                          "assigned accounts fall back to the local file.",
-                          [[_B("✕ Yes, delete", f"ADM_BF_DELY:{args[0]}")], [_B("← Back", f"ADM_BF_C:{args[0]}")]]))
-    if head == "ADM_BF_DELY" and args:
-        ch = bf.delete_channel(args[0])
-        if ch:
-            for l in ch.get("tx_logins", []):
-                write_assign(l, "TX_URL", None)
-            for l in ch.get("rx_logins", []):
-                write_assign(l, "RX_URL", None)
+        return _res(_view(f"✕ Delete <b>{_e(link['name'])}</b>? Its link stops working immediately.",
+                          [[_B("✕ Yes, delete", f"ADM_BF_DELY:{arg}")], [_B("← Back", f"ADM_BF_L:{arg}")]]))
+    if head == "ADM_BF_DELY" and arg:
+        bf.delete_link(arg)
         return _res(main_view(), answer="Deleted")
     return _res(main_view())
 
@@ -367,49 +424,55 @@ async def handle_text(action: str, text: str, uid: int, pending: dict) -> dict:
 
 def _handle_text(action: str, text: str, uid: int, pending: dict) -> dict:
     text = (text or "").strip()
-    digits = text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
-    cfg = bf.get_config()
 
-    if action == "bf_port":
-        if not digits.isdigit() or not (1 <= int(digits) <= 65535):
+    if action == "bf_domain":
+        dom = bf.normalize_domain(text)
+        if not dom:
             pending[uid] = action
-            return _res(_view("❌ 1-65535 only. Send it again.", _cancel_rows("ADM_BF")))
-        if int(digits) == bf.copier_port():
-            pending[uid] = action
-            return _res(_view(f"✖ <code>{digits}</code> is the Copy Server's port. Send a different one "
-                              f"(e.g. <code>{bf.DEFAULT_PORT}</code>).", _cancel_rows("ADM_BF")))
-        cfg["port"] = int(digits)
-        bf.save_config(cfg)
-        ok, msg = bf.SERVER.apply()
-        _rewrite_all()
+            return _res(_view("❌ That isn't a domain. Send it like <code>trade.heysolo.online</code>.",
+                              _cancel_rows("ADM_BF")))
+        ok, msg = bf.set_domain(dom)
         if not ok:
-            return _res(main_view(), send=[f"✖ Port {digits} saved but the server could not start: {msg}"])
-        return _res(main_view(), send=[f"✅ Port set to {digits}"])
+            return _res(main_view(), send=[f"✖ Domain saved, but the server could not start: {msg}"])
+        return _res(main_view(), send=[
+            f"✅ https://{dom} is online with a temporary certificate. Let's Encrypt is being requested in the "
+            "background (🔒 HTTPS shows the result). Now make a feed link with ＋ New feed link."])
 
-    if action == "bf_addr":
-        val = "" if text.lower() == "auto" else text.rstrip("/")
-        if val and (" " in val or len(val) > 120):
+    if action == "bf_cftoken":
+        tok = text.split()[0] if text else ""
+        if len(tok) < 30 or not tok.replace("-", "").replace("_", "").isalnum():
             pending[uid] = action
-            return _res(_view("❌ That doesn't look like an IP/domain. Send it again.", _cancel_rows("ADM_BF")))
-        cfg["public_url"] = val
-        bf.save_config(cfg)
-        _rewrite_all()
-        return _res(main_view(), send=[f"✅ Address: {bf.base_url()}"])
+            return _res(_view("❌ That doesn't look like a Cloudflare API token. Send it again.",
+                              _cancel_rows("ADM_BF_TLS")))
+        bf.update_config(cf_token=tok, cert={})
+        if bf.get_config().get("domain"):
+            bf.issue_certificate_async()
+        return _res(tls_view(), send=["✅ Cloudflare token saved - requesting the certificate over DNS now. "
+                                      "Delete your message with the token from this chat."])
+
+    if action == "bf_mirror":
+        if text in ("-", ""):
+            bf.update_config(mirror="")
+            return _res(main_view(), send=["📍 Iran mirror removed"])
+        mb = bf.normalize_mirror(text)
+        if not mb:
+            pending[uid] = action
+            return _res(_view("❌ Send it like <code>https://heysolo.ir</code>.", _cancel_rows("ADM_BF")))
+        bf.update_config(mirror=mb)
+        return _res(main_view(), send=[f"✅ Iran mirror: {mb} - tap 🧪 Test to check it forwards the feed"])
+
+    if action == "bf_email":
+        mail = "" if text in ("-", "") else text
+        if mail and ("@" not in mail or " " in mail or len(mail) > 120):
+            pending[uid] = action
+            return _res(_view("❌ Not an e-mail. Send it again or <code>-</code>.", _cancel_rows("ADM_BF_TLS")))
+        bf.update_config(email=mail)
+        return _res(tls_view())
 
     if action.startswith("bf_ren:"):
-        cid = action.split(":", 1)[1]
-        if cid in cfg["channels"] and text:
-            cfg["channels"][cid]["name"] = text[:40]
-            bf.save_config(cfg)
-        return _res(channel_view(cid))
-
-    if action.startswith("bf_login:"):
-        _, role, cid = action.split(":", 2)
-        if not digits.isdigit():
-            pending[uid] = action
-            return _res(_view("❌ Numbers only. Send the login again.", _cancel_rows(f"ADM_BF_PK:{role}:{cid}")))
-        ok = _set_role(cid, role, digits, True)
-        note = [] if ok else ["⚠️ Saved, but the bot can't reach that MT5 folder - paste the link by hand."]
-        return _res(pick_view(role, cid), send=note)
+        lid = action.split(":", 1)[1]
+        if text:
+            bf.update_link(lid, name=text[:40])
+        return _res(link_view(lid))
 
     return _res(main_view())

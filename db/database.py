@@ -12,8 +12,8 @@ NOTIFY_KINDS = ("bias", "trade", "log", "result")
 
 DEFAULT_EXPERTS: List[dict] = [
     {
-        "code": "achcmbias",
-        "display_name": "ACHCMBias",
+        "code": "liquidityhunter",
+        "display_name": "Liquidity Hunter",
         "has_bias": True,
         "has_mode": True,
         "has_trading": True,
@@ -30,6 +30,22 @@ DEFAULT_EXPERTS: List[dict] = [
         "sort_order": 20,
     },
 ]
+
+LEGACY_EXPERT_CODES: Dict[str, tuple] = {
+    "achcmbias": ("liquidityhunter", "Liquidity Hunter"),
+}
+
+
+def canon_expert_code(code) -> str:
+    c = str(code or "").strip().lower()
+    hit = LEGACY_EXPERT_CODES.get(c)
+    return hit[0] if hit else c
+
+
+def canon_expert_name(code, name) -> str:
+    hit = LEGACY_EXPERT_CODES.get(str(code or "").strip().lower())
+    return hit[1] if hit else str(name or "")
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS experts (
@@ -198,10 +214,28 @@ class PgDatabase:
             with self._conn.cursor() as cur:
                 cur.execute(SCHEMA)
                 cur.execute(MIGRATE_USER_TOPICS)
+        self._rename_legacy_experts()
         self._seed_experts()
         self._import_legacy_settings()
         self._backfill_user_experts()
         self._migrate_user_dest()
+
+    def _rename_legacy_experts(self):
+        for old_code, (new_code, new_name) in LEGACY_EXPERT_CODES.items():
+            old = self._run("SELECT id FROM experts WHERE code = %s", (old_code,), fetch="one")
+            if not old:
+                continue
+            new = self._run("SELECT id FROM experts WHERE code = %s", (new_code,), fetch="one")
+            if not new:
+                self._run("UPDATE experts SET code = %s, display_name = %s WHERE id = %s",
+                          (new_code, new_name, old["id"]))
+                logger.info("Renamed expert %s -> %s (%s)", old_code, new_code, new_name)
+                continue
+            for table in ("accounts", "bot_users"):
+                self._run(f"UPDATE {table} SET expert_id = %s WHERE expert_id = %s",
+                          (new["id"], old["id"]))
+            self._run("DELETE FROM experts WHERE id = %s", (old["id"],))
+            logger.info("Merged expert %s into %s", old_code, new_code)
 
     def _seed_experts(self):
         for e in DEFAULT_EXPERTS:
@@ -311,7 +345,7 @@ class PgDatabase:
         return _expert_row(row) if row else None
 
     def get_expert_by_code(self, code: str) -> Optional[dict]:
-        row = self._run("SELECT * FROM experts WHERE code = %s", (code,), fetch="one")
+        row = self._run("SELECT * FROM experts WHERE code = %s", (canon_expert_code(code),), fetch="one")
         return _expert_row(row) if row else None
 
     def get_expert_for_login(self, login: str) -> Optional[dict]:
