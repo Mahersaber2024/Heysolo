@@ -34,7 +34,7 @@ These are practical minimums for one terminal. More CPU and RAM may be required 
 Run the main installer as root:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/HeysoloPublic/main/heysolo.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main/heysolo.sh)
 ```
 
 After the first installation, open the management panel with:
