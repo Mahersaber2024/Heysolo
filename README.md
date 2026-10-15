@@ -1,340 +1,87 @@
-# heysolo_bot – Telegram Bridge for the ACHCMBias EA
+# HeySolo Manager
 
-A Telegram bot (`@heysolo_bot`) that bridges MetaTrader 5 and Telegram for the
-ACHCMBias EA: it relays the EA's logs/trade events/prop-account snapshots to a
-Telegram group, and lets you flip Manual/Auto mode, start/stop trading, and set
-per-symbol bias straight from Telegram - all through inline "glass" buttons,
-no commands to memorize.
+**English** | [فارسی](README.fa.md)
 
-## Install (one command, one installer)
+HeySolo Manager installs and manages MetaTrader 5 terminals on Debian and Ubuntu Linux servers through Wine and a lightweight desktop environment.
+
+## Features
+
+- Automated server preparation for Debian/Ubuntu
+- MetaTrader 5 installation and terminal management
+- Wine, VNC, desktop, wallpaper, and taskbar setup
+- Start, stop, restart, remove, and recover terminals
+- MQL5 asset synchronization for Experts, Include, Indicators, sets, and Templates
+- Backup and restore support
+- Diagnostics, logs, updates, and clean uninstall
+- Support for multiple MT5 terminals on one server
+
+## Minimum system requirements
+
+For running **one MetaTrader 5 terminal** through Wine, the bare minimum is:
+
+- Debian 11+/Ubuntu 22.04+ on x86_64
+- 1 vCPU
+- 1 GB RAM
+- 2 GB swap recommended
+- 20 GB free disk space
+- Root access or a user with `sudo`
+- Network access for package and installer downloads
+
+These are practical minimums for one terminal. More CPU and RAM may be required for heavy Expert Advisors, multiple charts, backtesting, or a desktop/VNC session.
+
+## Installation
+
+Run the main installer as root:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main/heysolo.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Mahersaber2024/HeysoloPublic/main/heysolo.sh)
 ```
 
-This is the **only** installer you need to run. It installs the `heysolo`
-command, so every time after the first you can just run:
+After the first installation, open the management panel with:
 
 ```bash
 sudo heysolo
 ```
 
-Everything else - the Telegram bot, the MT5 terminals over VNC, the desktop,
-and uninstalling any of it - is done from inside this one panel:
+The panel prepares the server, installs or adds MT5 terminals, configures the Linux desktop layer, and provides maintenance and uninstall options. Do not run the helper scripts directly unless you are performing advanced maintenance.
 
-```
- bot [state]   vnc [state]   display [state]   terminals N
+## Manual installation from a local checkout
 
- TERMINALS  1..9 start/stop   R1 restart   D1 desktop on/off   K1 remove
-            A start all       Z stop all   V vnc on/off        W window to front
-
- SETUP      P prepare server   I install/add terminal   M sync MQL5 files
- BOT        T bot setup        B restart bot             L bot logs
- SYSTEM     ?  doctor          U update scripts          X uninstall   Q quit
+```bash
+git clone https://github.com/Mahersaber2024/HeysoloPublic.git
+cd HeysoloPublic
+sudo bash heysolo.sh
 ```
 
-- **T** - runs the bot installer/manager (`install.sh`) for the Telegram side.
-- **P** then **I** - prepares the server and installs/adds an MT5 terminal
-  (`mt5.sh`), one wizard per terminal, over VNC.
-- **X** - opens the uninstaller (`uninstall.sh`) with options to remove the
-  bot, the MT5 terminals + desktop, or everything.
-- **F** - resets only the MT5 desktop layer, removing its generated configs, icons, wallpaper, taskbar state and caches, then rebuilding it. It does not remove the Telegram bot, terminals, Wine prefixes or MQL5 assets.
-- **U** - re-downloads the latest version of all the scripts below, plus
-  the bot's own files. It never
-  reads or writes `/opt/heysolo/bot/MT5`, so your EAs, sets and templates are
-  never changed by an update.
+## Connecting with VNC
 
-Under the hood, `heysolo.sh` downloads `install.sh`, `mt5.sh`, and
-`uninstall.sh` once into `/opt/heysolo/scripts` and calls whichever one a
-menu option needs - so nothing about how the bot or the terminals actually
-get installed lives in more than one place. You should not need to download
-or run any of those three scripts directly; if you find yourself doing that,
-use the matching panel option instead.
+To see the MT5 desktop, install a VNC viewer on your own computer and connect to `SERVER_IP:5901` (or the port shown in the panel) with the VNC password you set during setup.
 
-### Desktop layer (part of `mt5.sh`)
+- VNC Viewer 7.15.1 (direct download): https://dl2.soft98.ir/soft/u-v/VNC.Connect.Viewer.7.15.1.rar?1791992033
+- Official RealVNC download: https://www.realvnc.com/en/connect/download/viewer/
 
-Everything about how the VNC desktop looks (wallpaper, icons, taskbar) is
-defined inside `mt5.sh` itself. It isn't an installer in its own
-right, so it doesn't get its own top-level script - it's a block of plain
-functions (`desktop_*`) that `mt5.sh` uses while setting up a
-terminal, and that the `heysolo` panel picks up the same way it picks up
-every other MT5 panel function. It's only ever driven through the panel
-(`D1` to toggle a terminal on/off the desktop, `W` to restore a window, `M`
-for syncing MQL5 assets) or through `sudo bash mt5.sh desktop
-<icons|wallpaper|taskbar|start|doctor|...>` for one-off maintenance.
-
-## Installation Path
-
-Everything lives under one project directory, `/opt/heysolo`:
+## Installation paths
 
 ```text
-/opt/heysolo/scripts   heysolo.sh, install.sh, mt5.sh, uninstall.sh
-/opt/heysolo/bot       bot files, heysolo_settings.json, the Python venv
-/opt/heysolo/bot/MT5   MQL5 assets (Experts, Include, Indicators, set, HeySoloATM_Sets, Templates)
-/opt/heysolo/bot/Meta5       MT5 / prop-firm installers (repo Meta5/ + your own uploads)
+/opt/heysolo/scripts       Manager scripts
+/opt/heysolo/bot           Runtime files and settings
+/opt/heysolo/bot/MT5       MQL5 assets
+/opt/heysolo/bot/Meta5     MT5 installers and local terminal files
+/etc/heysolo-mt5           Terminal state and configuration
 ```
 
-The bot's own path is remembered in `/etc/heysolo-bot.install_dir`, so if you
-ever change it during setup, every panel action still finds it correctly.
+## Terminal management
 
-MQL5 assets live in `MT5/` **inside** the bot directory, mirroring the
-repository's own `MT5/` layout. Because of that:
+Use the panel to prepare the server, install or add terminals, start and stop terminals, toggle desktop visibility, synchronize MQL5 files, run diagnostics, update scripts, and uninstall selected components.
 
-- Removing only the Telegram bot (panel **X** → bot, or `uninstall.sh --bot`)
-  wipes everything in `/opt/heysolo/bot` **except** `MT5/` - your Experts,
-  Include, Indicators, set and Templates files are kept in place, and the
-  empty `bot` shell is left behind only to hold them.
-- The same protection applies when the launcher directory is cleaned up after
-  the last component is removed: `/opt/heysolo/bot/Meta5` and
-  `/opt/heysolo/bot/MT5` both survive.
-- **Updates never touch `MT5/`.** The repo's MQL5 assets are downloaded
-  exactly once, during the first install. After that, panel **U** (update
-  scripts) and **Bot Management → Update Bot** set `MT5/` aside before
-  `git fetch` + `git reset --hard origin/main` and put it back untouched, so
-  nothing in it is overwritten, added or deleted - even if those same files
-  changed in the repository. If the update fails or is interrupted, `MT5/` is
-  restored anyway.
-- `mt5.sh`'s asset download (panel **I**, or `mt5.sh mql5-fetch`) also skips
-  every file that already exists locally, so re-running it or adding another
-  terminal later can only fill in missing files. To deliberately pull the
-  repo's versions back over your own, run
-  `sudo bash mt5.sh mql5-fetch --force`.
+MQL5 assets are preserved during routine updates and are not overwritten unless you explicitly request a forced synchronization. Review every installer prompt before allowing changes to a production server.
 
-## Different-Server Setup (Windows MT5 + Linux Bot)
+## Security
 
-MT5 always runs on Windows, but the bot itself normally runs on a Linux
-server. In that case the bot needs network access to MT5's shared
-`Common\Files` folder - that's the only place the EA and the bot exchange
-files (Outbox events, Control files, the prop dashboard). If both run on the
-**same** server (including the VNC-based MT5 terminals installed via the
-`heysolo` panel), skip this whole section - the bot auto-detects the folder.
-
-### 1. On the Windows server (MT5 side) - share the folder
-
-1. Open the Common\Files folder. Press `Win+R` and run:
-   ```text
-   %APPDATA%\MetaQuotes\Terminal\Common\Files
-   ```
-2. Right-click the `Files` folder itself (not its parent `Common`) →
-   **Properties → Sharing → Advanced Sharing** → check **Share this folder**.
-   Only `Files` needs to be shared - the rest of `Common` should stay
-   private.
-3. Click **Permissions** and give the account you'll use from Linux
-   **Full Control** (Read/Write - the EA and the bot both need to write files
-   here).
-4. Under **Security** (same Properties dialog), also grant that user
-   **Modify** permission on the NTFS level - Sharing alone isn't enough.
-5. Make sure **File and Printer Sharing** is allowed through Windows Firewall
-   (Control Panel → Windows Defender Firewall → Allow an app through
-   firewall).
-6. Note the machine's local IP (`ipconfig`) and the share name, e.g.
-   `\\192.168.1.50\Files`.
-
-Use a dedicated Windows user for this share (not your personal login) and
-give it a strong password - this account is basically an open door to that
-folder from the network.
-
-### 2. On the Linux server (bot side) - mount the share
-
-1. Install the CIFS/SMB client:
-   ```bash
-   sudo apt-get update
-   sudo apt-get install -y cifs-utils
-   ```
-2. Create a mount point:
-   ```bash
-   sudo mkdir -p /mnt/mt5-common
-   ```
-3. Store the Windows credentials outside the mount command (so they don't
-   show up in `ps`/shell history):
-   ```bash
-   sudo tee /etc/mt5-share.credentials > /dev/null <<'EOF'
-   username=YOUR_WINDOWS_USER
-   password=YOUR_WINDOWS_PASSWORD
-   domain=WORKGROUP
-   EOF
-   sudo chmod 600 /etc/mt5-share.credentials
-   ```
-4. Mount the share:
-   ```bash
-   sudo mount -t cifs //192.168.1.50/Files /mnt/mt5-common \
-     -o credentials=/etc/mt5-share.credentials,uid=root,gid=root,iocharset=utf8,vers=3.0
-   ```
-   Replace `192.168.1.50` and `Files` with the IP/share name from step 1.6.
-5. Verify the mount can see the EA's data:
-   ```bash
-   ls /mnt/mt5-common/TelegramBridge
-   ```
-6. Make the mount survive reboots by adding it to `/etc/fstab`:
-   ```text
-   //192.168.1.50/Files /mnt/mt5-common cifs credentials=/etc/mt5-share.credentials,uid=root,gid=root,iocharset=utf8,vers=3.0,_netdev 0 0
-   ```
-
-### 3. Point the bot at the mounted folder
-
-Since the share itself *is* the `Files` folder, `common_files_dir` points
-straight at the mount (this is what `heysolo_settings.py` expects - it's
-the same folder MT5 calls `Common\Files`):
-
-```json
-"common_files_dir": "/mnt/mt5-common"
-```
-
-You can set this during the bot setup step (**T** in the panel), by editing
-`heysolo_settings.json` directly, or later from inside Telegram via the
-**⚙️ Settings** menu. Restart the bot after changing it manually:
-
-```bash
-systemctl restart heysolo-bot
-```
-
-### Troubleshooting
-
-- **Mount fails with "Permission denied"** - double-check the Windows user
-  has both Share and NTFS (Security tab) permissions, not just one.
-- **Mount fails with "Protocol not negotiated"** - your Windows version may
-  require a different `vers=` (try `vers=2.1` or `vers=1.0`, though SMB1
-  should be avoided if possible).
-- **Files appear but the bot can't write** - check `uid=`/`gid=` in the mount
-  options match the user running the `heysolo-bot` service (it runs as
-  `root` by default).
-- **Latency / dropped connections** - keep both servers on the same LAN or a
-  low-latency VPN (e.g. WireGuard) between them; the bot polls the Outbox
-  folder every `outbox_poll_seconds` (default 3s), so a slow or flaky link
-  will delay trade/log updates.
-
-## Copy Server (Server Copier for the EA)
-The bot also runs the server the EA's **Server Copier** talks to - no extra
-service and no extra Python packages (it's plain `http.server`, in `copier/`).
-Everything is set from Telegram: **Admin → 📡 Copy Server**.
-
-- **▶ Turn on** starts it (default port `80`; if `ufw` is active the port is
- opened automatically).
-- **📡 Channels → ＋ New channel** creates a channel. One channel = one
- Transmitter + any number of Receivers. Each channel shows two ready links:
- - **Transmitter link** `http://SERVER_IP/tx/<token>` → put in `ServerURL` on
- the Transmitter account (only this link can send signals).
- - **Receiver link** `http://SERVER_IP/rx/<token>` → put in `ServerURL` on
- every Receiver account (read only).
-- In every MT5: **Tools → Options → Expert Advisors → Allow WebRequest for
- listed URL** and add `http://SERVER_IP` (shown in the bot).
-- **📨 Send links**, **🧪 Test**, **📋 Signals**, **🔑 New links** (rotate
- tokens), **🧹 Clear signals**, **✎ Rename**, **✕ Delete** per channel.
-- Settings: **Port**, **Address** (IP/domain or `https://domain` when a proxy
- is in front), **Keep closed** (how long a closed trade stays so every
- Receiver sees the close, default 600s) and **Flat sync** (when the
- Transmitter has no open trade, Receivers close their leftover copies).
-
-MT5's `WebRequest()` only connects on port **80** (http) or **443** (https).
-Keep port 80, or put nginx/Caddy with HTTPS on 443 in front and set the
-Address to `https://your-domain`.
-
-Settings and channel tokens live in `heysolo_settings.json` (key `copier`);
-live signals are kept in `copier_signals.json` next to it, so a bot restart
-does not lose open trades.
-
-## EA Settings from Telegram (admin approved)
-Users can change the Hey Solo ATM **Control Center** settings that matter for
-trading and copy trading straight from the bot: **⚙️ EA Settings** (main
-keyboard, or the button on any account card).
-- Sections offered: Risk & Lot, Loss & Profit Limits, Trade Limits, Break Even,
- Partial Exit, Trailing Stop, Copier (local + server), News Filter, Sessions,
- Reverse on SL, Fast Scalp, Prop Account. The **Display**, **Heysolo**,
- **Check List** and **Telegram/Web** tabs, all colors and pure layout values are
- never exposed - the EA refuses them even if a file asks for them.
-- Flow: pick chart → section → setting (toggle, option list, ± steps or type a
- value) → **Review & send** → every admin gets the request with
- **✔ Approve / ✖ Reject** → on approve the bot drops the change for the EA →
- the EA applies it live (same as editing the panel), saves it, and confirms →
- user and admins see **✅ Applied in the EA**.
-- Requests from an admin skip the approval step.
-- Requirement: in the EA set **Telegram › Send Via = SEND PY BOT** (the same
- switch that already sends logs/trades through the bot). Each chart shows up
- separately (settings are per chart symbol). If the chart is offline, approved
- changes wait and apply as soon as the EA runs again.
-- Files live in `Common\Files\TelegramBridge\EASettings`
- (`State_*` from the EA, `Apply_*` from the bot, `Ack_*` back from the EA);
- request history is kept in `ea_settings_requests.json` next to
- `heysolo_settings.json`.
-
-## ACHCMBias Signals over API (EAs on different servers)
-Hey Solo [ATM] normally reads the ACHCMBias scanner from a signed file in
-`Common\Files\HeySolo_ACHCM`, which only works when both EAs run on the same
-PC. The bot can now relay that same signed feed, so ACHCMBias and Hey Solo can
-run anywhere. Everything is set from Telegram: **Admin → 🧭 ACHCMBias API**.
-- **＋ New channel** gives two links:
-  - **Transmitter** `http://SERVER/bx/<token>` → ACHCMBias POSTs its feed here.
-  - **Receiver** `http://SERVER/bs/<token>` → Hey Solo GETs it (read only).
-- **📤 ACHCMBias account / 📥 Hey Solo account** - pick the MT5 login; the bot
-  writes the link to `Common\Files\TelegramBridge\Control\BiasFeed_<login>.txt`
-  (`TX_URL=` / `RX_URL=`) and the EAs pick it up within ~5s. For a terminal
-  the bot can't see, paste the link by hand: ACHCMBias input **Bias API URL**,
-  or Hey Solo Control Center › Copier › **ACHCMBias over API** + **ACHCMBias
-  API URL** (also editable from ⚙️ EA Settings).
-- Allow WebRequest for the server address in **both** MT5.
-- It is its **own server**, fully independent from the Copy Server: own
-  **▶ Turn on / ■ Turn off**, **Port** (default 8080), **Address**, channels and
-  tokens (settings key `biasfeed`). It always uses a different port than the
-  Copy Server (80) - the bot refuses the Copy Server's port - so the two never
-  mix. Allow WebRequest with the port, e.g. `http://SERVER_IP:8080`.
-- The bot never signs or edits a line: the salt stays inside the EAs. Staleness
-  uses the relay's own age, so server clocks/time zones don't matter. When
-  ACHCMBias stops (or is silent for 2 min) Hey Solo blocks new trades as before.
-- Local file mode keeps working at the same time; the freshest valid feed wins.
-
-## Service Management
-
-```bash
-systemctl start heysolo-bot
-systemctl stop heysolo-bot
-systemctl restart heysolo-bot
-systemctl status heysolo-bot
-```
-
-View logs:
-
-```bash
-journalctl -u heysolo-bot -f
-```
-
-(Both are also available from the panel: **B** restarts the bot, **L** tails
-its logs.)
-
-### Desktop / taskbar logs (VNC side)
-
-The `tint2` taskbar (on the `mt5user` VNC desktop) logs its own stdout/stderr
-instead of discarding it, so you can watch it live if the taskbar ever fails
-to start or renders wrong:
-
-```bash
-tail -f /home/mt5user/.heysolo/logs/tint2.log
-```
-
-## Repository Layout
-
-```text
-BG/heysolo-des.png     desktop wallpaper used on the VNC desktop
-Meta5/*.exe              MT5 / prop-firm terminal installers (-> /opt/heysolo/bot/Meta5)
-heysolo.sh             the installer - the only entry point end users run
-install.sh             bot installer, called by heysolo.sh (panel: T)
-mt5.sh                 MT5/VNC installer, called by heysolo.sh (panel: P, I) -
-                        also holds the desktop_* functions (wallpaper, icons,
-                        taskbar); that part is library code, not an installer
-uninstall.sh           uninstall component, called by heysolo.sh (panel: X)
-heysolo_bot.py         the bot itself
-heysolo_settings.py    settings handling
-biasfeed/              ACHCMBias -> Hey Solo signal relay (Admin › ACHCMBias API)
-```
-
-## Bot Commands
-
-- `/start` – Open the main menu (and, before an admin is claimed, the
-  "🔑 Claim bot" button).
-
-Everything else - admins, the reporting chat, the symbol list, status - lives
-behind the **⚙️ Settings** button in the main menu as inline buttons. There are
-no other commands to type.
+Never commit passwords, access tokens, private keys, certificates, customer data, or live server settings. Use a dedicated server user, restrict VNC and remote administration ports, keep the operating system updated, and review shell scripts before running them as root.
 
 ## License
 
-MIT License. See [`LICENSE`](LICENSE) for the full license text.
+This project is distributed under the **HeySolo Custom Source-Available License** in [`LICENSE`](LICENSE). You may install and use it for personal or internal purposes and fork it for development, but redistribution, resale, public hosting, and commercial use require written permission from the copyright holder.
+
+The license is intentionally source-available, not an OSI-approved open-source license. MetaTrader 5, Wine, Linux distributions, and any third-party assets remain subject to their own licenses.

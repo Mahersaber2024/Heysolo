@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
 set -uo pipefail
-REPO_RAW="https://raw.githubusercontent.com/Mahersaber2024/Heysolo/main"
+REPO_RAW="https://raw.githubusercontent.com/Mahersaber2024/HeysoloPublic/main"
 SCRIPTS_DIR="/opt/heysolo/scripts"
 CLI_PATH="/usr/local/bin/heysolo"
-SCRIPT_LIST=(heysolo.sh install.sh mt5.sh uninstall.sh win/wine-compliance.sh win/test-compliance.sh win/install-compliance.sh)
+SCRIPT_LIST=(heysolo.sh install.sh mt5.sh uninstall.sh)
 if [[ -t 1 ]]; then
 RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
 CYAN=$'\033[0;36m'; DIM=$'\033[2m'; NC=$'\033[0m'; BOLD=$'\033[1m'
@@ -26,6 +26,7 @@ curl -fsSL "${REPO_RAW}/$1" -o "${SCRIPTS_DIR}/$1.part" 2>/dev/null \
 }
 ensure_scripts(){
 mkdir -p "${SCRIPTS_DIR}"
+rm -rf "${SCRIPTS_DIR}/win" 2>/dev/null || true
 local f
 for f in "${SCRIPT_LIST[@]}"; do
 [[ -s "${SCRIPTS_DIR}/${f}" ]] && continue
@@ -156,7 +157,6 @@ say "  ${CYAN}TERMINALS${NC}  [${BOLD}1..9${NC}] start/stop   [${BOLD}R1${NC}] r
 say "             [${BOLD}A${NC}] start all    [${BOLD}Z${NC}] stop all   [${BOLD}V${NC}] vnc on/off"
 echo
 say "  ${CYAN}SETUP${NC}      [${BOLD}P${NC}] prepare server   [${BOLD}I${NC}] install/add terminal   [${BOLD}M${NC}] sync MQL5 files"
-say "             [${BOLD}S${NC}] wine compliance  ${DIM}standardize Windows environment for MT5${NC}"
 echo
 say "  ${CYAN}BOT${NC}        [${BOLD}T${NC}] bot setup        [${BOLD}B${NC}] restart bot            [${BOLD}L${NC}] bot logs"
 echo
@@ -246,12 +246,6 @@ fi
 sleep 1 ;;
 p)  run_mt5 step1; pause ;;
 i)  run_mt5 step2; pause ;;
-s)  if [[ -s "${SCRIPTS_DIR}/win/wine-compliance.sh" ]]; then
-bash "${SCRIPTS_DIR}/win/wine-compliance.sh"
-else
-warn "win/wine-compliance.sh not found - press u to update scripts."
-fi
-pause ;;
 m)  if declare -F sync_mql5_assets_all >/dev/null 2>&1; then
 declare -F ensure_mql5_local_dir >/dev/null 2>&1 && ensure_mql5_local_dir
 declare -F ensure_heysolo_sets_local_dir >/dev/null 2>&1 && ensure_heysolo_sets_local_dir
