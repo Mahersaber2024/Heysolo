@@ -2,6 +2,8 @@
 
 <img src="BG/heysolo-banner.png" alt="HeySolo" width="100%">
 
+<hr>
+
 نصب و مدیریت متاتریدر ۵ روی سرورهای Debian/Ubuntu، با Wine و یک دسکتاپ سبک.
 
 [![Manager](https://img.shields.io/badge/Manager-Linux%20VPS-0f172a?style=for-the-badge&logo=linux&logoColor=white)](#نصب)
