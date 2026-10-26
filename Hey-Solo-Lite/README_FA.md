@@ -25,12 +25,15 @@
 
 **۲.۱ دیتابیس**
 1. **Storage & Databases → D1 SQL Database → Create Database**، نام: `heysolo-lite`.
-2. بازش کنید ← **Console**. این دو فایل را پشت‌سرهم جای‌گذاری و **Execute** کنید:
-   - `worker/migrations/0001_init.sql`
-   - `worker/migrations/0002_trade_journal.sql`
+2. بازش کنید ← **Console**. فایل `worker/migrations/0001_init.sql` را جای‌گذاری و **Execute** کنید.
 
-**۲.۲ فضای ذخیره‌ی عکس‌ها**
-**Storage & Databases → R2 → Create bucket**، نام: `heysolo-journal`.
+**۲.۲ دیتابیس ژورنال (جدا از ربات)**
+1. دوباره **D1 SQL Database → Create Database**، نام: `heysolo-journal`.
+2. اختیاری: بازش کنید ← **Console** و فایل `worker/journal-db/journal.sql` را اجرا کنید. (خود Worker هم جدول‌ها را می‌سازد.)
+
+ژورنال معاملات، یادداشت‌ها، کلید داشبورد و عکس‌ها فقط در `heysolo-journal` هستند و داده‌ی ربات در `heysolo-lite` می‌ماند. بدون R2 و بدون کارت.
+
+**فضای بیشتر (اختیاری و رایگان).** هر دیتابیس رایگان D1 پانصد مگابایت جا دارد (این بسته تا ۴۳۰ مگابایت از هر کدام را استفاده می‌کند). پلن رایگان ۱۰ دیتابیس اجازه می‌دهد، پس می‌توانید تا ۸ دیتابیس ژورنال دیگر بسازید: `heysolo-journal-2` … `heysolo-journal-9`. هرکدام را در مرحله‌ی بعد با نام `JOURNAL_DB2` … `JOURNAL_DB9` به Worker وصل کنید. عکس‌ها پشت‌سرهم دیتابیس‌ها را پر می‌کنند. وقتی همه پر شدند، **قدیمی‌ترین دیتابیس خالی و دوباره استفاده می‌شود**: عکس‌های قدیمی آن از بین می‌روند ولی خود معامله‌ها و اعدادشان می‌مانند. بعداً هیچ binding را حذف نکنید، وگرنه عکس‌های داخل آن در دسترس نیست.
 
 **۲.۳ Worker**
 1. **Workers & Pages → Create application → Start with Hello World**، نام: `heysolo-lite`، **Deploy**. نام را کوتاه بگذارید و بعداً تغییر ندهید.
@@ -41,7 +44,8 @@
 | نوع | نام متغیر | انتخاب |
 |---|---|---|
 | D1 database | `DB` | `heysolo-lite` |
-| R2 bucket | `JOURNAL_R2` | `heysolo-journal` |
+| D1 database | `JOURNAL_DB` | `heysolo-journal` |
+| D1 database (اختیاری) | `JOURNAL_DB2` … `JOURNAL_DB9` | `heysolo-journal-2` … `heysolo-journal-9` |
 
 **۲.۵ متغیرها** (Worker ← **Settings → Variables and Secrets → Add**)
 
@@ -134,6 +138,7 @@ https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<WORKER_
 | حساب در ربات دیده نمی‌شود | `Send Via`، مقدار `WorkerURL`/`WorkerKey` در Bridge و لیست WebRequest را بررسی کنید. |
 | سایت `online error` می‌دهد | آدرس Worker باید با `https://` شروع شود و `/` آخر نداشته باشد. Login و کلید را بررسی کنید. |
 | سایت `account_not_found` می‌دهد | MT5 و `HeySolo_Bridge` را روشن کنید و منتظر اولین ارسال بمانید. |
-| عکس‌ها نمی‌آیند | نام binding باید دقیقاً `JOURNAL_R2` باشد؛ بعد دوباره Deploy کنید. |
+| خطای `journal_db_binding_missing` در سایت یا ربات | binding از نوع D1 با نام دقیق `JOURNAL_DB` (دیتابیس `heysolo-journal`) را اضافه و دوباره Deploy کنید. |
+| عکس‌ها نمی‌آیند | binding با نام `JOURNAL_DB` را بررسی و دوباره Deploy کنید. عکس‌های بزرگ‌تر از ۳ مگابایت ذخیره نمی‌شوند، ولی خود معامله ثبت می‌شود. |
 | سایت فارسی 404 می‌دهد | آدرس را با `Index.fa.html` و **I** بزرگ بزنید. |
 | لاگ کپی `HTTP code: 403` می‌دهد | لینک Master روی حساب Master و لینک Follower روی حساب‌های کپی‌کننده باشد. در صورت نیاز در Copy Hub لینک‌ها را Rotate و لینک‌های جدید را وارد کنید. |

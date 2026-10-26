@@ -25,12 +25,15 @@ Open [dash.cloudflare.com](https://dash.cloudflare.com).
 
 **2.1 Database**
 1. **Storage & Databases → D1 SQL Database → Create Database**, name: `heysolo-lite`.
-2. Open it → **Console**. Paste and **Execute** these two files, one after the other:
-   - `worker/migrations/0001_init.sql`
-   - `worker/migrations/0002_trade_journal.sql`
+2. Open it → **Console**. Paste and **Execute** `worker/migrations/0001_init.sql`.
 
-**2.2 Screenshot storage**
-**Storage & Databases → R2 → Create bucket**, name: `heysolo-journal`.
+**2.2 Journal database (separate from the bot)**
+1. Again **D1 SQL Database → Create Database**, name: `heysolo-journal`.
+2. Optional: open it → **Console** and run `worker/journal-db/journal.sql`. (The worker also creates the tables by itself.)
+
+The trade journal, notes, dashboard keys and screenshots live only in `heysolo-journal`. The bot data stays in `heysolo-lite`. No R2 and no card needed.
+
+**More space (optional, free).** Each free D1 database holds 500 MB (this package uses up to 430 MB of each). The free plan allows 10 databases, so you can create up to 8 more journal databases: `heysolo-journal-2` … `heysolo-journal-9`. Add each one as a binding (next step) named `JOURNAL_DB2` … `JOURNAL_DB9`. Screenshots fill them one after another. When all are full, the **oldest database is emptied and reused**: its old screenshots disappear, the trades and their numbers stay. Do not remove a binding later, or the screenshots in it become unavailable.
 
 **2.3 Worker**
 1. **Workers & Pages → Create application → Start with Hello World**, name: `heysolo-lite`, **Deploy**. Keep the name short and do not change it later.
@@ -41,7 +44,8 @@ Open [dash.cloudflare.com](https://dash.cloudflare.com).
 | Type | Variable name | Choose |
 |---|---|---|
 | D1 database | `DB` | `heysolo-lite` |
-| R2 bucket | `JOURNAL_R2` | `heysolo-journal` |
+| D1 database | `JOURNAL_DB` | `heysolo-journal` |
+| D1 database (optional) | `JOURNAL_DB2` … `JOURNAL_DB9` | `heysolo-journal-2` … `heysolo-journal-9` |
 
 **2.5 Variables** (Worker → **Settings → Variables and Secrets → Add**)
 
@@ -134,6 +138,7 @@ Keep the links private. If a link is longer than 63 characters, enter it in two 
 | Account not in the bot | Check `Send Via`, the Bridge `WorkerURL`/`WorkerKey`, and the WebRequest list. |
 | Site says `online error` | Worker URL must start with `https://` and not end with `/`. Check Login and key. |
 | Site says `account_not_found` | Start MT5 and `HeySolo_Bridge` and wait for the first sync. |
-| Screenshots do not load | The R2 binding must be named exactly `JOURNAL_R2`; then Deploy again. |
+| Site or bot says `journal_db_binding_missing` | Add the D1 binding named exactly `JOURNAL_DB` (database `heysolo-journal`), then Deploy again. |
+| Screenshots do not load | Check the `JOURNAL_DB` binding and Deploy again. Screenshots over 3 MB are skipped; the trade itself is still saved. |
 | Persian site gives 404 | Use `Index.fa.html` with a capital **I**. |
 | Copy log shows `HTTP code: 403` | Master link on the Master account, Follower link on followers. If needed, rotate the links in Copy Hub and paste the new ones. |
