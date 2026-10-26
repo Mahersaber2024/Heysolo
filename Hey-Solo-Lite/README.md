@@ -2,7 +2,7 @@
 
 A Telegram manager for HeySolo ATM that runs on a Cloudflare Worker. Everything is done in the Cloudflare website, Telegram and MetaTrader. No Node.js, terminal, or VPS.
 
-**Files:** `worker/worker.js` (Worker code) · `worker/migrations/0001_init.sql` (database) · `MT5/Experts/` (MetaTrader files: `HeySolo_ATM.mq5`, `HeySolo_ATM_Helper.mqh`, `HeySolo_Bridge.mq5`).
+**Files:** `worker/worker.js` (Worker code) · `worker/migrations/0001_init.sql` (database) · [`../MT5/Experts/`](../MT5/Experts/) (MetaTrader files: `HeySolo_ATM.mq5`, `HeySolo_ATM_Helper.mqh`, `HeySolo_Bridge.mq5`).
 
 ## 1. Telegram
 
@@ -62,7 +62,7 @@ Give another user access to an account with `/grant <telegram_user_id> <account_
 1. Create a Telegram group, enable **Topics**, add the bot as admin with **Manage Topics**.
 2. In the bot: **📓 Chat Journal → ✎ Set group**, send the group ID (starts with `-100`).
 
-The bot creates the Bias, Trades, Logs and Results topics automatically.
+The bot creates the Trades, Logs, Results and Alerts topics automatically. Bias messages go to Logs.
 
 ## 5. MetaTrader 5
 

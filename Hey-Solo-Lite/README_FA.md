@@ -2,7 +2,7 @@
 
 مدیر تلگرامی HeySolo ATM که روی Cloudflare Worker اجرا می‌شود. همه‌چیز از سایت Cloudflare، تلگرام و متاتریدر انجام می‌شود؛ بدون Node.js، ترمینال یا VPS.
 
-**فایل‌ها:** `worker/worker.js` (کد Worker) · `worker/migrations/0001_init.sql` (دیتابیس) · `MT5/Experts/` (فایل‌های متاتریدر: `HeySolo_ATM.mq5`، `HeySolo_ATM_Helper.mqh`، `HeySolo_Bridge.mq5`).
+**فایل‌ها:** `worker/worker.js` (کد Worker) · `worker/migrations/0001_init.sql` (دیتابیس) · [`../MT5/Experts/`](../MT5/Experts/) (فایل‌های متاتریدر: `HeySolo_ATM.mq5`، `HeySolo_ATM_Helper.mqh`، `HeySolo_Bridge.mq5`).
 
 ## ۱. تلگرام
 
@@ -62,7 +62,7 @@ https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<WORKER_
 1. یک گروه تلگرام بسازید، **Topics** را روشن کنید و ربات را با مجوز **Manage Topics** ادمین کنید.
 2. در ربات: **📓 Chat Journal → ✎ Set group** و شناسه‌ی گروه را بفرستید (با `-100` شروع می‌شود).
 
-تاپیک‌های Bias، Trades، Logs و Results خودکار ساخته می‌شوند.
+تاپیک‌های Trades، Logs، Results و Alerts خودکار ساخته می‌شوند. پیام‌های Bias در Logs می‌آیند.
 
 ## ۵. متاتریدر ۵
 
