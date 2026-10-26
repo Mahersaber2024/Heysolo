@@ -2,8 +2,6 @@
 
 <img src="BG/heysolo-banner.png" alt="HeySolo" width="100%">
 
-# HeySolo Manager
-
 Install and manage MetaTrader 5 on Debian/Ubuntu servers, with Wine and a light desktop.
 
 [![Manager](https://img.shields.io/badge/Manager-Linux%20VPS-0f172a?style=for-the-badge&logo=linux&logoColor=white)](#installation)
