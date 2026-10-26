@@ -21,33 +21,41 @@ Setup guide. You get a Telegram bot for HeySolo ATM, an always-online dashboard 
 
 ## 2. Cloudflare
 
-Open [dash.cloudflare.com](https://dash.cloudflare.com).
+Open [dash.cloudflare.com](https://dash.cloudflare.com) and sign in. Everything below is free and needs no card.
 
-**2.1 Database**
-1. **Storage & Databases → D1 SQL Database → Create Database**, name: `heysolo-lite`.
-2. Open it → **Console**. Paste and **Execute** `worker/migrations/0001_init.sql`.
+**Step 1: Create 2 databases**
 
-**2.2 Journal database (separate from the bot)**
-1. Again **D1 SQL Database → Create Database**, name: `heysolo-journal`.
-2. Optional: open it → **Console** and run `worker/journal-db/journal.sql`. (The worker also creates the tables by itself.)
+Left menu → **Storage & databases → D1 SQL Database → Create Database**. Do it twice, one by one:
 
-The trade journal, notes, dashboard keys and screenshots live only in `heysolo-journal`. The bot data stays in `heysolo-lite`. No R2 and no card needed.
-
-**More space (optional, free).** Each free D1 database holds 500 MB (this package uses up to 430 MB of each). The free plan allows 10 databases, so you can create up to 8 more journal databases: `heysolo-journal-2` … `heysolo-journal-9`. Add each one as a binding (next step) named `JOURNAL_DB2` … `JOURNAL_DB9`. Screenshots fill them one after another. When all are full, the **oldest database is emptied and reused**: its old screenshots disappear, the trades and their numbers stay. Do not remove a binding later, or the screenshots in it become unavailable.
-
-**2.3 Worker**
-1. **Workers & Pages → Create application → Start with Hello World**, name: `heysolo-lite`, **Deploy**. Keep the name short and do not change it later.
-2. **Edit code** → replace everything with `worker/worker.js` → **Deploy**.
-
-**2.4 Bindings** (Worker → **Settings → Bindings → Add**)
-
-| Type | Variable name | Choose |
+| # | Database name | What it is for |
 |---|---|---|
-| D1 database | `DB` | `heysolo-lite` |
-| D1 database | `JOURNAL_DB` | `heysolo-journal` |
-| D1 database (optional) | `JOURNAL_DB2` … `JOURNAL_DB9` | `heysolo-journal-2` … `heysolo-journal-9` |
+| 1 | `heysolo-lite` | the bot |
+| 2 | `heysolo-journal` | trade journal + screenshots |
 
-**2.5 Variables** (Worker → **Settings → Variables and Secrets → Add**)
+**Step 2: Prepare the bot database**
+
+1. Open `heysolo-lite` → **Console**.
+2. Open the file `worker/migrations/0001_init.sql`, copy everything, paste it into the Console, press **Execute**.
+
+The second database (`heysolo-journal`) needs nothing, it prepares itself.
+
+**Step 3: Create the Worker**
+
+1. **Workers & Pages → Create application → Start with Hello World**. Name: `heysolo-lite` → **Deploy**. Keep the name short and never change it later.
+2. Press **Edit code**, delete everything, paste the whole file `worker/worker.js` → **Deploy**.
+
+**Step 4: Connect the 2 databases to the Worker**
+
+Worker → **Settings → Bindings → Add → D1 database**. Add two. The **Variable name must be typed exactly** like this:
+
+| Variable name | Database to choose |
+|---|---|
+| `DB` | `heysolo-lite` |
+| `JOURNAL_DB` | `heysolo-journal` |
+
+**Step 5: Add the settings**
+
+Worker → **Settings → Variables and Secrets → Add**:
 
 | Type | Name | Value |
 |---|---|---|
@@ -58,7 +66,28 @@ The trade journal, notes, dashboard keys and screenshots live only in `heysolo-j
 
 Press **Save**, then **Deploy**.
 
-**2.6 Check:** open `https://<WORKER_HOST>/health`. You should see `"ok":true`.
+**Step 6: Check**
+
+Open `https://<WORKER_HOST>/health`. You should see `"ok":true`.
+
+**Optional, later: more space for screenshots (free)**
+
+One database holds about 430 MB of screenshots. If you want more, create extra databases the same way as in Step 1 and connect each one as in Step 4. The free plan allows 10 databases, so you can add up to 8:
+
+| Database name | Variable name (type exactly) |
+|---|---|
+| `heysolo-journal-2` | `JOURNAL_DB2` |
+| `heysolo-journal-3` | `JOURNAL_DB3` |
+| `heysolo-journal-4` | `JOURNAL_DB4` |
+| `heysolo-journal-5` | `JOURNAL_DB5` |
+| `heysolo-journal-6` | `JOURNAL_DB6` |
+| `heysolo-journal-7` | `JOURNAL_DB7` |
+| `heysolo-journal-8` | `JOURNAL_DB8` |
+| `heysolo-journal-9` | `JOURNAL_DB9` |
+
+You can add them one at a time, in any amount. Press **Deploy** after each change. The extra databases need no SQL.
+
+How it works: screenshots fill the databases one after another. When all are full, the **oldest database is emptied and reused**. Its old screenshots disappear; the trades and their numbers stay. Never remove a connected database later, or its screenshots can no longer be shown.
 
 ## 3. Connect the bot
 

@@ -21,33 +21,41 @@
 
 ## ۲. Cloudflare
 
-وارد [dash.cloudflare.com](https://dash.cloudflare.com) شوید.
+وارد [dash.cloudflare.com](https://dash.cloudflare.com) شوید. همه‌ی کارهای زیر رایگان است و کارت نمی‌خواهد.
 
-**۲.۱ دیتابیس**
-1. **Storage & Databases → D1 SQL Database → Create Database**، نام: `heysolo-lite`.
-2. بازش کنید ← **Console**. فایل `worker/migrations/0001_init.sql` را جای‌گذاری و **Execute** کنید.
+**مرحله ۱: ساخت ۲ دیتابیس**
 
-**۲.۲ دیتابیس ژورنال (جدا از ربات)**
-1. دوباره **D1 SQL Database → Create Database**، نام: `heysolo-journal`.
-2. اختیاری: بازش کنید ← **Console** و فایل `worker/journal-db/journal.sql` را اجرا کنید. (خود Worker هم جدول‌ها را می‌سازد.)
+منوی سمت چپ ← **Storage & databases → D1 SQL Database → Create Database**. دو بار و یکی‌یکی بسازید:
 
-ژورنال معاملات، یادداشت‌ها، کلید داشبورد و عکس‌ها فقط در `heysolo-journal` هستند و داده‌ی ربات در `heysolo-lite` می‌ماند. بدون R2 و بدون کارت.
-
-**فضای بیشتر (اختیاری و رایگان).** هر دیتابیس رایگان D1 پانصد مگابایت جا دارد (این بسته تا ۴۳۰ مگابایت از هر کدام را استفاده می‌کند). پلن رایگان ۱۰ دیتابیس اجازه می‌دهد، پس می‌توانید تا ۸ دیتابیس ژورنال دیگر بسازید: `heysolo-journal-2` … `heysolo-journal-9`. هرکدام را در مرحله‌ی بعد با نام `JOURNAL_DB2` … `JOURNAL_DB9` به Worker وصل کنید. عکس‌ها پشت‌سرهم دیتابیس‌ها را پر می‌کنند. وقتی همه پر شدند، **قدیمی‌ترین دیتابیس خالی و دوباره استفاده می‌شود**: عکس‌های قدیمی آن از بین می‌روند ولی خود معامله‌ها و اعدادشان می‌مانند. بعداً هیچ binding را حذف نکنید، وگرنه عکس‌های داخل آن در دسترس نیست.
-
-**۲.۳ Worker**
-1. **Workers & Pages → Create application → Start with Hello World**، نام: `heysolo-lite`، **Deploy**. نام را کوتاه بگذارید و بعداً تغییر ندهید.
-2. **Edit code** ← همه‌چیز را با `worker/worker.js` جایگزین کنید ← **Deploy**.
-
-**۲.۴ اتصال‌ها (Bindings)** (Worker ← **Settings → Bindings → Add**)
-
-| نوع | نام متغیر | انتخاب |
+| # | نام دیتابیس | برای چیست |
 |---|---|---|
-| D1 database | `DB` | `heysolo-lite` |
-| D1 database | `JOURNAL_DB` | `heysolo-journal` |
-| D1 database (اختیاری) | `JOURNAL_DB2` … `JOURNAL_DB9` | `heysolo-journal-2` … `heysolo-journal-9` |
+| ۱ | `heysolo-lite` | ربات |
+| ۲ | `heysolo-journal` | ژورنال معاملات و عکس‌ها |
 
-**۲.۵ متغیرها** (Worker ← **Settings → Variables and Secrets → Add**)
+**مرحله ۲: آماده‌کردن دیتابیس ربات**
+
+1. `heysolo-lite` را باز کنید ← **Console**.
+2. فایل `worker/migrations/0001_init.sql` را باز کنید، همه‌ی آن را کپی کنید، در Console جای‌گذاری کنید و **Execute** را بزنید.
+
+دیتابیس دوم (`heysolo-journal`) به هیچ کاری نیاز ندارد و خودش آماده می‌شود.
+
+**مرحله ۳: ساخت Worker**
+
+1. **Workers & Pages → Create application → Start with Hello World**. نام: `heysolo-lite` ← **Deploy**. نام را کوتاه بگذارید و بعداً هرگز تغییر ندهید.
+2. **Edit code** را بزنید، همه‌چیز را پاک کنید و کل فایل `worker/worker.js` را جای‌گذاری کنید ← **Deploy**.
+
+**مرحله ۴: اتصال ۲ دیتابیس به Worker**
+
+Worker ← **Settings → Bindings → Add → D1 database**. دو مورد اضافه کنید. **نام متغیر را دقیقاً** همین‌طور تایپ کنید:
+
+| نام متغیر | دیتابیسی که انتخاب می‌کنید |
+|---|---|
+| `DB` | `heysolo-lite` |
+| `JOURNAL_DB` | `heysolo-journal` |
+
+**مرحله ۵: وارد کردن تنظیمات**
+
+Worker ← **Settings → Variables and Secrets → Add**:
 
 | نوع | نام | مقدار |
 |---|---|---|
@@ -58,7 +66,28 @@
 
 **Save** و بعد **Deploy** را بزنید.
 
-**۲.۶ بررسی:** آدرس `https://<WORKER_HOST>/health` را باز کنید. باید `"ok":true` ببینید.
+**مرحله ۶: بررسی**
+
+آدرس `https://<WORKER_HOST>/health` را باز کنید. باید `"ok":true` ببینید.
+
+**اختیاری و برای بعد: فضای بیشتر برای عکس‌ها (رایگان)**
+
+یک دیتابیس حدود ۴۳۰ مگابایت عکس نگه می‌دارد. اگر فضای بیشتر می‌خواهید، دیتابیس‌های اضافه را مثل مرحله ۱ بسازید و هرکدام را مثل مرحله ۴ وصل کنید. پلن رایگان ۱۰ دیتابیس اجازه می‌دهد، پس تا ۸ دیتابیس دیگر می‌توانید اضافه کنید:
+
+| نام دیتابیس | نام متغیر (دقیقاً تایپ کنید) |
+|---|---|
+| `heysolo-journal-2` | `JOURNAL_DB2` |
+| `heysolo-journal-3` | `JOURNAL_DB3` |
+| `heysolo-journal-4` | `JOURNAL_DB4` |
+| `heysolo-journal-5` | `JOURNAL_DB5` |
+| `heysolo-journal-6` | `JOURNAL_DB6` |
+| `heysolo-journal-7` | `JOURNAL_DB7` |
+| `heysolo-journal-8` | `JOURNAL_DB8` |
+| `heysolo-journal-9` | `JOURNAL_DB9` |
+
+می‌توانید یکی‌یکی و هر تعداد که خواستید اضافه کنید. بعد از هر تغییر **Deploy** را بزنید. دیتابیس‌های اضافه به هیچ SQL‌ای نیاز ندارند.
+
+طرز کار: عکس‌ها پشت‌سرهم دیتابیس‌ها را پر می‌کنند. وقتی همه پر شدند، **قدیمی‌ترین دیتابیس خالی و دوباره استفاده می‌شود**. عکس‌های قدیمی آن از بین می‌روند ولی خود معامله‌ها و اعدادشان می‌مانند. بعداً هرگز دیتابیسِ وصل‌شده را حذف نکنید، وگرنه عکس‌های آن دیگر نمایش داده نمی‌شود.
 
 ## ۳. اتصال ربات
 
