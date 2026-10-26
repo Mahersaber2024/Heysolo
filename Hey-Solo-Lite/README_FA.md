@@ -1,103 +1,139 @@
-# Hey Solo Manager-Lite
+# Hey Solo Manager-Lite + داشبورد آنلاین
 
-مدیر تلگرامی HeySolo ATM که روی Cloudflare Worker اجرا می‌شود. همه‌چیز از سایت Cloudflare، تلگرام و متاتریدر انجام می‌شود؛ بدون Node.js، ترمینال یا VPS.
+راهنمای راه‌اندازی. شما یک ربات تلگرام برای HeySolo ATM، یک سایت داشبورد که همیشه آنلاین است، و (اختیاری) کپی ترید بین حساب‌ها می‌گیرید. همه‌چیز روی سرویس‌های رایگان Cloudflare اجرا می‌شود. فقط مرورگر، تلگرام و متاتریدر ۵ لازم دارید.
 
-**فایل‌ها:** `worker/worker.js` (کد Worker) · `worker/migrations/0001_init.sql` (دیتابیس) · [`../MT5/Experts/`](../MT5/Experts/) (فایل‌های متاتریدر: `HeySolo_ATM.mq5`، `HeySolo_ATM_Helper.mqh`، `HeySolo_Bridge.mq5`).
+**داخل این بسته چیست**
+
+| پوشه | کاربرد |
+|---|---|
+| `worker/` | کد ربات (`worker.js`) و فایل‌های دیتابیس (`migrations/`) ← می‌رود روی Cloudflare |
+| `dashboard/` | خود سایت ← می‌رود روی Cloudflare Pages |
+| `mt5/Experts/` | فایل‌های متاتریدر ← می‌روند در `MQL5/Experts` |
+
+در این راهنما `<WORKER_HOST>` یعنی آدرس Worker شما **بدون** `https://`، مثلاً `heysolo-lite.<your-subdomain>.workers.dev`.
+
+---
 
 ## ۱. تلگرام
 
-1. در `@BotFather` دستور `/newbot` را بفرستید و **توکن ربات** را محرمانه ذخیره کنید.
-2. در `@userinfobot`**شناسه‌ی عددی** خودتان را بگیرید. در همه‌ی مراحل پایین از همین اکانت تلگرام استفاده کنید.
+1. در `@BotFather` دستور `/newbot` را بفرستید، مراحل را بروید و **توکن ربات** را ذخیره کنید.
+2. در `@userinfobot` **شناسه‌ی عددی** خودتان را بگیرید و ذخیره کنید.
 
 ## ۲. Cloudflare
 
 وارد [dash.cloudflare.com](https://dash.cloudflare.com) شوید.
 
 **۲.۱ دیتابیس**
-1. **Storage & Databases → D1 SQL Database → Create Database** و نام `heysolo-lite`.
-2. دیتابیس را باز کنید → **Console**. کل فایل `worker/migrations/0001_init.sql` را جای‌گذاری و **Execute** کنید. باید بدون خطا تمام شود و ۱۰ جدول بسازد. (جدول `bot_settings` بعداً خودکار ساخته می‌شود.)
+1. **Storage & Databases → D1 SQL Database → Create Database**، نام: `heysolo-lite`.
+2. بازش کنید ← **Console**. این دو فایل را پشت‌سرهم جای‌گذاری و **Execute** کنید:
+   - `worker/migrations/0001_init.sql`
+   - `worker/migrations/0002_trade_journal.sql`
 
-**۲.۲ Worker**
-1. **Workers & Pages → Create application → Start with Hello World**، نام `heysolo-lite`، **Deploy**. نام را کوتاه نگه دارید: در همه‌ی لینک‌های Copy Hub می‌آید و باکس Server URL متاتریدر متن را روی ۶۳ کاراکتر می‌برد. نام Worker بعداً قابل تغییر نیست.
-2. **Edit code** را بزنید، همه‌چیز را با `worker/worker.js` جایگزین و **Deploy** کنید.
-3. آدرس `https://<WORKER_HOST>/health` را باز کنید. پاسخ درست: `{"ok":true,"service":"Hey Solo Manager-Lite","version":2}`.
+**۲.۲ فضای ذخیره‌ی عکس‌ها**
+**Storage & Databases → R2 → Create bucket**، نام: `heysolo-journal`.
 
-`<WORKER_HOST>` آدرس Worker بدون `https://` است، مثلاً `heysolo-lite.<your-subdomain>.workers.dev`.
+**۲.۳ Worker**
+1. **Workers & Pages → Create application → Start with Hello World**، نام: `heysolo-lite`، **Deploy**. نام را کوتاه بگذارید و بعداً تغییر ندهید.
+2. **Edit code** ← همه‌چیز را با `worker/worker.js` جایگزین کنید ← **Deploy**.
 
-**۲.۳ اتصال دیتابیس**
-**Settings → Bindings → Add → D1 database**: نام متغیر `DB` (حروف بزرگ) و دیتابیس `heysolo-lite`.
+**۲.۴ اتصال‌ها (Bindings)** (Worker ← **Settings → Bindings → Add**)
 
-**۲.۴ متغیرها و Secret**
-**Settings → Variables and Secrets → Add**:
+| نوع | نام متغیر | انتخاب |
+|---|---|---|
+| D1 database | `DB` | `heysolo-lite` |
+| R2 bucket | `JOURNAL_R2` | `heysolo-journal` |
+
+**۲.۵ متغیرها** (Worker ← **Settings → Variables and Secrets → Add**)
 
 | نوع | نام | مقدار |
 |---|---|---|
-| Text | `TELEGRAM_ADMIN_IDS` | شناسه‌ی عددی شما (چند ادمین: با کاما جدا کنید) |
+| Text | `TELEGRAM_ADMIN_IDS` | شناسه‌ی عددی شما |
 | Text | `COPIER_CLOSED_KEEP_SECONDS` | `600` |
 | Text | `COPIER_FLAT_HEARTBEAT` | `true` |
-| Secret | `TELEGRAM_BOT_TOKEN` | توکن BotFather |
+| Secret | `TELEGRAM_BOT_TOKEN` | توکن ربات |
 
-**Save** و بعد **Deploy** را بزنید (بعد از هر تغییر لازم است). `WORKER_SHARED_SECRET` و `TELEGRAM_WEBHOOK_SECRET` را **اضافه نکنید**؛ ربات خودش می‌سازد.
+**Save** و بعد **Deploy** را بزنید.
+
+**۲.۶ بررسی:** آدرس `https://<WORKER_HOST>/health` را باز کنید. باید `"ok":true` ببینید.
 
 ## ۳. اتصال ربات
 
-**۳.۱ ثبت Webhook.** این آدرس را در مرورگر باز کنید (دو جای‌نگهدار را عوض کنید و `<` و `>` باقی نماند):
+1. این آدرس را در مرورگر باز کنید (دو جای‌نگهدار را عوض کنید و `<` و `>` باقی نماند). باید `"ok":true` ببینید:
 
 ```text
 https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<WORKER_HOST>/telegram/webhook&drop_pending_updates=true
 ```
 
-پاسخ درست: `"ok":true`.
+2. در **چت خصوصی** با ربات `/start` بفرستید و **یک بار** دکمه‌ی **🔐 Start secure setup** را بزنید. چند ثانیه صبر کنید.
+3. ربات **Cloudflare Worker URL** و **Cloudflare Worker Key** را نشان می‌دهد. **کلید را همان لحظه کپی کنید**؛ فقط یک بار نمایش داده می‌شود. (گم شد؟ منوی ربات ← **🔑 EA key**.)
 
-**۳.۲ راه‌اندازی امن.** در **چت خصوصی** با ربات `/start` بفرستید و دکمه‌ی **🔐 Start secure setup** را بزنید (یا `/secure_setup` بفرستید). فقط **یک بار** بزنید؛ ممکن است چند ثانیه طول بکشد.
+## ۴. متاتریدر ۵
 
-پاسخ درست: پیام **Setup complete** همراه با **Cloudflare Worker URL** و **Cloudflare Worker Key**. **کلید را همان لحظه کپی کنید؛ فقط یک بار نمایش داده می‌شود.** اگر گم شد از دکمه‌ی **🔑 EA key** در منوی ربات کلید جدید بگیرید.
+1. سه فایل `mt5/Experts/` را در `MQL5/Experts` کپی کنید و هر دو فایل `.mq5` را در MetaEditor کامپایل کنید.
+2. **Tools → Options → Expert Advisors**: گزینه‌ی **Allow WebRequest** را روشن و `https://<WORKER_HOST>` را اضافه کنید.
+3. اکسپرت اصلی `HeySolo_ATM` ← پنلش را باز کنید و تنظیم کنید:
+   - **Telegram ← Send Via** = `SEND PY BOT / BRIDGE EA`
+   - **Trade Journal (Web)** = ON
+   - **Journal storage** = `Online (Cloudflare)`
+4. اکسپرت `HeySolo_Bridge` را یک بار روی یک چارت دیگر بگذارید و پر کنید:
+   - **WorkerURL** = `https://<WORKER_HOST>`
+   - **WorkerKey** = کلید مرحله‌ی ۳
 
-**۳.۳ بررسی.** دوباره `/start` بفرستید تا منوی اصلی باز شود. بررسی اختیاری: آدرس `https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getWebhookInfo` باید آدرس Worker را نشان دهد و `last_error_message` نداشته باشد.
+کمی بعد حساب شما در منوی ربات با 🟢 آنلاین دیده می‌شود.
 
-برای دسترسی کاربر دیگر: `/grant <telegram_user_id> <account_login>` (لغو: `/revoke`). آن کاربر باید یک بار به ربات `/start` بفرستد.
+## ۵. سایت داشبورد
 
-## ۴. Chat Journal (گروه با تاپیک)
+**آپلود سایت (فقط یک بار)**
+1. در Cloudflare: **Workers & Pages → Create → Pages → Upload assets**.
+2. یک نام بدهید، مثلاً `heysolo-dashboard` ← **Create project**.
+3. پوشه‌ی `dashboard` را بکشید داخل کادر ← **Deploy site**.
+
+لینک‌های شما:
+- انگلیسی: `https://heysolo-dashboard.pages.dev/`
+- فارسی: `https://heysolo-dashboard.pages.dev/Index.fa.html` (**I** بزرگ)
+
+برای به‌روزرسانی بعدی سایت: همان پروژه‌ی Pages ← **Create deployment** ← دوباره پوشه را آپلود کنید. لینک عوض نمی‌شود. پروژه را پاک نکنید.
+
+**گرفتن کلید داشبورد**
+در ربات: **⚙️ Admin → ☁️ Online Trade Journal → 🔑 Generate dashboard key** و شماره‌ی **Login** حساب را بفرستید. کلید را کپی کنید (فقط یک بار نمایش داده می‌شود). حساب باید قبلاً در ربات دیده شود (مرحله‌ی ۴).
+
+**اتصال سایت**
+لینک سایت را باز کنید. در پنجره‌ی اتصال (یا تب ژورنال ← **تنظیم اتصال**) وارد کنید:
+1. آدرس Worker: `https://<WORKER_HOST>`
+2. شماره‌ی **Login** حساب
+3. **Dashboard Key**
+
+این اطلاعات فقط در همان مرورگر ذخیره می‌شود؛ روی گوشی یا کامپیوتر دیگر دوباره وارد کنید.
+
+**تست:** با MT5 روشن چند دقیقه صبر کنید و سایت را Refresh کنید: اطلاعات می‌آید. MT5 را ببندید: سایت همچنان باز می‌شود و آخرین داده را نشان می‌دهد.
+
+## ۶. اختیاری: Chat Journal
 
 1. یک گروه تلگرام بسازید، **Topics** را روشن کنید و ربات را با مجوز **Manage Topics** ادمین کنید.
 2. در ربات: **📓 Chat Journal → ✎ Set group** و شناسه‌ی گروه را بفرستید (با `-100` شروع می‌شود).
 
-تاپیک‌های Trades، Logs، Results و Alerts خودکار ساخته می‌شوند. پیام‌های Bias در Logs می‌آیند.
+## ۷. اختیاری: کپی ترید بین حساب‌ها
 
-## ۵. متاتریدر ۵
+در ربات: **⚙️ Admin → ⚡ Copy Hub → ➕ New hub**. دو لینک می‌گیرید. روی هر حساب، پنل اکسپرت اصلی ← تب **Copier**:
 
-1. فایل‌های `HeySolo_ATM.mq5`، `HeySolo_ATM_Helper.mqh` و `HeySolo_Bridge.mq5` را در `MQL5/Experts` کپی و هر دو فایل `.mq5` را در MetaEditor کامپایل کنید.
-2. **Tools → Options → Expert Advisors**: گزینه‌ی **Allow WebRequest** را روشن و `https://<WORKER_HOST>` را اضافه کنید.
-3. **اکسپرت اصلی** (`HeySolo_ATM`): در پنل، بخش **Telegram** را باز کنید و **Send Via** = `SEND PY BOT / BRIDGE EA` بگذارید. در صورت نیاز **Send Trade**، **Send Result** و **send Logs** را روشن کنید.
-4. **اکسپرت پل** (`HeySolo_Bridge`): یک بار روی یک چارت دیگر بگذارید و ورودی‌ها را پر کنید: **WorkerURL** = `https://<WORKER_HOST>` و **WorkerKey** = کلید مرحله‌ی ۳.۲.
+| حساب | Server Copier | Account Mode | Server URL |
+|---|---|---|---|
+| حسابی که از آن **کپی می‌گیرید** | ON | Transmitter | لینک 📤 Master |
+| هر حسابی که **کپی می‌کند** | ON | Receiver | لینک 📥 Follower |
 
-پاسخ درست: بعد از اولین heartbeat حساب در منوی ربات دیده می‌شود (🟢 آنلاین). پیام‌های قدیمی‌تر از `MaxRetryMinutes` که در Outbox مانده باشند دیگر ارسال نمی‌شوند و کنار گذاشته می‌شوند.
+لینک‌ها را خصوصی نگه دارید. اگر لینک از ۶۳ کاراکتر بلندتر بود، در دو مرحله وارد کنید: اول `https://<WORKER_HOST>` و بعد `tx/<token>` (یا `rx/<token>`).
 
-## ۶. ⚡ Copy Hub (کپی ترید بین حساب‌ها)
+---
 
-در ربات: **⚙️ Admin → ⚡ Copy Hub → ➕ New hub**. دو لینک می‌گیرید:
-
-| لینک | کجا وارد شود | اکسپرت اصلی → پنل → تب **Copier** |
-|---|---|---|
-| 📤 **Master link** | حسابی که از آن **کپی می‌گیرید** | Server Copier = **ON**، Account Mode = **Transmitter**، Server URL = لینک Master |
-| 📥 **Follower link** | هر حسابی که **کپی می‌کند** | Server Copier = **ON**، Account Mode = **Receiver**، Server URL = لینک Follower |
-
-لینک‌ها کوتاه‌اند، مثلاً `https://heysolo-lite.<your-subdomain>.workers.dev/tx/x3UdcOqX7` (حدود ۵۷ کاراکتر)، پس در باکس متاتریدر جا می‌شوند. بعد از Enter اکسپرت طول ذخیره‌شده را نشان می‌دهد. اگر نام Worker بلندتر باشد و لینک از ۶۳ کاراکتر بگذرد، در دو مرحله وارد کنید: اول `https://<WORKER_HOST>` و بعد `tx/<token>` (یا `rx/<token>`)؛ اکسپرت آن‌ها را به هم وصل می‌کند. آدرس Worker را هم در **Allow WebRequest** اضافه کنید. برای تست، لینک را در مرورگر باز کنید؛ باید `HeySolo Copy Hub OK` ببینید. لینک‌ها را خصوصی نگه دارید؛ **Rotate both links** لینک‌های قبلی را باطل می‌کند (باید لینک‌های جدید را در همه‌ی اکسپرت‌ها جایگزین کنید).
-
-**سرعت (کپی ترید و اسکرین‌شات).** همه‌ی زمان‌ها تنظیم هستند و ثابت نیستند:
-- اکسپرت اصلی ← پنل ← تب **Copier** (زیر Server URL): **Copier: retry after error (s)** (پیش‌فرض ۳)، **Copier: check server every (ms)** (پیش‌فرض ۲۵۰، مخصوص Receiver)، **Copier: request timeout (ms)** (پیش‌فرض ۲۰۰۰). عدد کمتر یعنی کپی سریع‌تر ولی درخواست بیشتر؛ پلن رایگان Cloudflare حدود ۱۰۰٬۰۰۰ درخواست Worker در روز می‌دهد، پس قبل از عدد خیلی کم محدودیت فعلی را چک کنید.
-- ورودی‌های `HeySolo_Bridge`: **TickMs** (چک صف، پیش‌فرض ۱۰۰)، **RetryMaxSec** (بیشترین انتظار بعد از خطا، پیش‌فرض ۱۰)، **TextTimeoutMs**، **PhotoTimeoutMs**، **ApiTimeoutMs**، **CmdPollSec**، **SnapshotSec**، **GiveUpMin**.
-
-## رفع خطاهای رایج
+## مشکلات رایج
 
 | مشکل | راه‌حل |
 |---|---|
-| ربات به `/start` جواب نمی‌دهد | `getWebhookInfo` را باز کنید. `url` خالی → مرحله‌ی ۳.۱ را تکرار کنید. `last_error_message` علت را می‌گوید (`403` یعنی صف قدیمی یا شناسه‌ی ادمین اشتباه). مرحله‌ی ۳.۱ را با `drop_pending_updates=true` دوباره بزنید، مطمئن شوید `TELEGRAM_ADMIN_IDS` دقیقاً شناسه‌ی شماست و **Deploy** زده‌اید. از چت **خصوصی** استفاده کنید، نه گروه. |
-| `Too Many Requests: retry after 1` هنگام راه‌اندازی امن | تلگرام موقتاً تغییر Webhook را محدود کرده است. Worker خودکار دوباره تلاش می‌کند؛ اگر باز هم خطا داد حدود ۱ دقیقه صبر کنید و **یک بار** دکمه‌ی **🔁 Try again** را بزنید (پشت‌سرهم نزنید). |
-| `Could not secure the webhook` (متن دیگر) | `TELEGRAM_BOT_TOKEN` را بررسی کنید (بدون فاصله)، **Deploy** بزنید و **🔁 Try again** را بزنید. |
-| `/health` پاسخ درست نمی‌دهد | `worker.js` کامل جایگزین یا Deploy نشده است. |
-| خطا در لاگ Worker | نام binding یعنی `DB` و ساخته‌شدن ۱۰ جدول را بررسی کنید. |
-| کلید EA گم شد | منوی ربات → **🔑 EA key** → کلید جدید. آن را در اکسپرت جایگزین کنید. |
-| حساب در ربات دیده نمی‌شود | `Send Via` = `SEND PY BOT / BRIDGE EA`، روشن بودن `HeySolo_Bridge` با `WorkerURL`/`WorkerKey` درست، لیست WebRequest و لاگ **Experts** را بررسی کنید. |
-| لاگ اکسپرت: `URL used: length=75` و توکن ناقص است | باکس Server URL لینک را روی ۶۳ کاراکتر بریده است. نام Worker را کوتاه‌تر بگیرید یا ورود دو مرحله‌ای بخش ۶ را بزنید. |
-| خطای `HTTP code: 403` در لاگ کپی | لینک نامعتبر، چرخانده‌شده، ناقص یا از نوع اشتباه است. Transmitter باید لینک 📤 Master و Receiver باید لینک 📥 Follower داشته باشد. در ⚡ Copy Hub لینک‌ها را Rotate کنید و لینک کامل جدید را وارد کنید. |
+| ربات به `/start` جواب نمی‌دهد | مرحله‌ی ۳.۱ را تکرار کنید. مطمئن شوید `TELEGRAM_ADMIN_IDS` دقیقاً شناسه‌ی شماست، **Deploy** زده‌اید و در چت خصوصی هستید. |
+| `/health` درست نیست | `worker.js` کامل جای‌گذاری یا Deploy نشده است. |
+| حساب در ربات دیده نمی‌شود | `Send Via`، مقدار `WorkerURL`/`WorkerKey` در Bridge و لیست WebRequest را بررسی کنید. |
+| سایت `online error` می‌دهد | آدرس Worker باید با `https://` شروع شود و `/` آخر نداشته باشد. Login و کلید را بررسی کنید. |
+| سایت `account_not_found` می‌دهد | MT5 و `HeySolo_Bridge` را روشن کنید و منتظر اولین ارسال بمانید. |
+| عکس‌ها نمی‌آیند | نام binding باید دقیقاً `JOURNAL_R2` باشد؛ بعد دوباره Deploy کنید. |
+| سایت فارسی 404 می‌دهد | آدرس را با `Index.fa.html` و **I** بزرگ بزنید. |
+| لاگ کپی `HTTP code: 403` می‌دهد | لینک Master روی حساب Master و لینک Follower روی حساب‌های کپی‌کننده باشد. در صورت نیاز در Copy Hub لینک‌ها را Rotate و لینک‌های جدید را وارد کنید. |

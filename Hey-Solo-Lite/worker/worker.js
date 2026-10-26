@@ -1,4 +1,4 @@
-const MAX_PHOTO_BYTES = 10 * 1024 * 1024, MAX_COPIER_BODY = 64 * 1024, SNAPSHOT_MAX = 300 * 1024;
+const MAX_PHOTO_BYTES = 10 * 1024 * 1024, MAX_COPIER_BODY = 64 * 1024, SNAPSHOT_MAX = 2500 * 1024;
 const now = () => Math.floor(Date.now() / 1000);
 const json = (x, status = 200) => new Response(JSON.stringify(x), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
 const txt = (x, status = 200) => new Response(x, { status, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
@@ -527,7 +527,7 @@ async function home(e, chat, uid, msg) {
   return msg ? editHTML(e, chat, msg, text, keyboard(rows)) : sendEAKeyMessage(e, chat, text, keyboard(rows));
 }
 async function adminPanel(e, chat, msg) {
-  const rows = [[ik("📓 Chat Journal", "ADM_REPORT"), ik("⚡ Copy Hub", "CP")], [ik("🛠 Setup status", "SETUP")]];
+  const rows = [[ik("📓 Chat Journal", "ADM_REPORT"), ik("⚡ Copy Hub", "CP")], [ik("☁️ Online Trade Journal", "JR_ADMIN")], [ik("🛠 Setup status", "SETUP")]];
   const text = "⚙️ <b>Admin</b>\nPick an option.";
   return msg ? editHTML(e, chat, msg, text, keyboard(rows)) : sendEAKeyMessage(e, chat, text, keyboard(rows));
 }
@@ -637,7 +637,7 @@ async function provisionGroup(e, chat, uid, msg, groupId, force, fromText = fals
     await deleteBotSetting(e,`pending:${uid}`);
     return reportingView(e, chat, fromText ? undefined : msg);
 }
-async function finishAdminText(e,chat,uid,msg,text){const action=await getBotSetting(e,`pending:${uid}`);if(!action)return false;if(action==="set_chat"){const groupId=text.trim();if(!/^-\d{5,}$/.test(groupId)){await sendMessage(e,chat,"Invalid group ID. Send a negative numeric supergroup ID or cancel.");return true;}await deleteBotSetting(e,`pending:${uid}`);await provisionGroup(e,chat,uid,undefined,groupId,false,true);return true;}return false;}
+async function finishAdminText(e,chat,uid,msg,text){if(await finishJournalAdminText(e,chat,uid,text)) return true; const action=await getBotSetting(e,`pending:${uid}`);if(!action)return false;if(action==="set_chat"){const groupId=text.trim();if(!/^-\d{5,}$/.test(groupId)){await sendMessage(e,chat,"Invalid group ID. Send a negative numeric supergroup ID or cancel.");return true;}await deleteBotSetting(e,`pending:${uid}`);await provisionGroup(e,chat,uid,undefined,groupId,false,true);return true;}return false;}
 // ---- Glass link buttons between the journal posts of one trade ----
 // Entry post (TRADE) gets a URL button per later result post; each result post gets a button back to the entry.
 // A result is matched to its entry by position ticket (the EA now sends "Position Ticket: N" / "Order Ticket: N").
@@ -949,6 +949,11 @@ async function webhook(req, e, ctx) {
                 await setupView(e, chat, uid, mid, new URL(req.url).origin);
             else
                 await editMessage(e, chat, mid, "Admin only.");
+        }
+        else if (data === "JR_ADMIN") { await deleteBotSetting(e,`pending:${uid}`); if(isAdmin(e,uid)) await journalAdminView(e,chat,mid); else await editMessage(e,chat,mid,"Admin only."); }
+        else if (data === "JR_RET" || data === "JR_CAP" || data === "JR_BUDGET" || data === "JR_KEY") {
+            if(!isAdmin(e,uid)||String(chat)!==String(uid)) await editMessage(e,chat,mid,"Open this in your private admin chat.");
+            else { const act=data==="JR_RET"?"journal_retention":data==="JR_CAP"?"journal_cap":data==="JR_BUDGET"?"journal_budget":"journal_key"; await putBotSetting(e,`pending:${uid}`,act); await editMessage(e,chat,mid,act==="journal_key"?"Send the numeric MT5 account login. The new key replaces the previous key and is shown once.":act==="journal_retention"?"Send the number of days to retain closed journal entries (1–3650).":act==="journal_budget"?"Send the global journal-data budget in MB (64–450). Oldest closed trades are trimmed as needed.":"Send the per-account journal cap in KB (128–1400). Oldest closed trades will be removed first.",keyboard([[ik("Cancel","JR_ADMIN")]])); }
         }
         else if (data === "ADM_REPORT") {
             if (isAdmin(e, uid))
@@ -1406,11 +1411,155 @@ catch {
     return notifyEvent(e, form, event, text);
 } const photo = form.get("photo"); if (!(photo instanceof File) || photo.size === 0 || photo.size > MAX_PHOTO_BYTES)
     return json({ ok: false, error: "invalid_photo" }, 400); return notifyEvent(e, form, event, text, photo); }
+const DASH_CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "Content-Type,X-HeySolo-Dashboard-Key", "access-control-max-age": "86400", "vary": "Origin" };
+function journalJSON(x, status=200) { return new Response(JSON.stringify(x), {status, headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store",...DASH_CORS}}); }
+async function journalAccess(e, req, login) {
+  const token = req.headers.get("X-HeySolo-Dashboard-Key") || "";
+  if (!token || !/^\d{1,15}$/.test(String(login || ""))) return false;
+  const row = await e.DB.prepare("SELECT login,token_hash FROM journal_access WHERE login=?").bind(String(login)).first();
+  return !!row && constantTimeEqual(await hashToken(token), row.token_hash);
+}
+function journalTime(s) {
+  const m=String(s||"").match(/([0-9]{4})\.([0-9]{2})\.([0-9]{2})\s+([0-9]{2}):([0-9]{2})(?::([0-9]{2}))?/);
+  return m ? Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+(m[6]||0))/1000 : 0;
+}
+async function receiveJournal(req,e) {
+  if (!await verifyWorkerKey(e, req.headers.get("X-HeySolo-Key") || "")) return json({ok:false,error:"forbidden"},403);
+  const rawLen=Number(req.headers.get("content-length")||0); if(rawLen>1850000) return json({ok:false,error:"journal_too_large"},413);
+  let b; try{b=await req.json()}catch{return json({ok:false,error:"invalid_json"},400)}
+  const login=String(b.login||""); if(!/^\d{1,15}$/.test(login)) return json({ok:false,error:"invalid_login"},400);
+  if(typeof b.journal_raw!=="string" || b.journal_raw.length>1750000) return json({ok:false,error:"journal_payload_invalid"},413);
+  let j; try{j=parseLegacyObject(b.journal_raw)}catch{return json({ok:false,error:"journal_parse_failed"},400)}
+  if(String(j.login||"")!==login || !Array.isArray(j.trades)) return json({ok:false,error:"journal_shape_invalid"},400);
+  if(j.trades.length>10000) return json({ok:false,error:"too_many_trades"},413);
+  const keepDays=Math.max(1,Math.min(3650,Number(await getBotSetting(e,"journal:retention_days")||365)));
+  const capKB=Math.max(128,Math.min(1400,Number(await getBotSetting(e,"journal:cap_kb")||1200)));
+  const previous=await e.DB.prepare("SELECT journal_json,prune_before_ts FROM journal_data WHERE login=?").bind(login).first();
+  const cutoff=Math.max(now()-keepDays*86400,Number(previous?.prune_before_ts||0));
+  j.trades=j.trades.filter(t=>{const ts=journalTime(t.closeTime||t.openTime); return !ts || ts>=cutoff;});
+  j.open=Array.isArray(j.open)?j.open:[];
+  let text=JSON.stringify(j), cap=capKB*1024, byteSize=(v)=>new TextEncoder().encode(v).length;
+  if(byteSize(text)>cap){
+    j.trades.sort((a,b)=>journalTime(a.closeTime||a.openTime)-journalTime(b.closeTime||b.openTime));
+    while(j.trades.length && byteSize(JSON.stringify(j))>cap) j.trades.shift();
+    j.trades.sort((a,b)=>journalTime(b.closeTime||b.openTime)-journalTime(a.closeTime||a.openTime));
+    text=JSON.stringify(j);
+  }
+  if(byteSize(text)>Math.min(cap,1850000)) return json({ok:false,error:"journal_cap_exceeded",hint:"Increase the journal cap or reduce retained history."},413);
+  const old=previous;
+  if(old && old.journal_json===text){await enforceJournalBudget(e); return json({ok:true,login,unchanged:true,trades:j.trades.length});}
+  await e.DB.prepare("INSERT INTO journal_data(login,journal_json,oldest_trade_at,notes_json,updated_at) VALUES(?,?,?, '{}', ?) ON CONFLICT(login) DO UPDATE SET journal_json=excluded.journal_json,oldest_trade_at=excluded.oldest_trade_at,updated_at=excluded.updated_at").bind(login,text,oldestTradeAt(j),now()).run();
+  if(e.JOURNAL_R2 && old){const keep=journalShotRefs(j), before=journalShotRefs(parseJson(old.journal_json)); for(const key of before) if(!keep.has(key)) await e.JOURNAL_R2.delete(`journal/${key}`);}
+  const budget=await enforceJournalBudget(e);
+  return json({ok:true,login,trades:j.trades.length,retention_days:keepDays,cap_kb:capKB,journal_bytes:budget.bytes,budget_mb:budget.limit_mb});
+}
+async function dashboardJournal(req,e,u) {
+  if(req.method==="OPTIONS") return new Response(null,{status:204,headers:DASH_CORS});
+  const login=String(u.searchParams.get("login")||"");
+  if(!await journalAccess(e,req,login)) return journalJSON({ok:false,error:"invalid_dashboard_key"},403);
+  if(req.method==="GET"){
+    const r=await e.DB.prepare("SELECT journal_json,notes_json,updated_at FROM journal_data WHERE login=?").bind(login).first();
+    return journalJSON({ok:true,login,journal:r?parseJson(r.journal_json):null,notes:r?parseJson(r.notes_json)||{}:{},updated_at:r?.updated_at||null});
+  }
+  if(req.method==="POST" && u.pathname==="/v1/journal/notes"){
+    let b; try{b=await req.json()}catch{return journalJSON({ok:false,error:"invalid_json"},400)}
+    const notes=b.notes; if(!notes || typeof notes!=="object" || Array.isArray(notes) || JSON.stringify(notes).length>100000) return journalJSON({ok:false,error:"invalid_notes"},413);
+    await e.DB.prepare("INSERT INTO journal_data(login,journal_json,oldest_trade_at,notes_json,updated_at) VALUES(?, '{}', 0, ?, ?) ON CONFLICT(login) DO UPDATE SET notes_json=excluded.notes_json,updated_at=excluded.updated_at").bind(login,JSON.stringify(notes),now()).run();
+    const budget=await enforceJournalBudget(e);
+    return journalJSON({ok:true,saved_at:now(),journal_bytes:budget.bytes,budget_mb:budget.limit_mb});
+  }
+  return journalJSON({ok:false,error:"not_found"},404);
+}
+async function journalAdminView(e,chat,msg){
+  const days=Number(await getBotSetting(e,"journal:retention_days")||365), cap=Number(await getBotSetting(e,"journal:cap_kb")||1200), budget=Number(await getBotSetting(e,"journal:budget_mb")||350);
+  const rows=[[ik(`🧹 Retention · ${days} days`,"JR_RET")],[ik(`📦 Per-account cap · ${cap} KB`,"JR_CAP")],[ik(`🗄 Journal budget · ${budget} MB`,"JR_BUDGET")],[ik("🔑 Generate dashboard key","JR_KEY")],[ik("← Back","ADM_PANEL")]];
+  return editHTML(e,chat,msg,`☁️ <b>Online Trade Journal</b>\n━━━━━━━━━━━━━━\nOldest closed trades are trimmed during EA sync when retention or the journal budget is reached. Open trades are kept.\n\n🗓 Retention: <b>${days} days</b>\n📦 Per-account cap: <b>${cap} KB</b>\n🗄 Global journal budget: <b>${budget} MB</b>\n🔐 Dashboard keys are scoped to one account and shown once.\n\nThe budget measures journal JSON and notes only. It is a safety ceiling below the 500 MB free D1 database limit, not Cloudflare's exact live usage meter.`,keyboard(rows));
+}
+async function finishJournalAdminText(e,chat,uid,text){
+  const action=await getBotSetting(e,`pending:${uid}`); if(!["journal_key","journal_retention","journal_cap","journal_budget"].includes(action)) return false;
+  const value=String(text||"").trim();
+  if(action==="journal_key"){
+    if(!/^\d{1,15}$/.test(value) || !await e.DB.prepare("SELECT 1 FROM accounts WHERE login=?").bind(value).first()) { await sendMessage(e,chat,"That login is not connected yet. Send a numeric account login from the dashboard."); return true; }
+    const token=makeToken(32); await e.DB.prepare("INSERT INTO journal_access(login,token_hash,created_at) VALUES(?,?,?) ON CONFLICT(login) DO UPDATE SET token_hash=excluded.token_hash,created_at=excluded.created_at").bind(value,await hashToken(token),now()).run();
+    await deleteBotSetting(e,`pending:${uid}`);
+    await sendEAKeyMessage(e,chat,`Dashboard key for account ${value} (copy now, shown once):\n<code>${token}</code>\n\nPaste it into the dashboard's Online setup. This replaces the old key for that account.`,keyboard([[ik("☁️ Journal settings","JR_ADMIN")]])); return true;
+  }
+  const n=Number(value), min=action==="journal_retention"?1:action==="journal_budget"?64:128, max=action==="journal_retention"?3650:action==="journal_budget"?450:1400;
+  if(!Number.isInteger(n)||n<min||n>max){await sendMessage(e,chat,`Enter a whole number from ${min} to ${max}.`);return true;}
+  await putBotSetting(e,action==="journal_retention"?"journal:retention_days":action==="journal_budget"?"journal:budget_mb":"journal:cap_kb",n);
+  await deleteBotSetting(e,`pending:${uid}`); await sendMessage(e,chat,"Saved. The next journal upload will apply this setting.",keyboard([[ik("☁️ Journal settings","JR_ADMIN")]])); return true;
+}
+function journalShotRefs(j){
+  const out=new Set(); for(const t of [...(Array.isArray(j?.trades)?j.trades:[]),...(Array.isArray(j?.open)?j.open:[])]) for(const k of ["shotOpen","shotClose"]) { const v=String(t?.[k]||"").replace(/\\/g,"/"); const m=v.match(/^shots\/(\d{1,15})\/(\d{1,20}_(?:open|close)\.png)$/); if(m) out.add(`${m[1]}/${m[2]}`); }
+  return out;
+}
+function oldestTradeAt(j){
+  const times=(Array.isArray(j?.trades)?j.trades:[]).map(t=>journalTime(t.closeTime||t.openTime)).filter(x=>x>0);
+  return times.length?Math.min(...times):0;
+}
+async function enforceJournalBudget(e){
+  const limitMB=Math.max(64,Math.min(450,Number(await getBotSetting(e,"journal:budget_mb")||350))), limit=limitMB*1024*1024;
+  const byteSize=v=>new TextEncoder().encode(String(v||"")).length;
+  for(let pass=0;pass<18;pass++){
+    const total=await e.DB.prepare("SELECT COALESCE(SUM(length(CAST(journal_json AS BLOB))+length(CAST(notes_json AS BLOB))),0) AS bytes FROM journal_data").first();
+    let bytes=Number(total?.bytes||0); if(bytes<=limit) return {bytes,limit_mb:limitMB};
+    const row=await e.DB.prepare("SELECT login,journal_json,notes_json,prune_before_ts FROM journal_data WHERE oldest_trade_at>0 ORDER BY oldest_trade_at ASC LIMIT 1").first();
+    if(!row) return {bytes,limit_mb:limitMB};
+    const j=parseJson(row.journal_json)||{trades:[],open:[]}, before=journalShotRefs(j), trades=Array.isArray(j.trades)?j.trades:[];
+    if(!trades.length){await e.DB.prepare("UPDATE journal_data SET oldest_trade_at=0 WHERE login=?").bind(row.login).run();continue;}
+    trades.sort((a,b)=>journalTime(a.closeTime||a.openTime)-journalTime(b.closeTime||b.openTime));
+    const removed=trades.splice(0,Math.min(10,trades.length)); j.trades=trades;
+    const removedThrough=Math.max(0,...removed.map(t=>journalTime(t.closeTime||t.openTime)));
+    j.trades.sort((a,b)=>journalTime(b.closeTime||b.openTime)-journalTime(a.closeTime||a.openTime));
+    const after=journalShotRefs(j), nextJson=JSON.stringify(j);
+    await e.DB.prepare("UPDATE journal_data SET journal_json=?,oldest_trade_at=?,prune_before_ts=?,updated_at=? WHERE login=?").bind(nextJson,oldestTradeAt(j),Math.max(Number(row.prune_before_ts||0),removedThrough?removedThrough+1:0),now(),row.login).run();
+    if(e.JOURNAL_R2){let deleted=0;for(const key of before){if(!after.has(key)){await e.JOURNAL_R2.delete(`journal/${key}`);if(++deleted>=20)break;}}}
+  }
+  const total=await e.DB.prepare("SELECT COALESCE(SUM(length(CAST(journal_json AS BLOB))+length(CAST(notes_json AS BLOB))),0) AS bytes FROM journal_data").first();
+  return {bytes:Number(total?.bytes||0),limit_mb:limitMB};
+}
+async function receiveJournalShot(req,e,u){
+  if(!await verifyWorkerKey(e,req.headers.get("X-HeySolo-Key")||"")) return json({ok:false,error:"forbidden"},403);
+  if(!e.JOURNAL_R2) return json({ok:false,error:"r2_binding_missing"},503);
+  const login=String(u.searchParams.get("login")||""), name=String(u.searchParams.get("name")||"");
+  if(!/^\d{1,15}$/.test(login)||!/^[0-9]{1,20}_(open|close)\.png$/.test(name)) return json({ok:false,error:"invalid_shot_name"},400);
+  const size=Number(req.headers.get("content-length")||0); if(size<1||size>5000000) return json({ok:false,error:"shot_size_limit"},413);
+  const row=await e.DB.prepare("SELECT journal_json FROM journal_data WHERE login=?").bind(login).first();
+  if(!row||!journalShotRefs(parseJson(row.journal_json)).has(`${login}/${name}`)) return json({ok:false,error:"shot_not_referenced"},410);
+  const type=String(req.headers.get("content-type")||"").split(";")[0].toLowerCase(); if(type!=="image/png") return json({ok:false,error:"png_required"},415);
+  await e.JOURNAL_R2.put(`journal/${login}/${name}`,req.body,{httpMetadata:{contentType:"image/png",cacheControl:"private, max-age=3600"}});
+  return json({ok:true,name});
+}
+async function dashboardShot(req,e,u){
+  if(req.method==="OPTIONS") return new Response(null,{status:204,headers:DASH_CORS});
+  const login=String(u.searchParams.get("login")||""), name=String(u.searchParams.get("name")||"");
+  if(!await journalAccess(e,req,login)) return journalJSON({ok:false,error:"invalid_dashboard_key"},403);
+  if(req.method!=="GET"||!/^[0-9]{1,20}_(open|close)\.png$/.test(name)) return journalJSON({ok:false,error:"invalid_shot_name"},400);
+  if(!e.JOURNAL_R2) return journalJSON({ok:false,error:"r2_binding_missing"},503);
+  const obj=await e.JOURNAL_R2.get(`journal/${login}/${name}`); if(!obj) return journalJSON({ok:false,error:"shot_not_found"},404);
+  return new Response(obj.body,{status:200,headers:{"content-type":"image/png","cache-control":"private, max-age=3600",...DASH_CORS}});
+}
+async function dashboardData(req,e,u){
+  if(req.method==="OPTIONS") return new Response(null,{status:204,headers:DASH_CORS});
+  const login=String(u.searchParams.get("login")||"");
+  if(!await journalAccess(e,req,login)) return journalJSON({ok:false,error:"invalid_dashboard_key"},403);
+  if(req.method!=="GET") return journalJSON({ok:false,error:"method_not_allowed"},405);
+  const [a,j]=await Promise.all([
+    e.DB.prepare("SELECT login,broker,currency,server,updated_at,card_json,prop_json,running_json,dashboard_json,settings_json FROM accounts WHERE login=?").bind(login).first(),
+    e.DB.prepare("SELECT journal_json,notes_json,updated_at FROM journal_data WHERE login=?").bind(login).first()
+  ]);
+  if(!a) return journalJSON({ok:false,error:"account_not_found"},404);
+  return journalJSON({ok:true,login,account:parseJson(a.prop_json)||{},journal:j?parseJson(j.journal_json):null,notes:j?parseJson(j.notes_json)||{}:{},updated_at:a.updated_at});
+}
 async function eaAPI(req, e, u) {
     if (!await verifyWorkerKey(e, req.headers.get("X-HeySolo-Key") || ""))
         return txt("forbidden", 403);
     if (req.method === "POST" && u.pathname === "/v1/ea/snapshot")
         return postSnapshot(req, e);
+    if (req.method === "POST" && u.pathname === "/v1/ea/journal")
+        return receiveJournal(req,e);
+    if (req.method === "POST" && u.pathname === "/v1/ea/journal/shot")
+        return receiveJournalShot(req,e,u);
     if (req.method === "GET" && u.pathname === "/v1/ea/commands") {
         const login = u.searchParams.get("login") || "", symbol = u.searchParams.get("symbol") || "";
         const c = await e.DB.prepare("SELECT id,body FROM ea_commands WHERE login=? AND symbol=? AND status IN ('pending','delivered') ORDER BY created_at LIMIT 1").bind(login, symbol).first();
@@ -1435,6 +1584,9 @@ export default { async fetch(req, e, ctx) { await ensureBotSettings(e); const u 
         return webhook(req, e, ctx); if (u.pathname === "/v1/notify" && req.method === "POST")
         return relayNotification(req, e, false); if (u.pathname === "/v1/notify/photo" && req.method === "POST")
         return relayNotification(req, e, true); if (u.pathname.startsWith("/v1/ea/"))
-        return eaAPI(req, e, u); if (u.pathname.startsWith("/tx/") || u.pathname.startsWith("/rx/"))
+        return eaAPI(req, e, u); if (u.pathname === "/v1/journal" || u.pathname === "/v1/journal/notes")
+        return dashboardJournal(req,e,u); if (u.pathname === "/v1/dashboard")
+        return dashboardData(req,e,u); if (u.pathname === "/v1/journal/shot")
+        return dashboardShot(req,e,u); if (u.pathname.startsWith("/tx/") || u.pathname.startsWith("/rx/"))
         return copier(req, e, u); if (req.method === "GET" && u.pathname === "/")
         return txt("Hey Solo Manager-Lite Worker"); return json({ ok: false, error: "not_found" }, 404); } };
