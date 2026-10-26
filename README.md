@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="BG/heysolo-des.png" alt="HeySolo" width="640">
+<img src="BG/heysolo-banner.png" alt="HeySolo" width="100%">
 
 # HeySolo Manager
 
