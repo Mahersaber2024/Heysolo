@@ -140,6 +140,7 @@ TEXTS = {
         "topic_trade": "Trades",
         "topic_log": "Logs",
         "topic_result": "Results",
+        "topic_alert": "Alerts",
 
         "dest_dm": "📩 here in this chat",
         "dest_group": "👥 group <code>{chat}</code>",
@@ -381,6 +382,7 @@ TEXTS = {
         "topic_trade": "معاملات",
         "topic_log": "لاگ‌ها",
         "topic_result": "نتایج",
+        "topic_alert": "هشدارها",
 
         "dest_dm": "📩 همین‌جا در این چت",
         "dest_group": "👥 گروه <code>{chat}</code>",
@@ -578,6 +580,23 @@ TEXTS["en"].update({
     "eas_sec_11": "Reverse on SL",
     "eas_sec_12": "Fast Scalp",
     "eas_sec_13": "Prop Account",
+    "btn_positions": "📌 Positions",
+    "btn_today": "📅 Today",
+    "pos_title": "📌 <b>Open positions</b> · <b>{login}</b>",
+    "pos_none": "⋯ No open positions right now.",
+    "pos_total": "{n} open · floating <b>{v}</b>",
+    "tdy_title": "📅 <b>Today's trades</b> · <b>{login}</b>",
+    "tdy_none": "⋯ No closed trades today yet.",
+    "tdy_summary": "<i>{n} closed · ▲ {w} · ▼ {l}</i>\nNet <b>{v}</b>\n{bar} <b>{rate}%</b> win rate",
+    "list_more": "… and {n} more not shown",
+    "btn_yesterday": "🕘 Yesterday",
+    "yst_title": "🕘 <b>Yesterday's trades</b> · <b>{login}</b>",
+    "yst_none": "⋯ No closed trades yesterday.",
+    "yst_need_ea": "⋯ Yesterday's data is not exported yet. Recompile the EA with the latest version.",
+    "trade_l1": "{mark} <b>{sym}</b> - {side} {vol} lot | profit: <b>{pl} {cur}</b>",
+    "trade_l2": "price: {prices} | time: {times}",
+    "pos_l2": "price: {prices} | opened: {when}",
+    "pos_l3": "SL: {sl} | TP: {tp}",
 })
 
 TEXTS["fa"].update({
@@ -664,6 +683,23 @@ TEXTS["fa"].update({
     "eas_sec_11": "معکوس بعد از SL",
     "eas_sec_12": "اسکالپ سریع",
     "eas_sec_13": "حساب پراپ",
+    "btn_positions": "📌 پوزیشن‌ها",
+    "btn_today": "📅 امروز",
+    "pos_title": "📌 <b>پوزیشن‌های باز</b> · <b>{login}</b>",
+    "pos_none": "⋯ الان هیچ پوزیشن بازی نیست.",
+    "pos_total": "{n} پوزیشن باز · سود/زیان شناور <b>{v}</b>",
+    "tdy_title": "📅 <b>معاملات امروز</b> · <b>{login}</b>",
+    "tdy_none": "⋯ امروز هنوز معامله‌ای بسته نشده.",
+    "tdy_summary": "<i>{n} معامله بسته · ▲ {w} · ▼ {l}</i>\nمجموع <b>{v}</b>\n{bar} <b>{rate}%</b> نرخ برد",
+    "list_more": "… و {n} مورد دیگر نمایش داده نشد",
+    "btn_yesterday": "🕘 دیروز",
+    "yst_title": "🕘 <b>معاملات دیروز</b> · <b>{login}</b>",
+    "yst_none": "⋯ دیروز معامله‌ای بسته نشده.",
+    "yst_need_ea": "⋯ داده دیروز هنوز از EA صادر نمی‌شود. EA را با نسخه جدید کامپایل کنید.",
+    "trade_l1": "{mark} <b>{sym}</b> - {side} {vol} لات | سود: <b>{pl} {cur}</b>",
+    "trade_l2": "قیمت: {prices} | زمان: {times}",
+    "pos_l2": "قیمت: {prices} | باز شده: {when}",
+    "pos_l3": "حد ضرر: {sl} | حد سود: {tp}",
 })
 
 STATUS_LABELS = {

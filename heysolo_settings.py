@@ -14,9 +14,9 @@ _OBSOLETE_KEYS = ("symbols", "notify", "notify_window")
 
 DEFAULT_BOT_TOKEN = ""
 DEFAULT_CHAT_ID = ""
-DEFAULT_THREADS = {"bias": 0, "trade": 0, "log": 0, "result": 0}
+DEFAULT_THREADS = {"bias": 0, "trade": 0, "log": 0, "result": 0, "alert": 0}
 
-TOPIC_NAMES = {"bias": "Bias", "trade": "Trades", "log": "Logs", "result": "Results"}
+TOPIC_NAMES = {"bias": "Bias", "trade": "Trades", "log": "Logs", "result": "Results", "alert": "Alerts"}
 
 DEFAULT_DB_HOST = "127.0.0.1"
 DEFAULT_DB_PORT = 5432
@@ -207,7 +207,8 @@ def set_chat_id(chat_id):
 def get_threads() -> Dict[str, int]:
     return _load().get("threads", dict(DEFAULT_THREADS))
 
-def set_threads(bias: int = None, trade: int = None, log: int = None, result: int = None):
+def set_threads(bias: int = None, trade: int = None, log: int = None, result: int = None,
+                alert: int = None):
     data = _load()
     t = data.setdefault("threads", dict(DEFAULT_THREADS))
     if bias is not None:
@@ -218,6 +219,8 @@ def set_threads(bias: int = None, trade: int = None, log: int = None, result: in
         t["log"] = int(log)
     if result is not None:
         t["result"] = int(result)
+    if alert is not None:
+        t["alert"] = int(alert)
     _save(data)
 
 def clear_threads():
@@ -228,7 +231,7 @@ def clear_threads():
 def topic_name(kind: str) -> str:
     return TOPIC_NAMES.get(kind, kind)
 
-NOTIFY_KINDS = ("bias", "trade", "log", "result")
+NOTIFY_KINDS = ("bias", "trade", "log", "result", "alert")
 
 def get_outbox_poll_seconds() -> int:
     return int(_load().get("outbox_poll_seconds", 3) or 3)

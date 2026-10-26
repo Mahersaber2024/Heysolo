@@ -325,7 +325,7 @@ def step_value(f: Field, cur: str, mult: int) -> str:
         x = float(cur)
     except ValueError:
         x = 0.0
-    step = f.step if f.step > 0 else 1.0
+    step = 0.1 if f.kind == "d" else (f.step if f.step > 0 else 1.0)
     x = x + mult * step
     if x < 0 and not f.neg:
         x = 0.0
@@ -551,8 +551,9 @@ def field_view(uid: int, chart: Chart, f: Field, note: str = "") -> dict:
             if label:
                 rows.append([Btn(("✔ " if o == sel else "") + label, callback_data=f"EAS_V_{k}_{i}_{o}")])
     elif f.kind in ("i", "d"):
-        rows.append([Btn("−10", callback_data=f"EAS_P_{k}_{i}_m10"), Btn("−", callback_data=f"EAS_P_{k}_{i}_m1"),
-                     Btn("+", callback_data=f"EAS_P_{k}_{i}_p1"), Btn("+10", callback_data=f"EAS_P_{k}_{i}_p10")])
+        lo, hi = ("0.1", "1") if f.kind == "d" else ("", "10")
+        rows.append([Btn(f"−{hi}", callback_data=f"EAS_P_{k}_{i}_m10"), Btn(f"−{lo}", callback_data=f"EAS_P_{k}_{i}_m1"),
+                     Btn(f"+{lo}", callback_data=f"EAS_P_{k}_{i}_p1"), Btn(f"+{hi}", callback_data=f"EAS_P_{k}_{i}_p10")])
         rows.append([Btn(L.t(lang, "eas_btn_type"), callback_data=f"EAS_I_{k}_{i}")])
     else:
         rows.append([Btn(L.t(lang, "eas_btn_type"), callback_data=f"EAS_I_{k}_{i}")])

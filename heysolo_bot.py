@@ -1,6 +1,8 @@
 # NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
 import asyncio
+import functools
 import html
+import json
 import logging
 import re
 from datetime import datetime
@@ -15,7 +17,7 @@ import threading
 import uuid
 import concurrent.futures
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 from telegram.ext import (
@@ -56,9 +58,10 @@ from prop.plan_status import (
 BOT_TOKEN = settings.get_bot_token()
 CHAT_ID = settings.get_chat_id()
 _threads = settings.get_threads()
-THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT = (
+THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT, THREAD_ALERT = (
     _threads.get("bias") or None, _threads.get("trade") or None,
     _threads.get("log") or None, _threads.get("result") or None,
+    _threads.get("alert") or None,
 )
 OUTBOX_POLL_SECONDS = settings.get_outbox_poll_seconds()
 
@@ -1170,6 +1173,7 @@ _EVENT_TYPE_TO_THREAD = {
     "TRADE": THREAD_TRADE,
     "LOG": THREAD_LOG,
     "RESULT": THREAD_RESULT,
+    "ALERT": THREAD_ALERT,
 }
 
 NY_TZ = ZoneInfo("America/New_York")
@@ -1224,6 +1228,12 @@ async def verify_group_target(bot, chat_id: int | None, thread_id: int | None,
     return True, L.t(lang, "vg_ok", where=where,
                      thread=L.t(lang, "vg_thread", tid=thread_id) if thread_id else "")
 
+def _thread_for_event(event_type: str) -> int | None:
+    thread = _EVENT_TYPE_TO_THREAD.get(event_type, THREAD_LOG)
+    if not thread and event_type == "ALERT":
+        return THREAD_LOG
+    return thread
+
 def parse_event(path: Path) -> tuple[str, int, str, str, str]:
     raw = path.read_text(encoding="utf-8", errors="ignore")
     header, _, body = raw.partition("---\n")
@@ -1231,7 +1241,7 @@ def parse_event(path: Path) -> tuple[str, int, str, str, str]:
     for ln in header.splitlines():
         if ln.startswith("TYPE="):
             event_type = ln.split("=", 1)[1].strip().upper()
-            thread_id = _EVENT_TYPE_TO_THREAD.get(event_type, THREAD_LOG)
+            thread_id = _thread_for_event(event_type)
         elif ln.startswith("PHOTO="):
             photo = ln.split("=", 1)[1].strip()
         elif ln.startswith("ACCOUNT="):
@@ -1252,7 +1262,8 @@ def relay_targets(login: str, kind: str, fallback_thread: int | None,
         targets: set[tuple[int, int | None]] = set()
         for uid in recipients:
             user_exp = user_expert(uid) or {}
-            if kind not in (user_exp.get("notify_kinds") or []):
+            allowed_kinds = user_exp.get("notify_kinds") or []
+            if kind not in allowed_kinds and not (kind == "alert" and "log" in allowed_kinds):
                 continue
             if ea_code and heysolo_db.canon_expert_code(user_exp.get("code")) != heysolo_db.canon_expert_code(ea_code):
                 continue
@@ -1273,6 +1284,8 @@ def relay_targets(login: str, kind: str, fallback_thread: int | None,
                 log.warning("User %s routes to a group but none is set.", uid)
                 continue
             thread = db.get_user_thread(uid, kind)
+            if thread is None and kind == "alert":
+                thread = db.get_user_thread(uid, "log")
             if thread is None:
                 thread = fallback_thread
             targets.add(_norm_target(chat, thread))
@@ -1356,6 +1369,7 @@ def _prepare_outbox_batch() -> list[dict]:
                 "targets": targets,
                 "photo_bytes": photo_bytes,
                 "kind": event_type.lower(),
+                "account": account,
             })
         except Exception as e:
             _note_failure(evt, e)
@@ -1466,6 +1480,108 @@ async def _recreate_topic_in_chat(bot, chat_id: int, kind: str) -> int | None:
         return None
     return topic.message_thread_id
 
+JL_KEEP = 30
+JL_MAX_AGE = 14 * 86400
+JL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "journal_links.json")
+_jl_state: dict | None = None
+_RE_JL_SYMBOL_TRADE = re.compile(r"^➖\s*([^\s:➖]+)\s*$", re.M)
+_RE_JL_SYMBOL_RESULT = re.compile(r"Symbol:\s*(\S+)")
+_RE_JL_TICKET = re.compile(r"(?:Position|Order) Ticket:\s*([\d,\s]+)")
+_RE_JL_NET = re.compile(r"Net (?:Profit|Loss):\s*(-?\d+(?:\.\d+)?)")
+
+
+def _jl_load() -> dict:
+    global _jl_state
+    if _jl_state is None:
+        try:
+            with open(JL_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            _jl_state = data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            _jl_state = {}
+    return _jl_state
+
+
+def _jl_save() -> None:
+    tmp = JL_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_jl_state or {}, f)
+        os.replace(tmp, JL_FILE)
+    except OSError as e:
+        log.warning("Could not save %s: %s", JL_FILE, e)
+
+
+def _jl_url(chat, thread, mid) -> str | None:
+    c = str(chat)
+    if not c.startswith("-100"):
+        return None
+    prefix = f"{int(thread)}/" if thread else ""
+    return f"https://t.me/c/{c[4:]}/{prefix}{int(mid)}"
+
+
+def _jl_label(text: str) -> str:
+    m = _RE_JL_NET.search(text or "")
+    if not m:
+        return "Closed"
+    v = float(m.group(1))
+    return f"Closed {'+' if v > 0 else ''}{v:.2f}$"
+
+
+def _jl_markup(buttons: list[tuple[str, str | None]]) -> InlineKeyboardMarkup:
+    btns = [InlineKeyboardButton(label, url=url) for label, url in buttons if url]
+    return InlineKeyboardMarkup([btns[i:i + 3] for i in range(0, len(btns), 3)])
+
+
+async def _journal_link(bot, kind: str, account: str, text: str, chat, thread, msg) -> None:
+    try:
+        mid = msg.message_id
+        thread = getattr(msg, "message_thread_id", None) or thread or 0
+        if kind == "trade":
+            if re.search(r"Unsuccessful|Failure Reason", text):
+                return
+            m = _RE_JL_SYMBOL_TRADE.search(text)
+        else:
+            m = _RE_JL_SYMBOL_RESULT.search(text)
+        symbol = m.group(1) if m else ""
+        if not symbol:
+            return
+        tm = _RE_JL_TICKET.search(text)
+        tickets = [x.strip() for x in tm.group(1).split(",") if x.strip()] if tm else []
+        key = f"{chat}:{account}"
+        state = _jl_load()
+        now = time.time()
+        entries = [x for x in state.get(key, []) if now - x.get("ts", 0) < JL_MAX_AGE]
+        if kind == "trade":
+            entries.append({"id": mid, "thread": thread, "ts": now, "symbol": symbol,
+                            "tickets": tickets, "posts": []})
+            state[key] = entries[-JL_KEEP:]
+            _jl_save()
+            return
+        res_ticket = tickets[0] if tickets else ""
+        entry = None
+        for x in reversed(entries):
+            et = x.get("tickets") or []
+            hit = (res_ticket in et) if res_ticket else (not et and x.get("symbol") == symbol)
+            if hit:
+                entry = x
+                break
+        back = entry and _jl_url(chat, entry.get("thread"), entry["id"])
+        if not back:
+            return
+        entry["posts"].append({"id": mid, "thread": thread, "label": _jl_label(text)})
+        state[key] = entries
+        _jl_save()
+        await bot.edit_message_reply_markup(chat_id=chat, message_id=mid,
+                                            reply_markup=_jl_markup([("Entry", back)]))
+        await bot.edit_message_reply_markup(
+            chat_id=chat, message_id=entry["id"],
+            reply_markup=_jl_markup([(p["label"], _jl_url(chat, p.get("thread"), p["id"]))
+                                     for p in entry["posts"]]))
+    except Exception as e:
+        log.warning("Could not link journal posts for account %s (%s): %s", account, kind, e)
+
+
 async def watch_outbox(app: Application):
     bot = app.bot
     consecutive_errors = 0
@@ -1475,10 +1591,11 @@ async def watch_outbox(app: Application):
             for job in jobs:
                 text, photo_bytes, photo_name = job["text"], job["photo_bytes"], job["photo_name"]
                 for target_chat, target_thread in job["targets"]:
+                    sent_msg = None
                     try:
                         if photo_bytes is not None:
                             try:
-                                await bot.send_photo(
+                                sent_msg = await bot.send_photo(
                                     chat_id=target_chat,
                                     message_thread_id=target_thread or None,
                                     photo=photo_bytes,
@@ -1489,7 +1606,7 @@ async def watch_outbox(app: Application):
                             except Exception as photo_err:
                                 log.warning("send_photo failed (%s) - sending as document",
                                             photo_err)
-                                await bot.send_document(
+                                sent_msg = await bot.send_document(
                                     chat_id=target_chat,
                                     message_thread_id=target_thread or None,
                                     document=photo_bytes,
@@ -1497,7 +1614,7 @@ async def watch_outbox(app: Application):
                                     caption=text[:1024],
                                 )
                         else:
-                            await bot.send_message(
+                            sent_msg = await bot.send_message(
                                 chat_id=target_chat,
                                 message_thread_id=target_thread or None,
                                 text=text,
@@ -1541,11 +1658,11 @@ async def watch_outbox(app: Application):
                                         target_thread, new_thread, fixed_desc)
                             try:
                                 if photo_bytes is not None:
-                                    await bot.send_photo(chat_id=target_chat,
+                                    sent_msg = await bot.send_photo(chat_id=target_chat,
                                                           message_thread_id=new_thread,
                                                           photo=photo_bytes, caption=text[:1024])
                                 else:
-                                    await bot.send_message(chat_id=target_chat,
+                                    sent_msg = await bot.send_message(chat_id=target_chat,
                                                             message_thread_id=new_thread, text=text)
                             except Exception as retry_err:
                                 log.warning("Retry after recreating the topic still failed for "
@@ -1584,6 +1701,10 @@ async def watch_outbox(app: Application):
                         else:
                             log.warning("Failed to deliver %s to chat %s / thread %s: %s",
                                         job["evt"].name, target_chat, target_thread, send_err)
+
+                    if sent_msg is not None and job.get("kind") in ("trade", "result"):
+                        await _journal_link(bot, job["kind"], job.get("account", ""), text,
+                                            target_chat, target_thread, sent_msg)
 
                 await asyncio.to_thread(_cleanup_event_files, job["evt"], job["photo_path"])
             consecutive_errors = 0
@@ -1805,9 +1926,12 @@ def account_detail_view(user_id: int, login: str) -> dict:
     kb_rows = []
     if login != active:
         kb_rows.append([InlineKeyboardButton(L.t(lang, "set_active"), callback_data=f"ACC_SET_{login}")])
-    kb_rows.append([InlineKeyboardButton(L.t(lang, "lbl_status"), callback_data=f"STAT_VIEW_{login}")])
-    kb_rows.append([InlineKeyboardButton(L.t(lang, "lbl_prop"), callback_data=f"PROP_VIEW_{login}"),
-                    InlineKeyboardButton(L.t(lang, "btn_eas"), callback_data=f"EAS_L_{login}")])
+    kb_rows.append([InlineKeyboardButton(L.t(lang, "btn_positions"), callback_data=f"POS_VIEW_{login}"),
+                    InlineKeyboardButton(L.t(lang, "btn_today"), callback_data=f"TDY_VIEW_{login}"),
+                    InlineKeyboardButton(L.t(lang, "btn_yesterday"), callback_data=f"YST_VIEW_{login}")])
+    kb_rows.append([InlineKeyboardButton(L.t(lang, "lbl_status"), callback_data=f"STAT_VIEW_{login}"),
+                    InlineKeyboardButton(L.t(lang, "lbl_prop"), callback_data=f"PROP_VIEW_{login}")])
+    kb_rows.append([InlineKeyboardButton(L.t(lang, "btn_eas"), callback_data=f"EAS_L_{login}")])
     kb_rows.append([InlineKeyboardButton(L.t(lang, "btn_all_accounts"), callback_data="ACC_LIST")])
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
@@ -1877,7 +2001,198 @@ def status_detail_view(user_id: int, login: str) -> dict:
     ]
     return {"text": text, "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
-TOPIC_KIND_LABELS = {"bias": "Bias", "trade": "Trades", "log": "Logs", "result": "Results"}
+def _prop_array(text: str, anchor: str) -> list[str]:
+    m = re.search(anchor, text)
+    if not m:
+        return []
+    start = m.end()
+    depth = 1
+    i = start
+    while i < len(text) and depth:
+        c = text[i]
+        if c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+        i += 1
+    body = text[start:i - 1]
+    rows = []
+    level = 0
+    begin = None
+    for j, c in enumerate(body):
+        if c == "{":
+            if level == 0:
+                begin = j + 1
+            level += 1
+        elif c == "}":
+            level -= 1
+            if level == 0 and begin is not None:
+                rows.append(body[begin:j])
+                begin = None
+    return rows
+
+def _px(value: float) -> str:
+    if not value:
+        return "-"
+    text = f"{value:.5f}".rstrip("0")
+    whole, _, frac = text.partition(".")
+    return f"{whole}.{frac.ljust(2, '0')}"
+
+def _hhmm(stamp: str) -> str:
+    return stamp[11:16] if len(stamp) >= 16 else stamp
+
+def read_open_positions(login: str) -> list[dict] | None:
+    path = data_path(login)
+    if not path.exists():
+        return None
+    text = _read_text_resilient(path)
+    if text is None:
+        return None
+    out = []
+    for body in _prop_array(text, r"\bopenPositions\s*:\s*\["):
+        out.append({
+            "ticket": int(_pnum(body, "ticket")),
+            "symbol": _pstr(body, "symbol"),
+            "type": _pstr(body, "type"),
+            "volume": _pnum(body, "volume"),
+            "open": _pnum(body, "openPrice"),
+            "price": _pnum(body, "currentPrice"),
+            "sl": _pnum(body, "sl"),
+            "tp": _pnum(body, "tp"),
+            "profit": _pnum(body, "profit"),
+            "swap": _pnum(body, "swap"),
+            "time": _pstr(body, "openTime"),
+        })
+    return out
+
+def read_trades_block(login: str, key: str) -> list[dict] | None:
+    path = data_path(login)
+    if not path.exists():
+        return None
+    text = _read_text_resilient(path)
+    if text is None:
+        return None
+    anchor = rf"\b{key}\s*:\s*\{{\s*trades\s*:\s*\["
+    if not re.search(anchor, text):
+        return None
+    out = []
+    for body in _prop_array(text, anchor):
+        out.append({
+            "ticket": int(_pnum(body, "ticket")),
+            "symbol": _pstr(body, "symbol"),
+            "type": _pstr(body, "type"),
+            "volume": _pnum(body, "volume"),
+            "open": _pnum(body, "openPrice"),
+            "close": _pnum(body, "closePrice"),
+            "net": _pnum(body, "net"),
+            "open_time": _pstr(body, "openTime"),
+            "close_time": _pstr(body, "closeTime"),
+        })
+    return out
+
+def _fit_blocks(header: list[str], blocks: list[str], lang: str, limit: int = 3700) -> list[str]:
+    lines = list(header)
+    used = sum(len(x) + 1 for x in lines)
+    shown = 0
+    for block in blocks:
+        if used + len(block) + 2 > limit:
+            break
+        lines.append("")
+        lines.append(block)
+        used += len(block) + 2
+        shown += 1
+    if shown < len(blocks):
+        lines.append("")
+        lines.append(L.t(lang, "list_more", n=len(blocks) - shown))
+    return lines
+
+def _tabs_keyboard(lang: str, login: str, current: str) -> InlineKeyboardMarkup:
+    items = (
+        ("pos", "btn_positions", "POS_VIEW_"),
+        ("tdy", "btn_today", "TDY_VIEW_"),
+        ("yst", "btn_yesterday", "YST_VIEW_"),
+    )
+    tabs = []
+    for tag, key, prefix in items:
+        label = L.t(lang, key)
+        if tag == current:
+            label = f"• {label}"
+        tabs.append(InlineKeyboardButton(label, callback_data=f"{prefix}{login}"))
+    own = {"pos": "POS_VIEW_", "tdy": "TDY_VIEW_", "yst": "YST_VIEW_"}[current]
+    rows = [
+        tabs,
+        [InlineKeyboardButton(L.t(lang, "btn_refresh"), callback_data=f"{own}{login}"),
+         InlineKeyboardButton(L.t(lang, "btn_back_account"), callback_data=f"ACC_VIEW_{login}")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+def positions_view(user_id: int, login: str) -> dict:
+    lang = L.get_lang(user_id)
+    d = read_dashboard(login)
+    rows = read_open_positions(login) if d else None
+    if d is None or rows is None:
+        text = L.t(lang, "acc_no_data")
+    else:
+        cur = d.get("currency") or ""
+        header = [L.t(lang, "pos_title", login=login)]
+        blocks = []
+        if not rows:
+            header += ["", L.t(lang, "pos_none")]
+        else:
+            total = sum(r["profit"] + r["swap"] for r in rows)
+            header += [L.t(lang, "pos_total", v=ltr(f"{total:+,.2f} {cur}"), n=len(rows))]
+            for r in rows:
+                pl = r["profit"] + r["swap"]
+                mark = "▲" if pl >= 0 else "▼"
+                blocks.append("\n".join([
+                    L.t(lang, "trade_l1", mark=mark, sym=html.escape(r["symbol"]), side=r["type"],
+                        vol=ltr(format(r["volume"], "g")), pl=ltr(f"{pl:+,.2f}"), cur=cur),
+                    L.t(lang, "pos_l2", prices=ltr(f"{_px(r['open'])} → {_px(r['price'])}"),
+                        when=ltr(_hhmm(r["time"]))),
+                    L.t(lang, "pos_l3", sl=ltr(_px(r["sl"])), tp=ltr(_px(r["tp"]))),
+                ]))
+        text = "\n".join(_fit_blocks(header, blocks, lang) + _dashboard_footer(d, login, lang))
+    return {"text": text, "reply_markup": _tabs_keyboard(lang, login, "pos"), "parse_mode": ParseMode.HTML}
+
+def _trades_view(user_id: int, login: str, key: str, tab: str) -> dict:
+    lang = L.get_lang(user_id)
+    d = read_dashboard(login)
+    rows = read_trades_block(login, key) if d else None
+    if d is None:
+        text = L.t(lang, "acc_no_data")
+    elif rows is None:
+        text = L.t(lang, "acc_no_data" if key == "today" else "yst_need_ea")
+    else:
+        cur = d.get("currency") or ""
+        header = [L.t(lang, f"{tab}_title", login=login)]
+        blocks = []
+        if not rows:
+            header += ["", L.t(lang, f"{tab}_none")]
+        else:
+            total = sum(r["net"] for r in rows)
+            wins = sum(1 for r in rows if r["net"] > 0)
+            losses = sum(1 for r in rows if r["net"] < 0)
+            rate = round(100.0 * wins / len(rows))
+            header += [L.t(lang, "tdy_summary", n=len(rows), w=wins, l=losses,
+                           v=ltr(f"{total:+,.2f} {cur}"), rate=rate, bar=_bar(wins, len(rows)))]
+            for r in rows:
+                mark = "▲" if r["net"] > 0 else ("▼" if r["net"] < 0 else "▬")
+                blocks.append("\n".join([
+                    L.t(lang, "trade_l1", mark=mark, sym=html.escape(r["symbol"]), side=r["type"],
+                        vol=ltr(format(r["volume"], "g")), pl=ltr(f"{r['net']:+,.2f}"), cur=cur),
+                    L.t(lang, "trade_l2", prices=ltr(f"{_px(r['open'])} → {_px(r['close'])}"),
+                        times=ltr(f"{_hhmm(r['open_time'])} → {_hhmm(r['close_time'])}")),
+                ]))
+        text = "\n".join(_fit_blocks(header, blocks, lang) + _dashboard_footer(d, login, lang))
+    return {"text": text, "reply_markup": _tabs_keyboard(lang, login, tab), "parse_mode": ParseMode.HTML}
+
+def today_trades_view(user_id: int, login: str) -> dict:
+    return _trades_view(user_id, login, "today", "tdy")
+
+def yesterday_trades_view(user_id: int, login: str) -> dict:
+    return _trades_view(user_id, login, "yesterday", "yst")
+
+TOPIC_KIND_LABELS = {"bias": "Bias", "trade": "Trades", "log": "Logs", "result": "Results", "alert": "Alerts"}
 
 def topic_label(kind: str, lang: str = "en") -> str:
     if kind in TOPIC_KIND_LABELS:
@@ -1895,7 +2210,7 @@ def _dest_line(user_id: int) -> str:
 
 def _active_kinds(user_id: int | None) -> list[str]:
     caps = expert_caps(user_id)
-    return [k for k in ("bias", "trade", "log", "result") if k in caps.get("notify_kinds", [])]
+    return [k for k in ("bias", "trade", "log", "result", "alert") if k in caps.get("notify_kinds", [])]
 
 def user_settings_view(user_id: int, login: str | None) -> dict:
     lang = L.get_lang(user_id)
@@ -2239,12 +2554,12 @@ def account_admin_detail_view(login: str) -> dict:
     return {"text": "\n".join(lines), "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
 NOTIFY_LABELS = [("bias", "Bias"), ("trade", "Trades"),
-                 ("log", "Logs"), ("result", "Results")]
+                 ("log", "Logs"), ("result", "Results"), ("alert", "Alerts")]
 
 def reporting_view() -> dict:
     chat_id = settings.get_chat_id()
     t = settings.get_threads()
-    topics_ok = all(t.get(k) for k in ("bias", "trade", "log", "result"))
+    topics_ok = all(t.get(k) for k in ("bias", "trade", "log", "result", "alert"))
 
     lines = [
         f"📓 <b>Chat Journal</b>",
@@ -2258,6 +2573,8 @@ def reporting_view() -> dict:
     if chat_id:
         top.append(InlineKeyboardButton(f"{G_AUTO} Recreate topics", callback_data="ADM_REPROVISION"))
     rows = [top]
+    if chat_id and not topics_ok:
+        rows.append([InlineKeyboardButton(f"{G_AUTO} Create missing topics", callback_data="ADM_TOPICS_FILL")])
     rows.append([InlineKeyboardButton(f"{G_BACK} Back", callback_data="ADM_PANEL")])
     return {"text": "\n".join(lines), "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
 
@@ -2709,18 +3026,20 @@ def common_dir_guide_linux_view() -> dict:
     ])
     return {"text": text, "reply_markup": kb, "parse_mode": ParseMode.HTML}
 
-TOPIC_SPECS = [("bias", "Bias"), ("trade", "Trades"), ("log", "Logs"), ("result", "Results")]
+TOPIC_SPECS = [("bias", "Bias"), ("trade", "Trades"), ("log", "Logs"), ("result", "Results"), ("alert", "Alerts")]
 
 def _apply_group(chat_id_str: str, thread_ids: dict):
     settings.set_chat_id(chat_id_str)
     settings.set_threads(**thread_ids)
-    global CHAT_ID, THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT, _EVENT_TYPE_TO_THREAD
+    global CHAT_ID, THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT, THREAD_ALERT, _EVENT_TYPE_TO_THREAD
     CHAT_ID = chat_id_str
-    THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT = (
-        thread_ids["bias"], thread_ids["trade"], thread_ids["log"], thread_ids["result"]
+    THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT, THREAD_ALERT = (
+        thread_ids["bias"], thread_ids["trade"], thread_ids["log"], thread_ids["result"],
+        thread_ids["alert"]
     )
     _EVENT_TYPE_TO_THREAD.update({
         "BIAS": THREAD_BIAS, "TRADE": THREAD_TRADE, "LOG": THREAD_LOG, "RESULT": THREAD_RESULT,
+        "ALERT": THREAD_ALERT,
     })
 
 async def provision_group(bot, chat_id_str: str, force: bool = False) -> tuple[bool, str, InlineKeyboardMarkup | None]:
@@ -2730,19 +3049,23 @@ async def provision_group(bot, chat_id_str: str, force: bool = False) -> tuple[b
         return False, f"{G_BAD} That is not a numeric chat ID.", None
 
     existing = settings.get_threads()
-    if (not force and str(chat_id) == str(settings.get_chat_id())
+    same_chat = str(chat_id) == str(settings.get_chat_id())
+    if (not force and same_chat
             and all(existing.get(k) for k, _ in TOPIC_SPECS)):
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"{G_AUTO} Recreate topics", callback_data="ADM_REPROVISION")],
             [InlineKeyboardButton(f"{G_BACK} Back", callback_data="ADM_REPORT")],
         ])
         return True, (
-            f"{G_OK} This group is already set up with all four topics. Nothing recreated."
+            f"{G_OK} This group is already set up with all topics. Nothing recreated."
         ), kb
 
     try:
         thread_ids = {}
         for key, name in TOPIC_SPECS:
+            if not force and same_chat and existing.get(key):
+                thread_ids[key] = existing[key]
+                continue
             topic = await bot.create_forum_topic(chat_id=chat_id, name=name)
             thread_ids[key] = topic.message_thread_id
     except TelegramError as e:
@@ -2964,7 +3287,7 @@ async def _handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         await safe_edit_message_text(q,
             f"▣ <b>Reporting Group</b>\n{cur_line}"
             "Send the numeric group ID (e.g. <code>-1001234567890</code>). "
-            "The bot creates the Bias, Trades, Logs and Results topics itself.",
+            "The bot creates the Bias, Trades, Logs, Results and Alerts topics itself.",
             reply_markup=cancel_kb(),
             parse_mode=ParseMode.HTML,
         )
@@ -2973,6 +3296,13 @@ async def _handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         await q.answer()
         await show_working(q, "Recreating topics...")
         ok, text, kb = await provision_group(context.bot, settings.get_chat_id(), force=True)
+        await safe_edit_message_text(q, text, parse_mode=ParseMode.HTML, reply_markup=kb or
+                                  InlineKeyboardMarkup([[InlineKeyboardButton(f"{G_BACK} Back", callback_data="ADM_REPORT")]]))
+
+    elif data == "ADM_TOPICS_FILL":
+        await q.answer()
+        await show_working(q, "Creating missing topics...")
+        ok, text, kb = await provision_group(context.bot, settings.get_chat_id(), force=False)
         await safe_edit_message_text(q, text, parse_mode=ParseMode.HTML, reply_markup=kb or
                                   InlineKeyboardMarkup([[InlineKeyboardButton(f"{G_BACK} Back", callback_data="ADM_REPORT")]]))
 
@@ -3477,6 +3807,39 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         return
 
+    if data.startswith("POS_VIEW_"):
+        target_login = data[len("POS_VIEW_"):]
+        visible = await asyncio.to_thread(visible_accounts, uid)
+        if target_login not in {a["login"] for a in visible}:
+            await q.answer(L.t(lang, "not_your_account"), show_alert=True)
+            return
+        await q.answer()
+        v = await asyncio.to_thread(positions_view, uid, target_login)
+        await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        return
+
+    if data.startswith("TDY_VIEW_"):
+        target_login = data[len("TDY_VIEW_"):]
+        visible = await asyncio.to_thread(visible_accounts, uid)
+        if target_login not in {a["login"] for a in visible}:
+            await q.answer(L.t(lang, "not_your_account"), show_alert=True)
+            return
+        await q.answer()
+        v = await asyncio.to_thread(today_trades_view, uid, target_login)
+        await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        return
+
+    if data.startswith("YST_VIEW_"):
+        target_login = data[len("YST_VIEW_"):]
+        visible = await asyncio.to_thread(visible_accounts, uid)
+        if target_login not in {a["login"] for a in visible}:
+            await q.answer(L.t(lang, "not_your_account"), show_alert=True)
+            return
+        await q.answer()
+        v = await asyncio.to_thread(yesterday_trades_view, uid, target_login)
+        await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        return
+
     if data.startswith("SETT_VIEW_"):
         target_login = data[len("SETT_VIEW_"):]
         visible = await asyncio.to_thread(visible_accounts, uid)
@@ -3774,7 +4137,7 @@ async def _recreate_missing_topic(bot, kind: str) -> int | None:
     current = settings.get_threads()
     current[kind] = new_id
     settings.set_threads(**current)
-    global THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT
+    global THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT, THREAD_ALERT
     if kind == "bias":
         THREAD_BIAS = new_id
     elif kind == "trade":
@@ -3783,6 +4146,8 @@ async def _recreate_missing_topic(bot, kind: str) -> int | None:
         THREAD_LOG = new_id
     elif kind == "result":
         THREAD_RESULT = new_id
+    elif kind == "alert":
+        THREAD_ALERT = new_id
     _EVENT_TYPE_TO_THREAD[kind.upper()] = new_id
     log.warning("Recreated the missing '%s' topic (new thread_id=%s) and saved it.", kind, new_id)
     return new_id
@@ -3871,7 +4236,41 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
         return
     log.error("Unhandled exception while processing %r", update, exc_info=context.error)
 
+PAD_CHAR = "\u2800"
+PAD_MAX = 40
+_TAG_RE = re.compile(r"<[^>]*>")
+_widen_installed = False
+
+def widen_text(text, markup):
+    if not isinstance(text, str) or not text.strip() or not isinstance(markup, InlineKeyboardMarkup):
+        return text
+    widths = [sum(len(b.text) for b in row) + 3 * max(0, len(row) - 1) for row in markup.inline_keyboard]
+    target = min(PAD_MAX, max(widths, default=0))
+    body = text.rstrip()
+    lines = html.unescape(_TAG_RE.sub("", body)).split("\n")
+    if max(len(line) for line in lines) >= target:
+        return text
+    return body + PAD_CHAR * (target - len(lines[-1]))
+
+def _widen_wrap(original):
+    @functools.wraps(original)
+    async def wrapper(self, *args, **kwargs):
+        markup = kwargs.get("reply_markup")
+        if markup is not None and "text" in kwargs:
+            kwargs["text"] = widen_text(kwargs["text"], markup)
+        return await original(self, *args, **kwargs)
+    return wrapper
+
+def install_widen():
+    global _widen_installed
+    if _widen_installed:
+        return
+    for name in ("send_message", "edit_message_text"):
+        setattr(Bot, name, _widen_wrap(getattr(Bot, name)))
+    _widen_installed = True
+
 def main():
+    install_widen()
     app = (
         Application.builder()
         .token(BOT_TOKEN)

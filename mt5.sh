@@ -11,7 +11,7 @@ HEYSOLO_LAST_ERR=""
 trap 'HEYSOLO_LAST_ERR="line ${LINENO} (exit $?)"' ERR
 
 REPO_OWNER="Mahersaber2024"
-REPO_NAME="Heysolo"
+REPO_NAME="HeysoloPublic"
 REPO_API="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents"
 REPO_RAW="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main"
 
@@ -454,7 +454,7 @@ compute_work_res(){
 }
 WORK_RES_WH="${WORK_RES_WH:-$(compute_work_res)}"
 REPO_OWNER="${REPO_OWNER:-Mahersaber2024}"
-REPO_NAME="${REPO_NAME:-Heysolo}"
+REPO_NAME="${REPO_NAME:-HeysoloPublic}"
 REPO_RAW="${REPO_RAW:-https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main}"
 BG_SUBDIR="${BG_SUBDIR:-BG}"
 WALLPAPER_NAME="${WALLPAPER_NAME:-heysolo-des.png}"
