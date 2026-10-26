@@ -8,7 +8,7 @@ import heysolo_settings
 
 logger = logging.getLogger(__name__)
 
-NOTIFY_KINDS = ("bias", "trade", "log", "result")
+NOTIFY_KINDS = ("bias", "trade", "log", "result", "alert")
 
 DEFAULT_EXPERTS: List[dict] = [
     {
@@ -17,7 +17,7 @@ DEFAULT_EXPERTS: List[dict] = [
         "has_bias": True,
         "has_mode": True,
         "has_trading": True,
-        "notify_kinds": ["bias", "trade", "log", "result"],
+        "notify_kinds": ["bias", "trade", "log", "result", "alert"],
         "sort_order": 10,
     },
     {
@@ -26,7 +26,7 @@ DEFAULT_EXPERTS: List[dict] = [
         "has_bias": False,
         "has_mode": False,
         "has_trading": False,
-        "notify_kinds": ["trade", "log", "result"],
+        "notify_kinds": ["trade", "log", "result", "alert"],
         "sort_order": 20,
     },
 ]
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS experts (
     has_bias      BOOLEAN NOT NULL DEFAULT TRUE,
     has_mode      BOOLEAN NOT NULL DEFAULT TRUE,
     has_trading   BOOLEAN NOT NULL DEFAULT TRUE,
-    notify_kinds  TEXT NOT NULL DEFAULT 'bias,trade,log,result',
+    notify_kinds  TEXT NOT NULL DEFAULT 'bias,trade,log,result,alert',
     sort_order    INTEGER NOT NULL DEFAULT 100
 );
 
@@ -216,6 +216,7 @@ class PgDatabase:
                 cur.execute(MIGRATE_USER_TOPICS)
         self._rename_legacy_experts()
         self._seed_experts()
+        self._migrate_alert_kind()
         self._import_legacy_settings()
         self._backfill_user_experts()
         self._migrate_user_dest()
@@ -236,6 +237,12 @@ class PgDatabase:
                           (new["id"], old["id"]))
             self._run("DELETE FROM experts WHERE id = %s", (old["id"],))
             logger.info("Merged expert %s into %s", old_code, new_code)
+
+    def _migrate_alert_kind(self):
+        self._run(
+            "UPDATE experts SET notify_kinds = notify_kinds || ',alert' "
+            "WHERE position('log' in notify_kinds) > 0 AND position('alert' in notify_kinds) = 0"
+        )
 
     def _seed_experts(self):
         for e in DEFAULT_EXPERTS:
