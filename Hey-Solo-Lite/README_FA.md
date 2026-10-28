@@ -9,7 +9,7 @@
 | `worker/` | کد ربات (`worker.js`) و فایل‌های دیتابیس (`migrations/`) ← می‌رود روی Cloudflare |
 | `dashboard/` | خود سایت ← در Cloudflare آپلود می‌شود |
 
-در این راهنما `<WORKER_HOST>` یعنی آدرس Worker شما **بدون** `https://`، مثلاً `heysolo-lite.<your-subdomain>.workers.dev`. اگر دامنهٔ شخصی دارید (بخش ۸)، همان را بگذارید، مثلاً `dashboard.example.com`.
+در این راهنما `<WORKER_HOST>` یعنی آدرس Worker شما **بدون** `https://`، مثلاً `heysolo-lite.<your-subdomain>.workers.dev`. اگر دامنهٔ شخصی دارید (بخش ۸)، همان را بگذارید، مثلاً `api.example.com`.
 
 ---
 
@@ -156,7 +156,16 @@ https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<WORKER_
 
 ## ۸. اختیاری: استفاده از دامنهٔ شخصی (اگر `workers.dev` فیلتر یا کند است)
 
-در بعضی کشورها (مثلاً ایران) آدرس رایگان `workers.dev` بسته است (خطای **1009** در Cloudflare یا اصلاً باز نمی‌شود). راه‌حل ساده است: به Worker یک آدرس روی **دامنهٔ خودتان** بدهید. بقیهٔ چیزها همان‌طور کار می‌کند و فقط آدرس عوض می‌شود.
+در بعضی کشورها (مثلاً ایران) آدرس رایگان `workers.dev` بسته است (خطای **1009** در Cloudflare یا اصلاً باز نمی‌شود). راه‌حل ساده است: به هر دو بخش یک آدرس روی **دامنهٔ خودتان** بدهید. بقیهٔ چیزها همان‌طور کار می‌کند و فقط آدرس‌ها عوض می‌شود.
+
+دو بخش دارید، پس دو آدرس لازم است (هر اسمی خواستید بگذارید، این‌ها مثال است):
+
+| بخش | پروژه در Cloudflare | آدرس مثال |
+|---|---|---|
+| ربات و ارتباط (متاتریدر، تلگرام) | `heysolo-lite` (Worker) | `api.example.com` |
+| سایت داشبورد (چیزی که روی گوشی باز می‌کنید) | `heysolo-dashboard` | `dashboard.example.com` |
+
+دو پروژه نمی‌توانند یک آدرس مشترک داشته باشند، پس دو ساب‌دامنهٔ مختلف بگذارید.
 
 **چیزی که لازم دارید (فقط یک بار):** یک دامنه (مثلاً `example.com`) که در **اکانت Cloudflare شما** اضافه شده و وضعیتش **Active** است. اگر هنوز ندارید:
 
@@ -164,18 +173,16 @@ https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<WORKER_
 2. Cloudflare ← **Add a domain** ← دامنه را بنویسید ← پلن **Free** را انتخاب کنید.
 3. Cloudflare دو **Nameserver** نشان می‌دهد. در پنل ثبت‌کنندهٔ دامنه، Nameserverهای دامنه را با همان دو تا عوض کنید. صبر کنید تا Cloudflare بنویسد **Active** (از چند دقیقه تا چند ساعت).
 
-در ادامه `dashboard.example.com` فقط یک مثال است. هر ساب‌دامنه‌ای که خواستید بگذارید (مثلاً `bot.example.com`).
-
-**مرحله ۱: وصل کردن آدرس به Worker**
-Workers & Pages ← `heysolo-lite` ← **Settings → Domains & Routes → Add → Custom Domain** ← بنویسید `dashboard.example.com` ← **Add domain**. Cloudflare خودش رکورد DNS و گواهی SSL را می‌سازد (۱ تا ۵ دقیقه صبر کنید).
-تست: آدرس `https://dashboard.example.com/health` را باز کنید. باید `"ok":true` ببینید.
+**مرحله ۱: آدرس ربات (`api.example.com`)**
+Workers & Pages ← `heysolo-lite` ← **Settings → Domains & Routes → Add → Custom Domain** ← بنویسید `api.example.com` ← **Add domain**. Cloudflare خودش رکورد DNS و گواهی SSL را می‌سازد (۱ تا ۵ دقیقه صبر کنید).
+تست: آدرس `https://api.example.com/health` را باز کنید. باید `"ok":true` ببینید.
 
 **مرحله ۲: به Worker بگویید آدرس جدیدش چیست**
 Worker ← **Settings → Variables and Secrets → Add**:
 
 | نوع | نام | مقدار |
 |---|---|---|
-| Text | `PUBLIC_URL` | `https://dashboard.example.com` |
+| Text | `PUBLIC_URL` | `https://api.example.com` |
 
 آخر آدرس `/` نگذارید. **Save** و بعد **Deploy** را بزنید. از این به بعد ربات همیشه همین آدرس را نشان می‌دهد، از هر جایی که درخواست بیاید.
 
@@ -183,21 +190,23 @@ Worker ← **Settings → Variables and Secrets → Add**:
 این آدرس را در مرورگر باز کنید (دو جای‌نگهدار را عوض کنید)، باید `"ok":true` ببینید:
 
 ```text
-https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://dashboard.example.com/telegram/webhook&drop_pending_updates=true
+https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://api.example.com/telegram/webhook&drop_pending_updates=true
 ```
 
 - **نصب اول (هنوز Start secure setup را نزده‌اید):** مراحل ۲ و ۳ از بخش ۳ را همان‌طور که نوشته شده انجام دهید.
 - **قبلاً نصب و امن‌سازی شده:** در چت خصوصی یک پیام (مثلاً `/start`) به ربات بدهید، چند ثانیه صبر کنید و یک بار دیگر پیام بدهید. ربات webhook خودش را خودکار درست می‌کند. کلید EA **عوض نمی‌شود**.
 
 **مرحله ۴: متاتریدر ۵**
-- **Tools → Options → Expert Advisors → Allow WebRequest**: آدرس `https://dashboard.example.com` را اضافه کنید.
-- در `HeySolo_Bridge` مقدار **WorkerURL** = `https://dashboard.example.com` (کلید همان قبلی است).
+- **Tools → Options → Expert Advisors → Allow WebRequest**: آدرس `https://api.example.com` را اضافه کنید.
+- در `HeySolo_Bridge` مقدار **WorkerURL** = `https://api.example.com` (کلید همان قبلی است).
 
-**مرحله ۵: سایت داشبورد**
-در ربات یک کد اتصال تازه بسازید (**⚙️ Admin → ☁️ Online Trade Journal → 🔑 Generate dashboard key**) و در سایت جای‌گذاری کنید. آدرس جدید داخل همان کد است.
-اگر خودِ سایت داشبورد هم بسته بود، مرحله ۱ را برای پروژهٔ `heysolo-dashboard` با یک ساب‌دامنهٔ دیگر تکرار کنید، مثلاً `app.example.com`. همین لینک را روی گوشی باز می‌کنید.
+**مرحله ۵: آدرس سایت (`dashboard.example.com`)**
+Workers & Pages ← `heysolo-dashboard` ← **Settings → Domains & Routes → Add → Custom Domain** ← بنویسید `dashboard.example.com` ← **Add domain**. ۱ تا ۵ دقیقه صبر کنید و بعد `https://dashboard.example.com` را باز کنید. همین لینکی است که روی گوشی و کامپیوتر استفاده می‌کنید.
 
-**تمام.** آدرس `https://dashboard.example.com/health` را باز کنید؛ بعد حساب شما در ربات باید 🟢 آنلاین باشد.
+**مرحله ۶: اتصال سایت**
+در ربات یک کد اتصال تازه بسازید (**⚙️ Admin → ☁️ Online Trade Journal → 🔑 Generate dashboard key**) و در سایت جای‌گذاری کنید. آدرس جدید `api.example.com` داخل همان کد است. اطلاعات اتصال برای هر آدرس جدا ذخیره می‌شود، پس روی آدرس جدید سایت یک بار دیگر وصل کنید.
+
+**تمام.** آدرس `https://api.example.com/health` عبارت `"ok":true` را نشان می‌دهد، حساب شما در ربات 🟢 آنلاین است و سایت اطلاعات را نشان می‌دهد.
 
 ---
 

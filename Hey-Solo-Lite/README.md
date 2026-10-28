@@ -9,7 +9,7 @@ Setup guide. You get a Telegram bot for HeySolo ATM, an always-online dashboard 
 | `worker/` | Bot code (`worker.js`) and database files (`migrations/`) → goes to Cloudflare |
 | `dashboard/` | The website → uploaded to Cloudflare |
 
-`<WORKER_HOST>` below means your Worker address **without** `https://`, e.g. `heysolo-lite.<your-subdomain>.workers.dev`. If you use your own domain (section 8), use that instead, e.g. `dashboard.example.com`.
+`<WORKER_HOST>` below means your Worker address **without** `https://`, e.g. `heysolo-lite.<your-subdomain>.workers.dev`. If you use your own domain (section 8), use that instead, e.g. `api.example.com`.
 
 ---
 
@@ -156,7 +156,16 @@ Keep the links private. If a link is longer than 63 characters, enter it in two 
 
 ## 8. Optional: Use your own domain (if `workers.dev` is blocked or slow)
 
-In some countries (for example Iran) the free `workers.dev` address is blocked (Cloudflare error **1009** or the page never opens). The fix is simple: give the Worker an address on **your own domain**. Everything keeps working the same, only the address changes.
+In some countries (for example Iran) the free `workers.dev` address is blocked (Cloudflare error **1009** or the page never opens). The fix is simple: give both parts an address on **your own domain**. Everything keeps working the same, only the addresses change.
+
+You have 2 parts, so you need 2 addresses (use any names you like, these are examples):
+
+| Part | Cloudflare project | Example address |
+|---|---|---|
+| Bot + connection (MT5, Telegram) | `heysolo-lite` (Worker) | `api.example.com` |
+| Dashboard website (what you open on your phone) | `heysolo-dashboard` | `dashboard.example.com` |
+
+Two projects cannot share the same address, so use two different subdomains.
 
 **What you need (once):** a domain (for example `example.com`) added to **your Cloudflare account** and showing **Active**. If you do not have one yet:
 
@@ -164,18 +173,16 @@ In some countries (for example Iran) the free `workers.dev` address is blocked (
 2. Cloudflare → **Add a domain** → enter it → choose the **Free** plan.
 3. Cloudflare shows 2 **nameservers**. Open your registrar and replace the domain's nameservers with those 2. Wait until Cloudflare says **Active** (minutes to a few hours).
 
-Below, `dashboard.example.com` is just an example. Use any subdomain you like (e.g. `bot.example.com`).
-
-**Step 1: Attach the address to the Worker**
-Workers & Pages → `heysolo-lite` → **Settings → Domains & Routes → Add → Custom Domain** → type `dashboard.example.com` → **Add domain**. Cloudflare creates the DNS record and the certificate by itself (wait 1 to 5 minutes).
-Test: open `https://dashboard.example.com/health`. You should see `"ok":true`.
+**Step 1: Address for the bot (`api.example.com`)**
+Workers & Pages → `heysolo-lite` → **Settings → Domains & Routes → Add → Custom Domain** → type `api.example.com` → **Add domain**. Cloudflare creates the DNS record and the certificate by itself (wait 1 to 5 minutes).
+Test: open `https://api.example.com/health`. You should see `"ok":true`.
 
 **Step 2: Tell the Worker its new address**
 Worker → **Settings → Variables and Secrets → Add**:
 
 | Type | Name | Value |
 |---|---|---|
-| Text | `PUBLIC_URL` | `https://dashboard.example.com` |
+| Text | `PUBLIC_URL` | `https://api.example.com` |
 
 No `/` at the end. Press **Save**, then **Deploy**. From now on the bot always shows this address, no matter where a request comes from.
 
@@ -183,21 +190,23 @@ No `/` at the end. Press **Save**, then **Deploy**. From now on the bot always s
 Open this in your browser (replace the 2 placeholders), you should see `"ok":true`:
 
 ```text
-https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://dashboard.example.com/telegram/webhook&drop_pending_updates=true
+https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://api.example.com/telegram/webhook&drop_pending_updates=true
 ```
 
 - **First install (never pressed Start secure setup):** do section 3 steps 2 and 3 as written.
 - **Already installed and secured:** send any message (for example `/start`) to the bot in the private chat, wait a few seconds, then send it once more. The bot repairs its own webhook. Your EA key does **not** change.
 
 **Step 4: MetaTrader 5**
-- **Tools → Options → Expert Advisors → Allow WebRequest**: add `https://dashboard.example.com`.
-- `HeySolo_Bridge` → **WorkerURL** = `https://dashboard.example.com` (the key stays the same).
+- **Tools → Options → Expert Advisors → Allow WebRequest**: add `https://api.example.com`.
+- `HeySolo_Bridge` → **WorkerURL** = `https://api.example.com` (the key stays the same).
 
-**Step 5: Dashboard website**
-In the bot generate a new connection code (**⚙️ Admin → ☁️ Online Trade Journal → 🔑 Generate dashboard key**) and paste it in the site. It already contains the new address.
-If the dashboard site itself is blocked too, do Step 1 again for the `heysolo-dashboard` project with another subdomain, for example `app.example.com`. That is the link you open on your phone.
+**Step 5: Address for the website (`dashboard.example.com`)**
+Workers & Pages → `heysolo-dashboard` → **Settings → Domains & Routes → Add → Custom Domain** → type `dashboard.example.com` → **Add domain**. Wait 1 to 5 minutes, then open `https://dashboard.example.com`. This is the link you use on your phone and PC.
 
-**Done.** Check `https://dashboard.example.com/health`, then your account should show 🟢 online in the bot.
+**Step 6: Connect the website**
+In the bot make a new connection code (**⚙️ Admin → ☁️ Online Trade Journal → 🔑 Generate dashboard key**) and paste it in the site. It already contains the new `api.example.com` address. The data is saved per address, so on the new site address you connect once again.
+
+**Done.** `https://api.example.com/health` shows `"ok":true`, your account is 🟢 online in the bot, and the website shows your data.
 
 ---
 
