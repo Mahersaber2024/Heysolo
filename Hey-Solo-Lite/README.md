@@ -11,6 +11,53 @@ Setup guide. You get a Telegram bot for HeySolo ATM, an always-online dashboard 
 
 `<WORKER_HOST>` below means your Worker address **without** `https://`, e.g. `heysolo-lite.<your-subdomain>.workers.dev`. If you use your own domain (section 8), use that instead, e.g. `api.example.com`.
 
+## How it works
+
+```mermaid
+flowchart LR
+  subgraph PC["Your PC or VPS (MetaTrader 5)"]
+    ATM["HeySolo_ATM<br/>main EA: trades, journal"]
+    BR["HeySolo_Bridge<br/>connection EA"]
+    ATM --- BR
+  end
+
+  subgraph CF["Cloudflare (free)"]
+    W["Worker: heysolo-lite<br/>the brain, one address<br/>(workers.dev or api.example.com)"]
+    DB[("D1: heysolo-lite<br/>bot data")]
+    JDB[("D1: heysolo-journal<br/>journal + screenshots")]
+    SITE["Website: heysolo-dashboard<br/>(workers.dev or dashboard.example.com)"]
+    W --- DB
+    W --- JDB
+  end
+
+  TG["Telegram bot"]
+  YOU["You: phone / PC browser"]
+
+  BR -->|"1. sends account data + trades<br/>(WorkerKey)"| W
+  W -->|"2. commands waiting for the EA"| BR
+  W <-->|"3. messages and buttons<br/>(webhook)"| TG
+  TG <--> YOU
+  YOU -->|"4. opens the page"| SITE
+  YOU -->|"5. site reads your data<br/>(connection code)"| W
+```
+
+**Read it like this**
+
+1. The EAs in MetaTrader 5 send your account data and trades to the **Worker**. `HeySolo_Bridge` also asks the Worker every few seconds if the bot has a command for it.
+2. The Worker saves everything in two free **D1 databases**: one for the bot, one for the journal and screenshots.
+3. The **Telegram bot** is the Worker itself. Telegram calls the Worker (webhook) when you press a button, and the Worker answers. MetaTrader never talks to Telegram directly, so it works even on a restricted network.
+4. The **website** is only a static page. It has no data of its own: after you paste the connection code, it reads your data from the Worker.
+5. Because the Worker is on Cloudflare, MT5 can be off and the site still shows the last data.
+
+### Copy trades between accounts (optional)
+
+```mermaid
+flowchart LR
+  M["Master account<br/>Copier: Transmitter"] -->|"📤 Master link: new trade"| W["Worker<br/>Copy Hub"]
+  W -->|"📥 Follower link: trade to copy"| F1["Follower account 1<br/>Copier: Receiver"]
+  W -->|"📥 Follower link: trade to copy"| F2["Follower account 2<br/>Copier: Receiver"]
+```
+
 ---
 
 ## 1. Telegram
