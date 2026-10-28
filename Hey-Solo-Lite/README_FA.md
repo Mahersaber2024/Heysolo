@@ -9,7 +9,7 @@
 | `worker/` | کد ربات (`worker.js`) و فایل‌های دیتابیس (`migrations/`) ← می‌رود روی Cloudflare |
 | `dashboard/` | خود سایت ← در Cloudflare آپلود می‌شود |
 
-در این راهنما `<WORKER_HOST>` یعنی آدرس Worker شما **بدون** `https://`، مثلاً `heysolo-lite.<your-subdomain>.workers.dev`.
+در این راهنما `<WORKER_HOST>` یعنی آدرس Worker شما **بدون** `https://`، مثلاً `heysolo-lite.<your-subdomain>.workers.dev`. اگر دامنهٔ شخصی دارید (بخش ۸)، همان را بگذارید، مثلاً `dashboard.example.com`.
 
 ---
 
@@ -154,6 +154,51 @@ https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<WORKER_
 
 لینک‌ها را خصوصی نگه دارید. اگر لینک از ۶۳ کاراکتر بلندتر بود، در دو مرحله وارد کنید: اول `https://<WORKER_HOST>` و بعد `tx/<token>` (یا `rx/<token>`).
 
+## ۸. اختیاری: استفاده از دامنهٔ شخصی (اگر `workers.dev` فیلتر یا کند است)
+
+در بعضی کشورها (مثلاً ایران) آدرس رایگان `workers.dev` بسته است (خطای **1009** در Cloudflare یا اصلاً باز نمی‌شود). راه‌حل ساده است: به Worker یک آدرس روی **دامنهٔ خودتان** بدهید. بقیهٔ چیزها همان‌طور کار می‌کند و فقط آدرس عوض می‌شود.
+
+**چیزی که لازم دارید (فقط یک بار):** یک دامنه (مثلاً `example.com`) که در **اکانت Cloudflare شما** اضافه شده و وضعیتش **Active** است. اگر هنوز ندارید:
+
+1. از هر ثبت‌کنندهٔ دامنه (Registrar) یک دامنه بخرید.
+2. Cloudflare ← **Add a domain** ← دامنه را بنویسید ← پلن **Free** را انتخاب کنید.
+3. Cloudflare دو **Nameserver** نشان می‌دهد. در پنل ثبت‌کنندهٔ دامنه، Nameserverهای دامنه را با همان دو تا عوض کنید. صبر کنید تا Cloudflare بنویسد **Active** (از چند دقیقه تا چند ساعت).
+
+در ادامه `dashboard.example.com` فقط یک مثال است. هر ساب‌دامنه‌ای که خواستید بگذارید (مثلاً `bot.example.com`).
+
+**مرحله ۱: وصل کردن آدرس به Worker**
+Workers & Pages ← `heysolo-lite` ← **Settings → Domains & Routes → Add → Custom Domain** ← بنویسید `dashboard.example.com` ← **Add domain**. Cloudflare خودش رکورد DNS و گواهی SSL را می‌سازد (۱ تا ۵ دقیقه صبر کنید).
+تست: آدرس `https://dashboard.example.com/health` را باز کنید. باید `"ok":true` ببینید.
+
+**مرحله ۲: به Worker بگویید آدرس جدیدش چیست**
+Worker ← **Settings → Variables and Secrets → Add**:
+
+| نوع | نام | مقدار |
+|---|---|---|
+| Text | `PUBLIC_URL` | `https://dashboard.example.com` |
+
+آخر آدرس `/` نگذارید. **Save** و بعد **Deploy** را بزنید. از این به بعد ربات همیشه همین آدرس را نشان می‌دهد، از هر جایی که درخواست بیاید.
+
+**مرحله ۳: انتقال ربات تلگرام به آدرس جدید**
+این آدرس را در مرورگر باز کنید (دو جای‌نگهدار را عوض کنید)، باید `"ok":true` ببینید:
+
+```text
+https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://dashboard.example.com/telegram/webhook&drop_pending_updates=true
+```
+
+- **نصب اول (هنوز Start secure setup را نزده‌اید):** مراحل ۲ و ۳ از بخش ۳ را همان‌طور که نوشته شده انجام دهید.
+- **قبلاً نصب و امن‌سازی شده:** در چت خصوصی یک پیام (مثلاً `/start`) به ربات بدهید، چند ثانیه صبر کنید و یک بار دیگر پیام بدهید. ربات webhook خودش را خودکار درست می‌کند. کلید EA **عوض نمی‌شود**.
+
+**مرحله ۴: متاتریدر ۵**
+- **Tools → Options → Expert Advisors → Allow WebRequest**: آدرس `https://dashboard.example.com` را اضافه کنید.
+- در `HeySolo_Bridge` مقدار **WorkerURL** = `https://dashboard.example.com` (کلید همان قبلی است).
+
+**مرحله ۵: سایت داشبورد**
+در ربات یک کد اتصال تازه بسازید (**⚙️ Admin → ☁️ Online Trade Journal → 🔑 Generate dashboard key**) و در سایت جای‌گذاری کنید. آدرس جدید داخل همان کد است.
+اگر خودِ سایت داشبورد هم بسته بود، مرحله ۱ را برای پروژهٔ `heysolo-dashboard` با یک ساب‌دامنهٔ دیگر تکرار کنید، مثلاً `app.example.com`. همین لینک را روی گوشی باز می‌کنید.
+
+**تمام.** آدرس `https://dashboard.example.com/health` را باز کنید؛ بعد حساب شما در ربات باید 🟢 آنلاین باشد.
+
 ---
 
 ## مشکلات رایج
@@ -168,3 +213,6 @@ https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<WORKER_
 | خطای `journal_db_binding_missing` در سایت یا ربات | binding از نوع D1 با نام دقیق `JOURNAL_DB` (دیتابیس `heysolo-journal`) را اضافه و دوباره Deploy کنید. |
 | عکس‌ها نمی‌آیند | binding با نام `JOURNAL_DB` را بررسی و دوباره Deploy کنید. عکس‌های بزرگ‌تر از ۳ مگابایت ذخیره نمی‌شوند، ولی خود معامله ثبت می‌شود. |
 | لاگ کپی `HTTP code: 403` می‌دهد | لینک Master روی حساب Master و لینک Follower روی حساب‌های کپی‌کننده باشد. در صورت نیاز در Copy Hub لینک‌ها را Rotate و لینک‌های جدید را وارد کنید. |
+| خطای **1009** / `workers.dev` باز نمی‌شود | کشور شما روی `workers.dev` بسته است. از دامنهٔ شخصی استفاده کنید: بخش ۸. |
+| Custom Domain می‌گوید «domain not found» | دامنه هنوز در اکانت Cloudflare شما **Active** نشده. مرحلهٔ Nameserver در بخش ۸ را کامل کنید. |
+| ربات هنوز آدرس قدیمی `workers.dev` را نشان می‌دهد | متغیر `PUBLIC_URL` را اضافه کنید (بخش ۸، مرحله ۲) و **Deploy** بزنید، بعد دوباره از ربات بپرسید. |

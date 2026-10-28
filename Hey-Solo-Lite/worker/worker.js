@@ -1,4 +1,10 @@
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024, MAX_COPIER_BODY = 64 * 1024, SNAPSHOT_MAX = 2500 * 1024;
+// Public address of this Worker. If the PUBLIC_URL variable is set (e.g. https://dashboard.example.com), it is used everywhere
+// (Telegram webhook, links shown by the bot). If not set, the address the request came in on is used (workers.dev).
+const originOf = (e, req) => {
+  const v = String(e.PUBLIC_URL || "").trim().replace(/\/+$/, "");
+  return /^https:\/\/[^\s/]+$/i.test(v) ? v : new URL(req.url).origin;
+};
 const now = () => Math.floor(Date.now() / 1000);
 const json = (x, status = 200) => new Response(JSON.stringify(x), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
 const txt = (x, status = 200) => new Response(x, { status, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
@@ -46,7 +52,7 @@ async function secureWebhookSetup(req, e, chat, uid) {
   if (lock && now() - lock < 20) return sendMessage(e, chat, "⏳ Secure setup is already running. Wait a few seconds and do not press it again.");
   await putBotSetting(e, "lock:secure_setup", now());
   try {
-    const eaKey = makeToken(24), webhookSecret = makeToken(24), origin = new URL(req.url).origin;
+    const eaKey = makeToken(24), webhookSecret = makeToken(24), origin = originOf(e, req);
     const res = await setWebhookWithRetry(e, { url: `${origin}/telegram/webhook`, secret_token: webhookSecret, allowed_updates: ["message", "edited_message", "callback_query"] });
     if (!res.ok) {
       const d = String(res.description || "Telegram rejected the request");
@@ -881,7 +887,7 @@ async function webhook(req, e, ctx) {
     const chat = String(m?.chat?.id ?? cb?.message?.chat?.id ?? "");
     const uid = String(m?.from?.id ?? cb?.from?.id ?? "");
     if (!chat || !uid) return txt("ok");
-    e.__origin = new URL(req.url).origin;
+    e.__origin = originOf(e, req);
     const webhookHash = await storedHash(e, "telegram_webhook");
     if (webhookHash) {
         const header = req.headers.get("X-Telegram-Bot-Api-Secret-Token") || "";
@@ -889,7 +895,7 @@ async function webhook(req, e, ctx) {
             // Webhook was re-registered without our secret (e.g. setWebhook opened in a browser): restore it from the admin's own message. This update is still rejected; Telegram retries it with the new secret.
             if (!header && isAdmin(e, uid)) {
                 const secret = makeToken(24);
-                const res = await setWebhookWithRetry(e, { url: `${new URL(req.url).origin}/telegram/webhook`, secret_token: secret, allowed_updates: ["message", "edited_message", "callback_query"] });
+                const res = await setWebhookWithRetry(e, { url: `${originOf(e, req)}/telegram/webhook`, secret_token: secret, allowed_updates: ["message", "edited_message", "callback_query"] });
                 if (res.ok) await saveHash(e, "telegram_webhook", secret);
             }
             return txt("forbidden", 403);
@@ -947,7 +953,7 @@ async function webhook(req, e, ctx) {
         }
         else if (data === "SETUP") {
             if (isAdmin(e, uid))
-                await setupView(e, chat, uid, mid, new URL(req.url).origin);
+                await setupView(e, chat, uid, mid, originOf(e, req));
             else
                 await editMessage(e, chat, mid, "Admin only.");
         }
@@ -980,9 +986,9 @@ async function webhook(req, e, ctx) {
         }
         else if (data === "EAKEY") {
             if (!isAdmin(e,uid) || String(chat)!==String(uid)) await editMessage(e,chat,mid,"Open the bot in your private chat to generate or rotate the EA key.");
-            else { const existing=await storedHash(e,"ea_key"); if(existing) await editMessage(e,chat,mid,"Rotate the EA key? The current key stops working immediately. The new key is sent once by private message.",keyboard([[ik("Confirm rotate","EAKEY_ROTATE")],[ik("Cancel","ADM_REPORT")]])); else await generateEAKey(e,chat,uid,new URL(req.url).origin); }
+            else { const existing=await storedHash(e,"ea_key"); if(existing) await editMessage(e,chat,mid,"Rotate the EA key? The current key stops working immediately. The new key is sent once by private message.",keyboard([[ik("Confirm rotate","EAKEY_ROTATE")],[ik("Cancel","ADM_REPORT")]])); else await generateEAKey(e,chat,uid,originOf(e, req)); }
         }
-        else if (data === "EAKEY_ROTATE") { if(isAdmin(e,uid)&&String(chat)===String(uid)) await generateEAKey(e,chat,uid,new URL(req.url).origin); else await editMessage(e,chat,mid,"Admin only."); }
+        else if (data === "EAKEY_ROTATE") { if(isAdmin(e,uid)&&String(chat)===String(uid)) await generateEAKey(e,chat,uid,originOf(e, req)); else await editMessage(e,chat,mid,"Admin only."); }
         else if (data === "ADM_SETCHAT") {
             if (isAdmin(e, uid))
                 await setGroupPrompt(e, chat, uid, mid);
@@ -1047,7 +1053,7 @@ async function webhook(req, e, ctx) {
                 await alertThresholdPrompt(e, chat, uid, login, data.startsWith("ALD:") ? "daily" : "overall", mid);
         }
         else if (data.startsWith("CPV:"))
-            await showChannel(e, chat, mid, data.slice(4), new URL(req.url).origin);
+            await showChannel(e, chat, mid, data.slice(4), originOf(e, req));
         else if (data === "CPNEW") {
             if (!isAdmin(e, uid))
                 await editMessage(e, chat, mid, "Admin only.");
@@ -1055,7 +1061,7 @@ async function webhook(req, e, ctx) {
                 await ensureCopierCols(e);
                 const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12), tx = makeShortToken(), rx = makeShortToken();
                 await e.DB.prepare("INSERT INTO copier_channels(id,name,tx_hash,rx_hash,tx_token,rx_token,created_at) VALUES(?,?,?,?,?,?,?)").bind(id, `Hub ${id.slice(0,4)}`, await hashToken(tx), await hashToken(rx), tx, rx, now()).run();
-                await showChannel(e, chat, mid, id, new URL(req.url).origin);
+                await showChannel(e, chat, mid, id, originOf(e, req));
             }
         }
         else if (data.startsWith("CPSIG:")) {
@@ -1070,7 +1076,7 @@ async function webhook(req, e, ctx) {
         else if (data.startsWith("CPROTX:") && isAdmin(e, uid)) {
             const id = data.slice(7);
             await issueHubLinks(e, id);
-            await showChannel(e, chat, mid, id, new URL(req.url).origin);
+            await showChannel(e, chat, mid, id, originOf(e, req));
         }
         else if (data.startsWith("CPCLR:") && isAdmin(e, uid)) {
             await editMessage(e, chat, mid, "Clear all currently stored copier signals in this hub?", keyboard([[ik("Confirm clear", `CPCLRX:${data.slice(6)}`)], [ik("Cancel", `CPV:${data.slice(6)}`)]]));

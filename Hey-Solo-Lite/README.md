@@ -9,7 +9,7 @@ Setup guide. You get a Telegram bot for HeySolo ATM, an always-online dashboard 
 | `worker/` | Bot code (`worker.js`) and database files (`migrations/`) → goes to Cloudflare |
 | `dashboard/` | The website → uploaded to Cloudflare |
 
-`<WORKER_HOST>` below means your Worker address **without** `https://`, e.g. `heysolo-lite.<your-subdomain>.workers.dev`.
+`<WORKER_HOST>` below means your Worker address **without** `https://`, e.g. `heysolo-lite.<your-subdomain>.workers.dev`. If you use your own domain (section 8), use that instead, e.g. `dashboard.example.com`.
 
 ---
 
@@ -154,6 +154,51 @@ In the bot: **⚙️ Admin → ⚡ Copy Hub → ➕ New hub**. You get two links
 
 Keep the links private. If a link is longer than 63 characters, enter it in two steps: first `https://<WORKER_HOST>`, then `tx/<token>` (or `rx/<token>`).
 
+## 8. Optional: Use your own domain (if `workers.dev` is blocked or slow)
+
+In some countries (for example Iran) the free `workers.dev` address is blocked (Cloudflare error **1009** or the page never opens). The fix is simple: give the Worker an address on **your own domain**. Everything keeps working the same, only the address changes.
+
+**What you need (once):** a domain (for example `example.com`) added to **your Cloudflare account** and showing **Active**. If you do not have one yet:
+
+1. Buy a domain from any registrar.
+2. Cloudflare → **Add a domain** → enter it → choose the **Free** plan.
+3. Cloudflare shows 2 **nameservers**. Open your registrar and replace the domain's nameservers with those 2. Wait until Cloudflare says **Active** (minutes to a few hours).
+
+Below, `dashboard.example.com` is just an example. Use any subdomain you like (e.g. `bot.example.com`).
+
+**Step 1: Attach the address to the Worker**
+Workers & Pages → `heysolo-lite` → **Settings → Domains & Routes → Add → Custom Domain** → type `dashboard.example.com` → **Add domain**. Cloudflare creates the DNS record and the certificate by itself (wait 1 to 5 minutes).
+Test: open `https://dashboard.example.com/health`. You should see `"ok":true`.
+
+**Step 2: Tell the Worker its new address**
+Worker → **Settings → Variables and Secrets → Add**:
+
+| Type | Name | Value |
+|---|---|---|
+| Text | `PUBLIC_URL` | `https://dashboard.example.com` |
+
+No `/` at the end. Press **Save**, then **Deploy**. From now on the bot always shows this address, no matter where a request comes from.
+
+**Step 3: Move the Telegram bot to the new address**
+Open this in your browser (replace the 2 placeholders), you should see `"ok":true`:
+
+```text
+https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://dashboard.example.com/telegram/webhook&drop_pending_updates=true
+```
+
+- **First install (never pressed Start secure setup):** do section 3 steps 2 and 3 as written.
+- **Already installed and secured:** send any message (for example `/start`) to the bot in the private chat, wait a few seconds, then send it once more. The bot repairs its own webhook. Your EA key does **not** change.
+
+**Step 4: MetaTrader 5**
+- **Tools → Options → Expert Advisors → Allow WebRequest**: add `https://dashboard.example.com`.
+- `HeySolo_Bridge` → **WorkerURL** = `https://dashboard.example.com` (the key stays the same).
+
+**Step 5: Dashboard website**
+In the bot generate a new connection code (**⚙️ Admin → ☁️ Online Trade Journal → 🔑 Generate dashboard key**) and paste it in the site. It already contains the new address.
+If the dashboard site itself is blocked too, do Step 1 again for the `heysolo-dashboard` project with another subdomain, for example `app.example.com`. That is the link you open on your phone.
+
+**Done.** Check `https://dashboard.example.com/health`, then your account should show 🟢 online in the bot.
+
 ---
 
 ## Common problems
@@ -168,3 +213,6 @@ Keep the links private. If a link is longer than 63 characters, enter it in two 
 | Site or bot says `journal_db_binding_missing` | Add the D1 binding named exactly `JOURNAL_DB` (database `heysolo-journal`), then Deploy again. |
 | Screenshots do not load | Check the `JOURNAL_DB` binding and Deploy again. Screenshots over 3 MB are skipped; the trade itself is still saved. |
 | Copy log shows `HTTP code: 403` | Master link on the Master account, Follower link on followers. If needed, rotate the links in Copy Hub and paste the new ones. |
+| Error **1009** / `workers.dev` does not open | Your country is blocked on `workers.dev`. Use your own domain: section 8. |
+| Custom Domain says "domain not found" | The domain is not **Active** in your Cloudflare account yet. Finish the nameserver step in section 8. |
+| Bot still shows the old `workers.dev` address | Add `PUBLIC_URL` (section 8, step 2) and press **Deploy**, then ask the bot again. |
