@@ -7,8 +7,7 @@ Setup guide. You get a Telegram bot for HeySolo ATM, an always-online dashboard 
 | Folder | Use |
 |---|---|
 | `worker/` | Bot code (`worker.js`) and database files (`migrations/`) → goes to Cloudflare |
-| `dashboard/` | The website → goes to Cloudflare Pages |
-| `mt5/Experts/` | MetaTrader files → go to `MQL5/Experts` |
+| `dashboard/` | The website → uploaded to Cloudflare |
 
 `<WORKER_HOST>` below means your Worker address **without** `https://`, e.g. `heysolo-lite.<your-subdomain>.workers.dev`.
 
@@ -102,13 +101,16 @@ https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<WORKER_
 
 ## 4. MetaTrader 5
 
-1. Copy the 3 files from `mt5/Experts/` into `MQL5/Experts` and compile both `.mq5` files in MetaEditor.
-2. **Tools → Options → Expert Advisors**: enable **Allow WebRequest** and add `https://<WORKER_HOST>`.
-3. Main EA `HeySolo_ATM` → open its panel and set:
+1. Download the experts from **[HeySolo Tools | MT5 Downloads](https://heysolo.online/download#atm)**: `HeySolo_ATM` (main) and `HeySolo_Bridge`.
+2. In MetaTrader 5 open **File → Open Data Folder**, go to `MQL5` → `Experts` and copy the downloaded files there.
+3. In the **Navigator** panel right-click → **Refresh**. The experts now appear in the list.
+4. Make sure **Algo Trading** is on (the button in the top toolbar is green).
+5. **Tools → Options → Expert Advisors**: enable **Allow WebRequest** and add `https://<WORKER_HOST>`.
+6. Attach the main expert `HeySolo_ATM` to a chart (double-click it in the Navigator), open its panel and set:
    - **Telegram → Send Via** = `SEND PY BOT / BRIDGE EA`
    - **Trade Journal (Web)** = ON
    - **Journal storage** = `Online (Cloudflare)`
-4. Attach `HeySolo_Bridge` once on any other chart and fill in:
+7. Attach `HeySolo_Bridge` once on any other chart and fill in:
    - **WorkerURL** = `https://<WORKER_HOST>`
    - **WorkerKey** = the key from step 3
 
@@ -117,24 +119,20 @@ After a moment your account appears in the bot menu as 🟢 online.
 ## 5. Dashboard website
 
 **Upload the site (once)**
-1. Cloudflare → **Workers & Pages → Create → Pages → Upload assets**.
-2. Name it, e.g. `heysolo-dashboard` → **Create project**.
-3. Drag in the folder `dashboard` → **Deploy site**.
+1. Cloudflare → **Workers & Pages → Create application**.
+2. On the "Make something new" screen choose **Upload your static files** (the folder icon, last option). Do not choose the legacy Pages link at the bottom.
+3. Name it, e.g. `heysolo-dashboard` → **Deploy**.
+4. Drag in the folder `dashboard` (or all the files inside it) → **Deploy**.
 
-Your links:
-- English: `https://heysolo-dashboard.pages.dev/`
-- Persian: `https://heysolo-dashboard.pages.dev/Index.fa.html` (capital **I**)
+Cloudflare shows your site address when it finishes, like `https://heysolo-dashboard.<your-subdomain>.workers.dev`. Open it. The language of the site can be switched inside the site.
 
-To update the site later: open the same Pages project → **Create deployment** → upload the folder again. The link stays the same. Do not delete the project.
+To update the site later: open the same project, upload the `dashboard` folder again and deploy. The link stays the same. Do not delete the project.
 
-**Get your dashboard key**
-In the bot: **⚙️ Admin → ☁️ Online Trade Journal → 🔑 Generate dashboard key**, then send your account **Login** number. Copy the key (shown once). Your account must already be visible in the bot (step 4).
+**Get your connection code**
+In the bot: **⚙️ Admin → ☁️ Online Trade Journal → 🔑 Generate dashboard key**, then tap your account in the list. The bot sends a **connection code**: copy it (shown once). It already contains the Worker address, your account and the key. Your account must already be visible in the bot (step 4). You can make a separate key for each account; a new key replaces the old key of that account.
 
 **Connect the site**
-Open your site link. In the connection window (or Journal tab → **Configure online**) enter:
-1. Worker URL: `https://<WORKER_HOST>`
-2. Account **Login**
-3. **Dashboard key**
+Open your site link. The connection window opens by itself the first time: tap **Paste connection code from the bot**. That's all; it tests the connection and connects by itself. (Manual fields are there as a fallback: Worker URL `https://<WORKER_HOST>`, account Login, Dashboard key.)
 
 This is saved in that browser only; enter it again on another phone or PC.
 
@@ -169,5 +167,4 @@ Keep the links private. If a link is longer than 63 characters, enter it in two 
 | Site says `account_not_found` | Start MT5 and `HeySolo_Bridge` and wait for the first sync. |
 | Site or bot says `journal_db_binding_missing` | Add the D1 binding named exactly `JOURNAL_DB` (database `heysolo-journal`), then Deploy again. |
 | Screenshots do not load | Check the `JOURNAL_DB` binding and Deploy again. Screenshots over 3 MB are skipped; the trade itself is still saved. |
-| Persian site gives 404 | Use `Index.fa.html` with a capital **I**. |
 | Copy log shows `HTTP code: 403` | Master link on the Master account, Follower link on followers. If needed, rotate the links in Copy Hub and paste the new ones. |

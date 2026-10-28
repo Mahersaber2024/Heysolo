@@ -1,0 +1,6 @@
+# Old / wrong-case Persian URLs -> clean URL (query string such as ?acc=... is kept)
+/index.fa.html  /fa  301
+/Index.fa.html  /fa  301
+/Index_fa.html  /fa  301
+/index_fa.html  /fa  301
+/Index.html     /    301

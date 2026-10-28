@@ -7,8 +7,7 @@
 | پوشه | کاربرد |
 |---|---|
 | `worker/` | کد ربات (`worker.js`) و فایل‌های دیتابیس (`migrations/`) ← می‌رود روی Cloudflare |
-| `dashboard/` | خود سایت ← می‌رود روی Cloudflare Pages |
-| `mt5/Experts/` | فایل‌های متاتریدر ← می‌روند در `MQL5/Experts` |
+| `dashboard/` | خود سایت ← در Cloudflare آپلود می‌شود |
 
 در این راهنما `<WORKER_HOST>` یعنی آدرس Worker شما **بدون** `https://`، مثلاً `heysolo-lite.<your-subdomain>.workers.dev`.
 
@@ -102,13 +101,16 @@ https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<WORKER_
 
 ## ۴. متاتریدر ۵
 
-1. سه فایل `mt5/Experts/` را در `MQL5/Experts` کپی کنید و هر دو فایل `.mq5` را در MetaEditor کامپایل کنید.
-2. **Tools → Options → Expert Advisors**: گزینه‌ی **Allow WebRequest** را روشن و `https://<WORKER_HOST>` را اضافه کنید.
-3. اکسپرت اصلی `HeySolo_ATM` ← پنلش را باز کنید و تنظیم کنید:
+1. اکسپرت‌ها را از **[HeySolo Tools | MT5 Downloads](https://heysolo.online/download#atm)** دانلود کنید: `HeySolo_ATM` (اصلی) و `HeySolo_Bridge`.
+2. در متاتریدر ۵ از **File → Open Data Folder** وارد پوشه‌ی `MQL5` ← `Experts` شوید و فایل‌های دانلودشده را آنجا کپی کنید.
+3. در پنل **Navigator** راست‌کلیک ← **Refresh**. اکسپرت‌ها حالا در لیست دیده می‌شوند.
+4. مطمئن شوید **Algo Trading** روشن است (دکمه‌ی بالای صفحه سبز باشد).
+5. **Tools → Options → Expert Advisors**: گزینه‌ی **Allow WebRequest** را روشن و `https://<WORKER_HOST>` را اضافه کنید.
+6. اکسپرت اصلی `HeySolo_ATM` را روی یک چارت بگذارید (در Navigator دوبار کلیک)، پنلش را باز کنید و تنظیم کنید:
    - **Telegram ← Send Via** = `SEND PY BOT / BRIDGE EA`
    - **Trade Journal (Web)** = ON
    - **Journal storage** = `Online (Cloudflare)`
-4. اکسپرت `HeySolo_Bridge` را یک بار روی یک چارت دیگر بگذارید و پر کنید:
+7. اکسپرت `HeySolo_Bridge` را یک بار روی یک چارت دیگر بگذارید و پر کنید:
    - **WorkerURL** = `https://<WORKER_HOST>`
    - **WorkerKey** = کلید مرحله‌ی ۳
 
@@ -117,24 +119,20 @@ https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<WORKER_
 ## ۵. سایت داشبورد
 
 **آپلود سایت (فقط یک بار)**
-1. در Cloudflare: **Workers & Pages → Create → Pages → Upload assets**.
-2. یک نام بدهید، مثلاً `heysolo-dashboard` ← **Create project**.
-3. پوشه‌ی `dashboard` را بکشید داخل کادر ← **Deploy site**.
+1. در Cloudflare: **Workers & Pages → Create application**.
+2. در صفحه‌ی «Make something new» گزینه‌ی **Upload your static files** (آیکون پوشه، آخرین گزینه) را انتخاب کنید. لینک Pages قدیمی پایین صفحه را انتخاب نکنید.
+3. یک نام بدهید، مثلاً `heysolo-dashboard` ← **Deploy**.
+4. پوشه‌ی `dashboard` (یا همه‌ی فایل‌های داخلش) را بکشید داخل کادر ← **Deploy**.
 
-لینک‌های شما:
-- انگلیسی: `https://heysolo-dashboard.pages.dev/`
-- فارسی: `https://heysolo-dashboard.pages.dev/Index.fa.html` (**I** بزرگ)
+وقتی تمام شد، Cloudflare آدرس سایت را نشان می‌دهد، مثل `https://heysolo-dashboard.<your-subdomain>.workers.dev`. آن را باز کنید. زبان سایت از داخل خود سایت قابل تغییر است.
 
-برای به‌روزرسانی بعدی سایت: همان پروژه‌ی Pages ← **Create deployment** ← دوباره پوشه را آپلود کنید. لینک عوض نمی‌شود. پروژه را پاک نکنید.
+برای به‌روزرسانی بعدی: همان پروژه را باز کنید، پوشه‌ی `dashboard` را دوباره آپلود و Deploy کنید. لینک عوض نمی‌شود. پروژه را پاک نکنید.
 
-**گرفتن کلید داشبورد**
-در ربات: **⚙️ Admin → ☁️ Online Trade Journal → 🔑 Generate dashboard key** و شماره‌ی **Login** حساب را بفرستید. کلید را کپی کنید (فقط یک بار نمایش داده می‌شود). حساب باید قبلاً در ربات دیده شود (مرحله‌ی ۴).
+**گرفتن کد اتصال**
+در ربات: **⚙️ Admin → ☁️ Online Trade Journal → 🔑 Generate dashboard key** و روی حساب خود در لیست بزنید. ربات یک **کد اتصال** می‌فرستد؛ آن را کپی کنید (فقط یک بار نمایش داده می‌شود). آدرس Worker، حساب و کلید داخل همین کد است. حساب باید قبلاً در ربات دیده شود (مرحله‌ی ۴). برای هر حساب می‌توانید کلید جدا بسازید؛ کلید جدید جای کلید قبلیِ همان حساب را می‌گیرد.
 
 **اتصال سایت**
-لینک سایت را باز کنید. در پنجره‌ی اتصال (یا تب ژورنال ← **تنظیم اتصال**) وارد کنید:
-1. آدرس Worker: `https://<WORKER_HOST>`
-2. شماره‌ی **Login** حساب
-3. **Dashboard Key**
+لینک سایت را باز کنید. بار اول پنجره‌ی اتصال خودش باز می‌شود؛ دکمه‌ی **چسباندن کد اتصال از ربات** را بزنید. همین؛ خودش اتصال را تست می‌کند و وصل می‌شود. (فیلدهای دستی فقط پشتیبان‌اند: آدرس Worker ‏`https://<WORKER_HOST>`، شماره‌ی Login، کلید.)
 
 این اطلاعات فقط در همان مرورگر ذخیره می‌شود؛ روی گوشی یا کامپیوتر دیگر دوباره وارد کنید.
 
@@ -169,5 +167,4 @@ https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<WORKER_
 | سایت `account_not_found` می‌دهد | MT5 و `HeySolo_Bridge` را روشن کنید و منتظر اولین ارسال بمانید. |
 | خطای `journal_db_binding_missing` در سایت یا ربات | binding از نوع D1 با نام دقیق `JOURNAL_DB` (دیتابیس `heysolo-journal`) را اضافه و دوباره Deploy کنید. |
 | عکس‌ها نمی‌آیند | binding با نام `JOURNAL_DB` را بررسی و دوباره Deploy کنید. عکس‌های بزرگ‌تر از ۳ مگابایت ذخیره نمی‌شوند، ولی خود معامله ثبت می‌شود. |
-| سایت فارسی 404 می‌دهد | آدرس را با `Index.fa.html` و **I** بزرگ بزنید. |
 | لاگ کپی `HTTP code: 403` می‌دهد | لینک Master روی حساب Master و لینک Follower روی حساب‌های کپی‌کننده باشد. در صورت نیاز در Copy Hub لینک‌ها را Rotate و لینک‌های جدید را وارد کنید. |

@@ -881,6 +881,7 @@ async function webhook(req, e, ctx) {
     const chat = String(m?.chat?.id ?? cb?.message?.chat?.id ?? "");
     const uid = String(m?.from?.id ?? cb?.from?.id ?? "");
     if (!chat || !uid) return txt("ok");
+    e.__origin = new URL(req.url).origin;
     const webhookHash = await storedHash(e, "telegram_webhook");
     if (webhookHash) {
         const header = req.headers.get("X-Telegram-Bot-Api-Secret-Token") || "";
@@ -951,9 +952,25 @@ async function webhook(req, e, ctx) {
                 await editMessage(e, chat, mid, "Admin only.");
         }
         else if (data === "JR_ADMIN") { await deleteBotSetting(e,`pending:${uid}`); if(isAdmin(e,uid)) await journalAdminView(e,chat,mid); else await editMessage(e,chat,mid,"Admin only."); }
-        else if (data === "JR_RET" || data === "JR_CAP" || data === "JR_BUDGET" || data === "JR_KEY") {
+        else if (data === "JR_KEY") {
             if(!isAdmin(e,uid)||String(chat)!==String(uid)) await editMessage(e,chat,mid,"Open this in your private admin chat.");
-            else { const act=data==="JR_RET"?"journal_retention":data==="JR_CAP"?"journal_cap":data==="JR_BUDGET"?"journal_budget":"journal_key"; await putBotSetting(e,`pending:${uid}`,act); await editMessage(e,chat,mid,act==="journal_key"?"Send the numeric MT5 account login. The new key replaces the previous key and is shown once.":act==="journal_retention"?"Send the number of days to retain closed journal entries (1–3650).":act==="journal_budget"?"Send the budget per journal database in MB (64–460). Screenshots fill each database up to this size.":"Send the per-account journal cap in KB (128–1400). Oldest closed trades will be removed first.",keyboard([[ik("Cancel","JR_ADMIN")]])); }
+            else { await putBotSetting(e,`pending:${uid}`,"journal_key"); await dashboardKeyAccountList(e,chat,mid); }
+        }
+        else if (data.startsWith("JRK:")) {
+            if(!isAdmin(e,uid)||String(chat)!==String(uid)) await editMessage(e,chat,mid,"Open this in your private admin chat.");
+            else await issueDashboardKey(e,chat,uid,data.slice(4));
+        }
+        else if (data.startsWith("JRKN:")) {
+            if(!isAdmin(e,uid)||String(chat)!==String(uid)) await editMessage(e,chat,mid,"Open this in your private admin chat.");
+            else await editMessage(e,chat,mid,`Generate a new dashboard key for account ${data.slice(5)}? The current key stops working immediately and the dashboard must be reconnected with the new key.`,keyboard([[ik("✅ Generate new key",`JRKX:${data.slice(5)}`)],[ik("Cancel","JR_ADMIN")]]));
+        }
+        else if (data.startsWith("JRKX:")) {
+            if(!isAdmin(e,uid)||String(chat)!==String(uid)) await editMessage(e,chat,mid,"Open this in your private admin chat.");
+            else await issueDashboardKey(e,chat,uid,data.slice(5),true);
+        }
+        else if (data === "JR_RET" || data === "JR_CAP" || data === "JR_BUDGET") {
+            if(!isAdmin(e,uid)||String(chat)!==String(uid)) await editMessage(e,chat,mid,"Open this in your private admin chat.");
+            else { const act=data==="JR_RET"?"journal_retention":data==="JR_CAP"?"journal_cap":data==="JR_BUDGET"?"journal_budget":"journal_key"; await putBotSetting(e,`pending:${uid}`,act); await editMessage(e,chat,mid,act==="journal_key"?"Send the numeric MT5 account login to see its dashboard key.":act==="journal_retention"?"Send the number of days to retain closed journal entries (1–3650).":act==="journal_budget"?"Send the budget per journal database in MB (64–460). Screenshots fill each database up to this size.":"Send the per-account journal cap in KB (128–1400). Oldest closed trades will be removed first.",keyboard([[ik("Cancel","JR_ADMIN")]])); }
         }
         else if (data === "ADM_REPORT") {
             if (isAdmin(e, uid))
@@ -1477,20 +1494,50 @@ async function journalAdminView(e,chat,msg){
   const days=Number(await getBotSetting(e,"journal:retention_days")||365), cap=Number(await getBotSetting(e,"journal:cap_kb")||1200), budget=Number(await getBotSetting(e,"journal:budget_mb")||430);
   const ids=journalShards(e); let dbLines="⚠️ No journal database connected. Add the D1 binding JOURNAL_DB.";
   if(ids.length){ await ensureJournalDB(e); const r=await e.JOURNAL_DB.prepare("SELECT shard,COALESCE(SUM(size),0) AS s FROM shot_index GROUP BY shard").all(); const used=new Map((r.results||[]).map(x=>[Number(x.shard),Number(x.s)])); dbLines=ids.map(k=>`   ${k===1?"JOURNAL_DB":"JOURNAL_DB"+k}: ${((used.get(k)||0)/1048576).toFixed(0)} MB screenshots`).join("\n"); }
-  const rows=[[ik(`🧹 Retention · ${days} days`,"JR_RET")],[ik(`📦 Per-account cap · ${cap} KB`,"JR_CAP")],[ik(`🗄 Budget per database · ${budget} MB`,"JR_BUDGET")],[ik("🔑 Generate dashboard key","JR_KEY")],[ik("← Back","ADM_PANEL")]];
-  return editHTML(e,chat,msg,`☁️ <b>Online Trade Journal</b>\n━━━━━━━━━━━━━━\nOldest closed trades are trimmed during EA sync when retention is reached. Open trades are kept.\n\n🗓 Retention: <b>${days} days</b>\n📦 Per-account cap: <b>${cap} KB</b>\n🗄 Budget per journal database: <b>${budget} MB</b>\n🔐 Dashboard keys are scoped to one account and shown once.\n\n<b>Journal databases (${ids.length})</b>\n<code>${dbLines}</code>\n\nScreenshots fill the databases one after another. When all are full, the oldest database is emptied and reused (those old screenshots disappear, trades stay). Add JOURNAL_DB2 … JOURNAL_DB9 bindings for more space (500 MB each, free).`,keyboard(rows));
+  const rows=[[ik(`🧹 Retention · ${days} days`,"JR_RET")],[ik(`📦 Per-account cap · ${cap} KB`,"JR_CAP")],[ik(`🗄 Budget per database · ${budget} MB`,"JR_BUDGET")],[ik("🔑 Dashboard key","JR_KEY")],[ik("← Back","ADM_PANEL")]];
+  return editHTML(e,chat,msg,`☁️ <b>Online Trade Journal</b>\n━━━━━━━━━━━━━━\nOldest closed trades are trimmed during EA sync when retention is reached. Open trades are kept.\n\n🗓 Retention: <b>${days} days</b>\n📦 Per-account cap: <b>${cap} KB</b>\n🗄 Budget per journal database: <b>${budget} MB</b>\n🔐 Dashboard keys are scoped to one account. Open 🔑 Dashboard key any time to see and copy them again.\n\n<b>Journal databases (${ids.length})</b>\n<code>${dbLines}</code>\n\nScreenshots fill the databases one after another. When all are full, the oldest database is emptied and reused (those old screenshots disappear, trades stay). Add JOURNAL_DB2 … JOURNAL_DB9 bindings for more space (500 MB each, free).`,keyboard(rows));
+}
+async function dashboardKeyAccountList(e,chat,mid){
+  const r=await e.DB.prepare("SELECT login,broker,server FROM accounts ORDER BY updated_at DESC LIMIT 30").all(), list=r.results||[];
+  const rows=list.map(a=>[ik(`${a.login}${a.broker?` · ${String(a.broker).slice(0,24)}`:a.server?` · ${String(a.server).slice(0,24)}`:""}`,`JRK:${a.login}`)]); rows.push([ik("← Back","JR_ADMIN")]);
+  const text=list.length?"🔑 Dashboard key\n━━━━━━━━━━━━━━\nChoose the MT5 account to see its key. The key opens the website for that one account only, and it stays available here so you can copy it again any time.\n\nYou can also send the account login number.":"🔑 Dashboard key\n━━━━━━━━━━━━━━\nNo account is connected yet. Start MT5 with the EA and HeySolo_Bridge, wait for the first sync, then try again.";
+  return editMessage(e,chat,mid,text,keyboard(rows));
+}
+async function sendDashboardKey(e,chat,value,token,fresh){
+  const origin=e.__origin||"";
+  const kb=keyboard([[ik("🔄 Generate new key",`JRKN:${value}`)],[ik("☁️ Journal settings","JR_ADMIN")]]);
+  const head=fresh?`🔑 New dashboard key for account ${value}`:`🔑 Dashboard key for account ${value}`;
+  const tail=fresh?"\n\nThis replaces the old key for that account. From now on this key stays available here: open Journal settings → Dashboard key → pick the account any time to copy it again.":"\n\nThis is the current key. Open Journal settings → Dashboard key any time to copy it again.";
+  if(origin){
+    const code="HS1."+btoa(JSON.stringify({u:origin,l:value,k:token})).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"");
+    await sendEAKeyMessage(e,chat,`${head}\n\nConnection code:\n<code>${code}</code>\n\nOpen the dashboard → Journal → Configure online → Paste connection code. The Worker address, account and key fill in by themselves.\n\nDashboard key only:\n<code>${token}</code>${tail}`,kb);
+  } else {
+    await sendEAKeyMessage(e,chat,`${head}\n\n<code>${token}</code>\n\nPaste it into the dashboard's Online setup.${tail}`,kb);
+  }
+}
+async function issueDashboardKey(e,chat,uid,login,force=false){
+  const value=String(login||"").trim();
+  if(!/^\d{1,15}$/.test(value) || !await e.DB.prepare("SELECT 1 FROM accounts WHERE login=?").bind(value).first()) { await sendMessage(e,chat,"That login is not connected yet. Pick an account from the list or send a numeric account login."); return; }
+  if(!e.JOURNAL_DB){ await sendMessage(e,chat,"The journal database is not connected. In Cloudflare add a D1 binding named JOURNAL_DB (database heysolo-journal) to this Worker, deploy, then try again."); return; }
+  await ensureJournalDB(e);
+  await deleteBotSetting(e,`pending:${uid}`);
+  let token=null, fresh=false;
+  if(!force){
+    // Show the stored key again, as long as it still matches the key the website is checked against.
+    const plain=await getBotSetting(e,`dash_key:${value}`);
+    if(plain){ const row=await e.JOURNAL_DB.prepare("SELECT token_hash FROM journal_access WHERE login=?").bind(value).first(); if(row && constantTimeEqual(await hashToken(String(plain)),row.token_hash)) token=String(plain); }
+  }
+  if(!token){
+    token=makeToken(32); fresh=true;
+    await e.JOURNAL_DB.prepare("INSERT INTO journal_access(login,token_hash,created_at) VALUES(?,?,?) ON CONFLICT(login) DO UPDATE SET token_hash=excluded.token_hash,created_at=excluded.created_at").bind(value,await hashToken(token),now()).run();
+    await putBotSetting(e,`dash_key:${value}`,token);
+  }
+  await sendDashboardKey(e,chat,value,token,fresh);
 }
 async function finishJournalAdminText(e,chat,uid,text){
   const action=await getBotSetting(e,`pending:${uid}`); if(!["journal_key","journal_retention","journal_cap","journal_budget"].includes(action)) return false;
   const value=String(text||"").trim();
-  if(action==="journal_key"){
-    if(!/^\d{1,15}$/.test(value) || !await e.DB.prepare("SELECT 1 FROM accounts WHERE login=?").bind(value).first()) { await sendMessage(e,chat,"That login is not connected yet. Send a numeric account login from the dashboard."); return true; }
-    if(!e.JOURNAL_DB){ await sendMessage(e,chat,"The journal database is not connected. In Cloudflare add a D1 binding named JOURNAL_DB (database heysolo-journal) to this Worker, deploy, then try again."); return true; }
-    await ensureJournalDB(e);
-    const token=makeToken(32); await e.JOURNAL_DB.prepare("INSERT INTO journal_access(login,token_hash,created_at) VALUES(?,?,?) ON CONFLICT(login) DO UPDATE SET token_hash=excluded.token_hash,created_at=excluded.created_at").bind(value,await hashToken(token),now()).run();
-    await deleteBotSetting(e,`pending:${uid}`);
-    await sendEAKeyMessage(e,chat,`Dashboard key for account ${value} (copy now, shown once):\n<code>${token}</code>\n\nPaste it into the dashboard's Online setup. This replaces the old key for that account.`,keyboard([[ik("☁️ Journal settings","JR_ADMIN")]])); return true;
-  }
+  if(action==="journal_key") return issueDashboardKey(e,chat,uid,value).then(()=>true);
   const n=Number(value), min=action==="journal_retention"?1:action==="journal_budget"?64:128, max=action==="journal_retention"?3650:action==="journal_budget"?460:1400;
   if(!Number.isInteger(n)||n<min||n>max){await sendMessage(e,chat,`Enter a whole number from ${min} to ${max}.`);return true;}
   await putBotSetting(e,action==="journal_retention"?"journal:retention_days":action==="journal_budget"?"journal:budget_mb":"journal:cap_kb",n);
