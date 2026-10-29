@@ -6,6 +6,8 @@ const originOf = (e, req) => {
   return /^https:\/\/[^\s/]+$/i.test(v) ? v : new URL(req.url).origin;
 };
 const now = () => Math.floor(Date.now() / 1000);
+const ONLINE_SEC = 40;   // "online" while the last snapshot is not older than this (Bridge sends one every 10-15 s)
+const DELAYED_SEC = 90;  // ONLINE_SEC..DELAYED_SEC = delayed, older = offline
 const json = (x, status = 200) => new Response(JSON.stringify(x), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
 const txt = (x, status = 200) => new Response(x, { status, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
 const esc = (x) => String(x ?? "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -52,7 +54,7 @@ async function secureWebhookSetup(req, e, chat, uid) {
   if (lock && now() - lock < 20) return sendMessage(e, chat, "⏳ Secure setup is already running. Wait a few seconds and do not press it again.");
   await putBotSetting(e, "lock:secure_setup", now());
   try {
-    const eaKey = makeToken(24), webhookSecret = makeToken(24), origin = originOf(e, req);
+    const eaKey = makeToken(24), webhookSecret = await derivedWebhookSecret(e), origin = originOf(e, req);
     const res = await setWebhookWithRetry(e, { url: `${origin}/telegram/webhook`, secret_token: webhookSecret, allowed_updates: ["message", "edited_message", "callback_query"] });
     if (!res.ok) {
       const d = String(res.description || "Telegram rejected the request");
@@ -64,6 +66,17 @@ async function secureWebhookSetup(req, e, chat, uid) {
     await saveHash(e, "telegram_webhook", webhookSecret); await saveHash(e, "ea_key", eaKey); await putBotSetting(e, "ea_key_plain", eaKey);
     return sendEAKeyMessage(e, chat, `✅ <b>Setup complete</b>\nTelegram webhook secured and EA key created.\n\n<b>Cloudflare Worker URL</b>\n<code>${origin}</code>\n\n<b>Cloudflare Worker Key</b> (copy now, shown once)\n<code>${eaKey}</code>\n\n<b>In MT5</b>\n1️⃣ First: Tools → Options → Expert Advisors → tick <b>Allow WebRequest</b> and add the URL above (<code>${origin}</code>).\n2️⃣ Main EA (HeySolo ATM) → panel → <b>Telegram</b> → <b>Send Via</b> = <code>SEND PY BOT / BRIDGE EA</code>. Turn on Send Trade / Send Result / send Logs as you need.\n3️⃣ Attach the <b>HeySolo_Bridge</b> EA on any other chart and set its inputs:\n• <code>WorkerURL</code> = the URL above\n• <code>WorkerKey</code> = the key above\n\nYou can see the key again any time in 🛠 Setup status.`, keyboard([[ik("⚙️ Admin", "ADM_PANEL")]]));
   } finally { await deleteBotSetting(e, "lock:secure_setup"); }
+}
+// The webhook secret is derived from TELEGRAM_BOT_TOKEN, so it never depends on what is stored in the database.
+// Re-deploys, DB resets or a manual setWebhook can no longer lock the bot out permanently.
+async function derivedWebhookSecret(e) { return (await hashToken("heysolo-webhook-v1:" + String(e.TELEGRAM_BOT_TOKEN || ""))).slice(0, 48); }
+let lastWebhookHeal = 0;
+async function healWebhook(e, req) {
+  if (Date.now() - lastWebhookHeal < 30000) return false; lastWebhookHeal = Date.now();
+  const secret = await derivedWebhookSecret(e);
+  const res = await setWebhookWithRetry(e, { url: `${originOf(e, req)}/telegram/webhook`, secret_token: secret, allowed_updates: ["message", "edited_message", "callback_query"] });
+  if (res.ok) await saveHash(e, "telegram_webhook", secret);
+  return !!res.ok;
 }
 function constantTimeEqual(a, b) { const x = new TextEncoder().encode(a), y = new TextEncoder().encode(b); if (x.length !== y.length)
     return false; let d = 0; for (let i = 0; i < x.length; i++)
@@ -242,7 +255,7 @@ function parseRunning(raw) { const out = { login: "", updated: "", symbol: "", l
                 out[k] = v;
         }
     }
-} out.stale = ageSec(Date.parse(out.updated.replace(" ", "T") + "Z") / 1000) > 90; return out; }
+} out.stale = ageSec(Date.parse(out.updated.replace(" ", "T") + "Z") / 1000) > ONLINE_SEC; return out; }
 function parseSettings(raw) { const o = { key: "", login: "", symbol: "", updated: "", sections: [], enums: {}, fields: [] }; for (const line of raw.split(/\r?\n/)) {
     let p = line.split("|");
     if (line.startsWith("S|"))
@@ -410,7 +423,7 @@ function runReason(x) {
 }
 function runningText(a, full = false) {
   const r = a.running || {}, l = r.link || {}, age = ageSec(a.updated_at);
-  const fresh = age <= 90, known = Object.keys(l).length > 0 || (r.groups || []).length > 0;
+  const fresh = age <= ONLINE_SEC, known = Object.keys(l).length > 0 || (r.groups || []).length > 0;
   const connected = runTri(l.linkConnected), tradeOk = runTri(l.linkTradeAllowed);
   const ping = fresh && Number(l.linkPingMs) > 0 ? `${Math.round(Number(l.linkPingMs))} ms` : "";
   let dot = "🟢", word = "Online";
@@ -517,8 +530,8 @@ async function canView(e, id, login) { if (isAdmin(e, id))
     return true; return !!await e.DB.prepare("SELECT 1 AS ok FROM user_accounts WHERE telegram_id=? AND login=?").bind(id, login).first(); }
 async function getAccounts(e, id) { if (isAdmin(e, id)) {
     const r = await e.DB.prepare("SELECT login,broker,currency,server,symbol,updated_at,prop_json,running_json,dashboard_json,settings_json FROM accounts ORDER BY login").all();
-    return r.results.map(x => ({ ...x, prop: parseJson(x.prop_json), running: parseJson(x.running_json), dashboard: parseJson(x.dashboard_json), settings: parseJson(x.settings_json), stale: ageSec(x.updated_at) > 90 }));
-} const r = await e.DB.prepare("SELECT a.login,a.broker,a.currency,a.server,a.symbol,a.updated_at,a.prop_json,a.running_json,a.dashboard_json,a.settings_json FROM accounts a JOIN user_accounts u ON u.login=a.login WHERE u.telegram_id=? ORDER BY a.login").bind(id).all(); return r.results.map(x => ({ ...x, prop: parseJson(x.prop_json), running: parseJson(x.running_json), dashboard: parseJson(x.dashboard_json), settings: parseJson(x.settings_json), stale: ageSec(x.updated_at) > 90 })); }
+    return r.results.map(x => ({ ...x, prop: parseJson(x.prop_json), running: parseJson(x.running_json), dashboard: parseJson(x.dashboard_json), settings: parseJson(x.settings_json), stale: ageSec(x.updated_at) > ONLINE_SEC }));
+} const r = await e.DB.prepare("SELECT a.login,a.broker,a.currency,a.server,a.symbol,a.updated_at,a.prop_json,a.running_json,a.dashboard_json,a.settings_json FROM accounts a JOIN user_accounts u ON u.login=a.login WHERE u.telegram_id=? ORDER BY a.login").bind(id).all(); return r.results.map(x => ({ ...x, prop: parseJson(x.prop_json), running: parseJson(x.running_json), dashboard: parseJson(x.dashboard_json), settings: parseJson(x.settings_json), stale: ageSec(x.updated_at) > ONLINE_SEC })); }
 function parseJson(s) { try {
     return JSON.parse(s || "{}");
 }
@@ -526,7 +539,7 @@ catch {
     return {};
 } }
 async function getAccount(e, id, login) { if (!await canView(e, id, login))
-    return null; const a = await e.DB.prepare("SELECT accounts.* FROM accounts WHERE login=?").bind(login).first(); return a ? { ...a, prop: parseJson(a.prop_json), running: parseJson(a.running_json), dashboard: parseJson(a.dashboard_json), settings: parseJson(a.settings_json), stale: ageSec(a.updated_at) > 90 } : null; }
+    return null; const a = await e.DB.prepare("SELECT accounts.* FROM accounts WHERE login=?").bind(login).first(); return a ? { ...a, prop: parseJson(a.prop_json), running: parseJson(a.running_json), dashboard: parseJson(a.dashboard_json), settings: parseJson(a.settings_json), stale: ageSec(a.updated_at) > ONLINE_SEC } : null; }
 async function home(e, chat, uid, msg) {
   const ac = await getAccounts(e, uid), rows = accountRows(ac, "A");
   const text = ac.length ? `<b>Accounts</b> · ${ac.length}` : "No account yet. In MT5 set Send Via = SEND PY BOT / BRIDGE EA on the main EA and attach HeySolo_Bridge (WorkerURL + WorkerKey, see 🛠 Setup status). The account appears after its first heartbeat.";
@@ -540,7 +553,7 @@ async function adminPanel(e, chat, msg) {
 async function setupView(e, chat, uid, msg, origin) {
   const [hook, key, j, plain] = await Promise.all([storedHash(e, "telegram_webhook"), storedHash(e, "ea_key"), journalSettings(e), getBotSetting(e, "ea_key_plain")]);
   const accs = await e.DB.prepare("SELECT updated_at FROM accounts").all();
-  const total = accs.results.length, online = accs.results.filter(x => ageSec(x.updated_at) <= 90).length;
+  const total = accs.results.length, online = accs.results.filter(x => ageSec(x.updated_at) <= ONLINE_SEC).length;
   const cp = await e.DB.prepare("SELECT COUNT(*) AS n FROM copier_channels").first();
   const ready = TOPIC_SPECS.every(([k]) => !!j[`thread_${k}`]);
   const priv = String(chat) === String(uid);
@@ -571,7 +584,7 @@ async function setupView(e, chat, uid, msg, origin) {
 }
 async function helpView(e, chat, uid, msg) {
   const admin = isAdmin(e, uid);
-  const lines = ["❓ Help", "━━━━━━━━━━━━━━", "", "🟢 online  ·  🔴 no heartbeat for 90 s", "",
+  const lines = ["❓ Help", "━━━━━━━━━━━━━━", "", "🟢 online  ·  🔴 no heartbeat for 40 s", "",
     "👤 Account page", "🏁 Prop · 🏃 Running · 📈 Positions · 🧾 Today / Yesterday · ⚙️ EA Settings", "",
     "⌨️ Commands", "/start — main menu", "/accounts · /prop · /running — pick an account", "/id — your Telegram ID"];
   if (admin) lines.push("", "🛡 Admin", "/copier — Copy Hub", "/chat_journal — Chat Journal", "/grant <telegram_id> <login> — give access", "/revoke <telegram_id> <login> — remove access", "Buttons: 🛠 Setup status · 📓 Chat Journal · ⚡ Copy Hub");
@@ -808,7 +821,7 @@ async function showSections(e, chat, msg, key) {
   const rows = []; for (let i = 0; i < btns.length; i += 2) rows.push(btns.slice(i, i + 2));
   rows.push([ik("← Back", back), ik("🔄 Refresh", `CH:${key}`)]);
   const age = ageSec(c.updated_at), ago = age < 10 ? "just now" : age < 60 ? `${age}s ago` : age < 3600 ? `${Math.floor(age / 60)}m ago` : `${Math.floor(age / 3600)}h ago`;
-  const text = `⚙️ <b>EA Settings</b>\n<code>${esc(c.login)}</code> · <b>${esc(c.symbol)}</b>\n${age <= 90 ? "🟢 EA online" : "🔴 EA offline"} · ${ago}\n──────────────────\n\nPick a section:`;
+  const text = `⚙️ <b>EA Settings</b>\n<code>${esc(c.login)}</code> · <b>${esc(c.symbol)}</b>\n${age <= ONLINE_SEC ? "🟢 EA online" : "🔴 EA offline"} · ${ago}\n──────────────────\n\nPick a section:`;
   return editHTML(e, chat, msg, text, keyboard(rows));
 }
 const FIELDS_PER_PAGE = 12;
@@ -888,18 +901,18 @@ async function webhook(req, e, ctx) {
     const uid = String(m?.from?.id ?? cb?.from?.id ?? "");
     if (!chat || !uid) return txt("ok");
     e.__origin = originOf(e, req);
-    const webhookHash = await storedHash(e, "telegram_webhook");
-    if (webhookHash) {
-        const header = req.headers.get("X-Telegram-Bot-Api-Secret-Token") || "";
-        if (!constantTimeEqual(await hashToken(header), webhookHash.secret_hash)) {
-            // Webhook was re-registered without our secret (e.g. setWebhook opened in a browser): restore it from the admin's own message. This update is still rejected; Telegram retries it with the new secret.
-            if (!header && isAdmin(e, uid)) {
-                const secret = makeToken(24);
-                const res = await setWebhookWithRetry(e, { url: `${originOf(e, req)}/telegram/webhook`, secret_token: secret, allowed_updates: ["message", "edited_message", "callback_query"] });
-                if (res.ok) await saveHash(e, "telegram_webhook", secret);
-            }
-            return txt("forbidden", 403);
-        }
+    const header = req.headers.get("X-Telegram-Bot-Api-Secret-Token") || "";
+    const derivedSecret = await derivedWebhookSecret(e), derivedHash = await hashToken(derivedSecret);
+    let webhookHash = await storedHash(e, "telegram_webhook");
+    const derivedOk = !!header && constantTimeEqual(header, derivedSecret);
+    if (derivedOk && (!webhookHash || webhookHash.secret_hash !== derivedHash)) { await putBotSetting(e, "auth:telegram_webhook", derivedHash); webhookHash = { secret_hash: derivedHash }; }
+    const legacyOk = !derivedOk && !!header && !!webhookHash && constantTimeEqual(await hashToken(header), webhookHash.secret_hash);
+    if (derivedOk || legacyOk) {
+        // authorized
+    } else if (webhookHash) {
+        // Wrong or missing secret (webhook re-registered by hand, old secret, DB mismatch): an admin message repairs it automatically.
+        if (isAdmin(e, uid)) await healWebhook(e, req);
+        return txt("forbidden", 403);
     } else {
         const command = normCmd(m?.text);
         const privAdmin = String(chat) === String(uid) && isAdmin(e, uid);
@@ -1431,7 +1444,15 @@ catch {
     form.set("account", req.headers.get("X-HeySolo-Account") || ""); const text = String(form.get("text") || form.get("caption") || ""); if (!photoMode) {
     if (!text || text.length > 28000)
         return json({ ok: false, error: "invalid_text" }, 400);
-    return notifyEvent(e, form, event, text);
+    let alertSaved = false;
+    if (event === "ALERT") {   // also keep it for the dashboard bell; independent of Telegram and of the journal setting
+        try { alertSaved = await saveAlert(e, String(form.get("account") || ""), text); } catch (err) { console.error("alert save failed", String(err)); }
+        if (alertSaved && alertSaved !== "dup") { try { await sendPush(e, String(form.get("account") || ""), "a", { k: "alert", id: alertSaved.id, t: alertSaved.t, sym: alertSaved.sym, dir: alertSaved.dir, level: alertSaved.level, price: alertSaved.price }); } catch (err) { console.error("push failed", String(err)); } }
+    }
+    const res = await notifyEvent(e, form, event, text);
+    if (alertSaved && res.status === 503)   // saved for the dashboard, no Telegram recipient: nothing to retry
+        return json({ ok: true, saved: true, telegram: "not_configured" });
+    return res;
 } const photo = form.get("photo"); if (!(photo instanceof File) || photo.size === 0 || photo.size > MAX_PHOTO_BYTES)
     return json({ ok: false, error: "invalid_photo" }, 400); return notifyEvent(e, form, event, text, photo); }
 const DASH_CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "Content-Type,X-HeySolo-Dashboard-Key", "access-control-max-age": "86400", "vary": "Origin" };
@@ -1692,9 +1713,182 @@ async function dashboardData(req,e,u){
   if(!a) return journalJSON({ok:false,error:"account_not_found"},404);
   return journalJSON({ok:true,login,account:parseJson(a.prop_json)||{},journal:j?parseJson(j.journal_json):null,notes:j?parseJson(j.notes_json)||{}:{},updated_at:a.updated_at});
 }
+// ---- price alerts for the dashboard bell: saved from the ALERT events the Bridge already sends (no extra EA traffic)
+let priceAlertsReady = false;
+async function ensurePriceAlerts(e) {
+    if (priceAlertsReady) return;
+    await e.DB.prepare("CREATE TABLE IF NOT EXISTS price_alerts (id INTEGER PRIMARY KEY AUTOINCREMENT, login TEXT NOT NULL, t INTEGER NOT NULL, sym TEXT, dir TEXT, level TEXT, price TEXT)").run();
+    await e.DB.prepare("CREATE INDEX IF NOT EXISTS idx_price_alerts_login ON price_alerts(login, id)").run();
+    priceAlertsReady = true;
+}
+function parseAlertText(text) {
+    const s = String(text || "");
+    const m = s.match(/([A-Za-z0-9._#\-]+)\s+price went (UP|DOWN) to alert\s+([0-9][0-9.,]*)/i);
+    if (!m)
+        return null;
+    const p = s.match(/Price:\s*([0-9][0-9.,]*)/i);
+    return { sym: m[1], dir: m[2].toUpperCase() === "DOWN" ? "down" : "up", level: m[3], price: p ? p[1] : m[3] };
+}
+async function saveAlert(e, login, text) {
+    if (!/^\d{1,15}$/.test(login))
+        return false;
+    const a = parseAlertText(text);
+    if (!a)
+        return false;
+    await ensurePriceAlerts(e);
+    // the Bridge retries an event when Telegram fails: never store the same alert twice
+    const dup = await e.DB.prepare("SELECT 1 AS x FROM price_alerts WHERE login=? AND sym=? AND dir=? AND level=? AND t>? LIMIT 1").bind(login, a.sym, a.dir, a.level, now() - 300).first();
+    if (dup)
+        return "dup";
+    const t = now();
+    const ins = await e.DB.prepare("INSERT INTO price_alerts(login,t,sym,dir,level,price) VALUES(?,?,?,?,?,?)").bind(login, t, a.sym, a.dir, a.level, a.price).run();
+    await e.DB.prepare("DELETE FROM price_alerts WHERE login=? AND id<=(SELECT id FROM price_alerts WHERE login=? ORDER BY id DESC LIMIT 1 OFFSET 50)").bind(login, login).run();   // keep the last 50
+    return { id: ins && ins.meta ? ins.meta.last_row_id : 0, t, sym: a.sym, dir: a.dir, level: a.level, price: a.price };
+}
+async function dashboardAlerts(req, e, u) {
+    if (req.method === "OPTIONS")
+        return new Response(null, { status: 204, headers: DASH_CORS });
+    const login = String(u.searchParams.get("login") || "");
+    if (!await journalAccess(e, req, login))
+        return journalJSON({ ok: false, error: "invalid_dashboard_key" }, 403);
+    await ensurePriceAlerts(e);
+    const r = await e.DB.prepare("SELECT id,t,sym,dir,level,price FROM price_alerts WHERE login=? ORDER BY id DESC LIMIT 30").bind(login).all();
+    return journalJSON({ ok: true, alerts: (r.results || []).reverse() });
+}
+// ---- Web Push for the dashboard (price-alert notifications even when the site / browser is closed)
+// Encrypted payload (RFC 8291 aes128gcm) + VAPID (RFC 8292). If a device sent no keys, an empty push is sent and the
+// service worker (dashboard/sw.js) reads /v1/alerts itself.
+let pushReady = false;
+async function ensurePushSubs(e) {
+    if (pushReady) return;
+    await e.DB.prepare("CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, login TEXT NOT NULL, p256dh TEXT, auth TEXT, created_at INTEGER NOT NULL)").run();
+    await e.DB.prepare("CREATE INDEX IF NOT EXISTS idx_push_subs_login ON push_subs(login)").run();
+    pushReady = true;
+}
+const b64u = (bytes) => bytesToB64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const unb64u = (s) => { s = String(s || "").replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "="; return b64ToBytes(s); };
+async function vapidKeys(e) {
+    const saved = await getBotSetting(e, "vapid_keys");
+    if (saved) { try { const o = JSON.parse(saved); if (o && o.priv && o.pub) return o; } catch { } }
+    const kp = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+    const priv = await crypto.subtle.exportKey("jwk", kp.privateKey);
+    const pub = b64u(new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey)));
+    const o = { priv, pub };
+    await putBotSetting(e, "vapid_keys", JSON.stringify(o));
+    return o;
+}
+// BEGIN-WPE
+async function webPushEncrypt(p256dh, auth, plain, fixed) {
+    const uaPub = unb64u(p256dh), authSecret = unb64u(auth);
+    const asKp = (fixed && fixed.kp) || await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+    const asPub = new Uint8Array(await crypto.subtle.exportKey("raw", asKp.publicKey));
+    const uaKey = await crypto.subtle.importKey("raw", uaPub, { name: "ECDH", namedCurve: "P-256" }, false, []);
+    const ecdh = await crypto.subtle.deriveBits({ name: "ECDH", public: uaKey }, asKp.privateKey, 256);
+    const enc = new TextEncoder();
+    const hk = async (ikm, salt, info, bits) => crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt, info }, await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]), bits);
+    const keyInfo = new Uint8Array([...enc.encode("WebPush: info\0"), ...uaPub, ...asPub]);
+    const ikm = new Uint8Array(await hk(new Uint8Array(ecdh), authSecret, keyInfo, 256));
+    const salt = (fixed && fixed.salt) || crypto.getRandomValues(new Uint8Array(16));
+    const cek = await hk(ikm, salt, enc.encode("Content-Encoding: aes128gcm\0"), 128);
+    const nonce = await hk(ikm, salt, enc.encode("Content-Encoding: nonce\0"), 96);
+    const data = new Uint8Array([...plain, 2]);   // 0x02 = last record
+    const aes = await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["encrypt"]);
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, aes, data));
+    const head = new Uint8Array(16 + 4 + 1 + asPub.length);
+    head.set(salt, 0); new DataView(head.buffer).setUint32(16, 4096); head[20] = asPub.length; head.set(asPub, 21);
+    const out = new Uint8Array(head.length + ct.length); out.set(head, 0); out.set(ct, head.length);
+    return out;
+}
+// END-WPE
+// Only price alerts are pushed.
+async function sendPush(e, login, kind, payload) {
+    if (!/^\d{1,15}$/.test(login)) return [];
+    await ensurePushSubs(e);
+    const r = await e.DB.prepare("SELECT endpoint,p256dh,auth FROM push_subs WHERE login=?").bind(login).all();
+    const rows = r.results || [];
+    if (!rows.length) return [];
+    const { priv, pub } = await vapidKeys(e);
+    const key = await crypto.subtle.importKey("jwk", priv, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+    const enc = new TextEncoder();
+    const plain = payload ? enc.encode(JSON.stringify(payload)) : null;
+    return Promise.all(rows.map(async (row) => {
+        try {
+            const aud = new URL(row.endpoint).origin;
+            const head = b64u(enc.encode(JSON.stringify({ typ: "JWT", alg: "ES256" })));
+            const body = b64u(enc.encode(JSON.stringify({ aud, exp: now() + 43200, sub: "https://heysolo.online" })));
+            const sig = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, enc.encode(head + "." + body)));
+            const headers = { "Authorization": `vapid t=${head}.${body}.${b64u(sig)}, k=${pub}`, "TTL": "3600", "Urgency": "high" };
+            let data = "";
+            if (plain && row.p256dh && row.auth) {
+                try { data = await webPushEncrypt(row.p256dh, row.auth, plain); headers["Content-Encoding"] = "aes128gcm"; headers["Content-Type"] = "application/octet-stream"; }
+                catch (err) { data = ""; delete headers["Content-Encoding"]; delete headers["Content-Type"]; }   // fall back to an empty push
+            }
+            const res = await fetch(row.endpoint, { method: "POST", headers, body: data });
+            if (res.status === 404 || res.status === 410)
+                await e.DB.prepare("DELETE FROM push_subs WHERE endpoint=?").bind(row.endpoint).run();
+            return res.status;
+        }
+        catch (err) { return 0; }
+    }));
+}
+async function pushAPI(req, e, u) {
+    if (req.method === "OPTIONS")
+        return new Response(null, { status: 204, headers: DASH_CORS });
+    if (req.method === "GET" && u.pathname === "/v1/push/key") {
+        const k = await vapidKeys(e);
+        return journalJSON({ ok: true, key: k.pub });
+    }
+    const login = String(u.searchParams.get("login") || "");
+    if (!await journalAccess(e, req, login))
+        return journalJSON({ ok: false, error: "invalid_dashboard_key" }, 403);
+    if (req.method !== "POST")
+        return journalJSON({ ok: false, error: "method_not_allowed" }, 405);
+    await ensurePushSubs(e);
+    let b = {};
+    try { b = await req.json(); } catch { }
+    const sub = (b && b.subscription) || {};
+    const ep = String(sub.endpoint || "");
+    if (u.pathname === "/v1/push/test") {
+        await ensurePriceAlerts(e);
+        const tt = now();
+        const ins = await e.DB.prepare("INSERT INTO price_alerts(login,t,sym,dir,level,price) VALUES(?,?,?,?,?,?)").bind(login, tt, "TEST", "up", "0.00", "0.00").run();
+        await new Promise(r => setTimeout(r, 8000));   // let the user lock the phone / switch tab first
+        const codes = await sendPush(e, login, "a", { k: "alert", id: ins && ins.meta ? ins.meta.last_row_id : 0, t: tt, sym: "TEST", dir: "up", level: "0.00", price: "0.00" });
+        return journalJSON({ ok: true, sent: codes.length, codes });
+    }
+    if (!/^https:\/\//.test(ep) || ep.length > 1200)
+        return journalJSON({ ok: false, error: "invalid_subscription" }, 400);
+    if (u.pathname === "/v1/push/subscribe") {
+        const k = sub.keys || {};
+        await e.DB.prepare("INSERT INTO push_subs(endpoint,login,p256dh,auth,created_at) VALUES(?,?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET login=excluded.login,p256dh=excluded.p256dh,auth=excluded.auth,created_at=excluded.created_at").bind(ep, login, String(k.p256dh || ""), String(k.auth || ""), now()).run();
+        await e.DB.prepare("DELETE FROM push_subs WHERE login=? AND endpoint NOT IN (SELECT endpoint FROM push_subs WHERE login=? ORDER BY created_at DESC LIMIT 10)").bind(login, login).run();   // keep the newest 10 devices
+        return journalJSON({ ok: true });
+    }
+    if (u.pathname === "/v1/push/unsubscribe") {
+        await e.DB.prepare("DELETE FROM push_subs WHERE endpoint=? AND login=?").bind(ep, login).run();
+        return journalJSON({ ok: true });
+    }
+    return journalJSON({ ok: false, error: "not_found" }, 404);
+}
+// The Bridge reports "this chart is gone" (Send Via changed, chart closed, EA removed): mark it offline at once.
+// One tiny request per event; normal traffic is unchanged.
+async function postOffline(req, e) {
+    const b = await req.json().catch(() => ({}));
+    const login = String(b.login || "");
+    if (!/^\d{1,15}$/.test(login))
+        return json({ ok: false, error: "invalid_login" }, 400);
+    const chartKey = (await hashToken(`${login}:${String(b.symbol || "")}`)).slice(0, 12);
+    await e.DB.prepare("UPDATE ea_states SET updated_at=0 WHERE chart_key=? AND login=?").bind(chartKey, login).run();
+    const live = await e.DB.prepare("SELECT 1 AS x FROM ea_states WHERE login=? AND updated_at>? LIMIT 1").bind(login, now() - ONLINE_SEC).first();
+    if (!live)   // no other chart of this account is still reporting
+        await e.DB.prepare("UPDATE accounts SET updated_at=MIN(updated_at,?) WHERE login=?").bind(now() - DELAYED_SEC - 1, login).run();
+    return json({ ok: true });
+}
 async function eaAPI(req, e, u) {
     if (!await verifyWorkerKey(e, req.headers.get("X-HeySolo-Key") || ""))
         return txt("forbidden", 403);
+    if (req.method === "POST" && u.pathname === "/v1/ea/offline")
+        return postOffline(req, e);
     if (req.method === "POST" && u.pathname === "/v1/ea/snapshot")
         return postSnapshot(req, e);
     if (req.method === "POST" && u.pathname === "/v1/ea/journal")
@@ -1726,7 +1920,9 @@ export default { async fetch(req, e, ctx) { await ensureBotSettings(e); const u 
         return relayNotification(req, e, false); if (u.pathname === "/v1/notify/photo" && req.method === "POST")
         return relayNotification(req, e, true); if (u.pathname.startsWith("/v1/ea/"))
         return eaAPI(req, e, u); if (u.pathname === "/v1/journal" || u.pathname === "/v1/journal/notes")
-        return dashboardJournal(req,e,u); if (u.pathname === "/v1/dashboard")
+        return dashboardJournal(req,e,u); if (u.pathname === "/v1/alerts")
+        return dashboardAlerts(req,e,u); if (u.pathname.startsWith("/v1/push/"))
+        return pushAPI(req,e,u); if (u.pathname === "/v1/dashboard")
         return dashboardData(req,e,u); if (u.pathname === "/v1/journal/shot")
         return dashboardShot(req,e,u); if (u.pathname.startsWith("/tx/") || u.pathname.startsWith("/rx/"))
         return copier(req, e, u); if (req.method === "GET" && u.pathname === "/")

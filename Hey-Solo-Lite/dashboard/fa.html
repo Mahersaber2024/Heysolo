@@ -2985,11 +2985,6 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
 .hsn-empty .ring svg{ width:24px; height:24px; }
 .hsn-empty b{ display:block; color:var(--text); font-size:13px; margin-bottom:6px; }
 .hsn-empty span{ font-size:11.5px; line-height:1.7; display:block; }
-.hsn-foot{ display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 14px; border-top:1px solid var(--hairline-2); font-size:10.5px; color:var(--muted); }
-.hsn-foot .live{ display:flex; align-items:center; gap:6px; }
-.hsn-foot .live i{ width:6px; height:6px; border-radius:50%; background:var(--profit-2,#8CFFDC); box-shadow:0 0 8px var(--profit-2,#8CFFDC); }
-.hsn-foot button{ appearance:none; border:none; background:none; color:var(--tab-accent); font:600 10.5px var(--font-ui); cursor:pointer; padding:2px 0; }
-.hsn-foot button:hover{ text-decoration:underline; }
 
 /* toasts */
 .hsn-toasts{ position:fixed; z-index:9999; top:calc(env(safe-area-inset-top,0px) + 12px); left:50%; transform:translateX(-50%); width:min(392px, calc(100vw - 20px)); display:flex; flex-direction:column; gap:10px; pointer-events:none; }
@@ -3019,25 +3014,8 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
 .hsn-empty .ring svg{ width:18px; height:18px; }
 .hsn-empty b{ font-size:12px; }
 .hsn-empty span{ font-size:10.5px; line-height:1.6; }
-.hsn-foot{ padding:7px 10px; font-size:9.5px; flex-wrap:wrap; gap:4px 10px; }
-.hsn-foot button{ font-size:9.5px; }
 @media (max-width:900px){ .hsn-panel{ width:min(232px, calc(100vw - 24px)); } }
 
-/* permission prompt (sound + browser notifications) */
-.hsn-ask{ position:fixed; z-index:9997; left:50%; top:calc(env(safe-area-inset-top,0px) + 12px); transform:translate(-50%,-16px); opacity:0; width:min(400px, calc(100vw - 20px));
-  display:flex; gap:12px; align-items:center; padding:13px 14px; border-radius:16px; color:var(--text); font-family:var(--font-ui);
-  background:color-mix(in srgb, var(--bg-solid,#1A1D26) 94%, transparent); -webkit-backdrop-filter:blur(22px); backdrop-filter:blur(22px);
-  border:1px solid var(--hairline-2,rgba(255,255,255,.1)); box-shadow:0 24px 50px -20px rgba(0,0,0,.7), 0 0 36px -18px var(--tab-glow,rgba(0,209,255,.5));
-  transition:opacity .25s ease, transform .3s var(--ease-lux); }
-.hsn-ask.show{ opacity:1; transform:translate(-50%,0); }
-.hsn-ask .hsn-ic{ flex:none; width:36px; height:36px; display:grid; place-items:center; border-radius:50%; background:rgba(255,255,255,.06); color:var(--tab-accent); }
-.hsn-ask .hsn-ic svg{ width:20px; height:20px; }
-.hsn-ask .hsn-atx{ flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
-.hsn-ask b{ font-size:13px; font-weight:700; line-height:1.3; }
-.hsn-ask span.d{ font-size:11.5px; opacity:.7; line-height:1.4; }
-.hsn-ask .btns{ display:flex; flex-direction:column; gap:6px; flex:none; }
-.hsn-ask button{ font:inherit; font-size:12px; font-weight:700; border-radius:10px; padding:8px 12px; cursor:pointer; border:1px solid var(--hairline-2,rgba(255,255,255,.12)); background:none; color:var(--text); }
-.hsn-ask button.go{ background:var(--tab-accent,#00d1ff); border-color:transparent; color:#04121a; }
 .hsn-toast{
   pointer-events:auto; cursor:pointer; position:relative; overflow:hidden; display:grid; grid-template-columns:42px 1fr 22px; gap:12px; align-items:center;
   padding:12px 12px 14px; border-radius:16px; color:var(--text); font-family:var(--font-ui);
@@ -3061,6 +3039,29 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
 .hsn-toast.up .hsn-bar{ color:var(--profit-2,#8CFFDC); } .hsn-toast.down .hsn-bar{ color:var(--loss-2,#FF8FA5); }
 @keyframes hsnBar{ from{ transform:scaleX(1);} to{ transform:scaleX(0);} }
 @media (prefers-reduced-motion:reduce){ .hsn-toast,.hsn-badge.pop,#notifToggle.ring svg,.hsn-bar{ animation:none !important; } .hsn-panel{ transition:none; } }
+</style>
+<link rel="manifest" href="manifest.webmanifest">
+<style id="hsn-toast-v2">
+/* notification toast v2: clean glass card, monochrome with one slim accent */
+.hsn-toasts .hsn-toast{ display:flex; align-items:center; gap:12px; grid-template-columns:none; padding:14px 14px 16px 20px; border-radius:18px;
+  background:color-mix(in srgb, var(--bg-solid,#1A1D26) 58%, transparent); -webkit-backdrop-filter:blur(28px) saturate(180%); backdrop-filter:blur(28px) saturate(180%);
+  border:1px solid rgba(255,255,255,.10); box-shadow:0 20px 44px -20px rgba(0,0,0,.7), inset 0 1px 0 rgba(255,255,255,.06); }
+[data-theme="light"] .hsn-toasts .hsn-toast{ background:color-mix(in srgb, #fff 70%, transparent); border-color:rgba(20,24,34,.10); box-shadow:0 18px 40px -22px rgba(20,24,34,.35); }
+.hsn-toasts .hsn-toast::before{ content:""; position:absolute; top:14px; bottom:14px; inset-inline-start:0; width:3px; border-radius:3px; background:currentColor; opacity:.95; }
+.hsn-toasts .hsn-toast.up{ color:var(--profit-2,#8CFFDC); box-shadow:0 20px 44px -20px rgba(0,0,0,.7), inset 0 1px 0 rgba(255,255,255,.06); }
+.hsn-toasts .hsn-toast.down{ color:var(--loss-2,#FF8FA5); box-shadow:0 20px 44px -20px rgba(0,0,0,.7), inset 0 1px 0 rgba(255,255,255,.06); }
+.hsn-tmain{ flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; color:var(--text); }
+.hsn-trow{ display:flex; align-items:center; gap:8px; }
+.hsn-trow .hsn-sym{ font-size:12.5px; font-weight:700; letter-spacing:.04em; }
+.hsn-trow .hsn-tag{ font-size:9px; font-weight:600; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); background:none; padding:0; }
+.hsn-tprice{ font:700 22px/1.15 var(--font-num,system-ui); letter-spacing:.01em; color:currentColor; display:flex; align-items:baseline; gap:8px; }
+.hsn-tprice small{ font-size:11px; }
+.hsn-toasts .hsn-toast.up .hsn-tprice small{ color:var(--profit-2,#8CFFDC); }
+.hsn-toasts .hsn-toast.down .hsn-tprice small{ color:var(--loss-2,#FF8FA5); }
+.hsn-tsub{ font-size:11.5px; color:var(--muted); }
+.hsn-toasts .hsn-toast .hsn-x{ align-self:flex-start; opacity:.55; }
+.hsn-toasts .hsn-toast .hsn-x:hover{ opacity:1; }
+.hsn-toasts .hsn-toast .hsn-bar{ height:2px; opacity:.5; inset-inline:18px; }
 </style>
 </head>
 <body>
@@ -3147,8 +3148,8 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
                 <select id="arInterval" onchange="onIntervalChange(this.value)">
                   <option value="1">1s</option>
                   <option value="2">2s</option>
-                  <option value="5">5s</option>
-                  <option value="10" selected>10s</option>
+                  <option value="5" selected>5s</option>
+                  <option value="10">10s</option>
                   <option value="30">30s</option>
                   <option value="60">60s</option>
                 </select>
@@ -5504,7 +5505,7 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
     var arTimer = null, arCountdownTimer = null, arSecondsLeft = 0;
 
     function arIntervalSeconds(){
-      return parseInt(document.getElementById('arInterval').value, 10) || 10;
+      return parseInt(document.getElementById('arInterval').value, 10) || 5;
     }
     function updateCountdownDisplay(){
       const el = document.getElementById('arCountdown');
@@ -5545,10 +5546,11 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
       if(arTimer) startAutoRefresh(); // restart with new interval
     }
     function initAutoRefresh(){
-      let savedInterval = '10', savedOn = '0';
+      let savedInterval = '5', savedOn = '1';   // default: auto-refresh ON, every 5 s
       try{
-        savedInterval = localStorage.getItem('heySolo_autoRefreshInterval') || '10';
-        savedOn = localStorage.getItem('heySolo_autoRefresh') || '0';
+        savedInterval = localStorage.getItem('heySolo_autoRefreshInterval') || '5';
+        var _ar = localStorage.getItem('heySolo_autoRefresh');
+        savedOn = (_ar === null) ? '1' : _ar;   // nothing saved yet = ON; an explicit choice of the user is kept
       }catch(e){}
       const sel = document.getElementById('arInterval');
       if([...sel.options].some(function(o){ return o.value === savedInterval; })) sel.value = savedInterval;
@@ -6699,8 +6701,8 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
     var age=u? Math.max(0,Math.floor(Date.now()/1000-u)) : -1;
     if(window.__jrOnlineErr){ st='lost'; em=u? T.last+' '+fmt(age)+' '+T.ago : ''; }
     else if(!window.PROP_DATA||!u){ st='nodata'; em=T.wait; }
-    else if(age<=90){ st='live'; em=T.upd+' '+fmt(age)+' '+T.ago; }
-    else if(age<=600){ st='delayed'; em=T.upd+' '+fmt(age)+' '+T.ago; }
+    else if(age<=40){ st='live'; em=T.upd+' '+fmt(age)+' '+T.ago; }
+    else if(age<=90){ st='delayed'; em=T.upd+' '+fmt(age)+' '+T.ago; }
     else { st='offline'; em=T.last+' '+fmt(age)+' '+T.ago; }
     el.setAttribute('data-s',st); el.querySelector('b').textContent=T[st]; el.querySelector('em').textContent=em;
     el.title=(em?em+' · ':'')+(u? new Date(u*1000).toLocaleString() : '');
@@ -6855,23 +6857,22 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
   'use strict';
   var FA=(document.documentElement.lang||'').toLowerCase().indexOf('fa')===0;
   var T=FA?{
-    title:'اعلان‌ها', all:'همه خوانده شد', clear:'پاک کردن', alert:'آلارت قیمت', now:'قیمت لحظه‌ای',
+    title:'اعلان‌ها', all:'همه خوانده شد', clear:'پاک کردن', alert:'آلارت قیمت', now:'قیمت اکنون:', cross:'قیمت از این سطح عبور کرد', crossA:'قیمت از ', crossB:' عبور کرد',
     up:'قیمت از پایین به', down:'قیمت از بالا به', hit:'رسید',
     emptyT:'هنوز آلارتی فعال نشده', emptyD:'با ابزار ⏰ روی چارت MT5 آلارت قیمت بگذارید. هر وقت قیمت به آن رسید، همین‌جا اعلان می‌آید.',
     live:'همگام با MT5', desk:'فعال‌سازی اعلان مرورگر', deskOn:'اعلان مرورگر فعال است', close:'بستن', bell:'اعلان‌ها'
   }:{
-    title:'Notifications', all:'Mark all read', clear:'Clear', alert:'Price alert', now:'Now',
+    title:'Notifications', all:'Mark all read', clear:'Clear', alert:'Price alert', now:'Now', cross:'Price crossed this level', crossA:'Price crossed ', crossB:'',
     up:'Price rose to', down:'Price fell to', hit:'',
     emptyT:'No alerts yet', emptyD:'Set a price alert with the ⏰ tool on your MT5 chart. When price reaches it, the alert shows up here.',
     live:'Synced from MT5', desk:'Enable browser notifications', deskOn:'Browser notifications on', close:'Close', bell:'Notifications'
   };
-  T.permTitle = FA ? 'صدا و اعلان آلارت قیمت را فعال کنید' : 'Enable sound & notifications';
-  T.permDesc  = FA ? 'تا وقتی قیمت به آلارت شما رسید، صدای بای/سل و اعلان بگیرید.' : 'Get a buy / sell sound and a notification when price hits your alert.';
-  T.permGo    = FA ? 'فعال‌سازی' : 'Enable';
-  T.permNever = FA ? 'هرگز' : 'Never';
+  T.dPerm='دسترسی'; T.dPush='پوش'; T.dLocal='اعلان محلی'; T.dTest='تست پوش'; T.dErr='خطا'; T.localTest='تست محلی'; T.localBody='اگر این را در لیست اعلان گوشی می‌بینید، نمایش اعلان کار می‌کند.';
+  T.deskDenied='اعلان مسدود است — راهنما'; T.dFix='در مرورگر مسدود شده: روی آیکون کنار نوار آدرس بزنید ← مجوزها ← اعلان‌ها ← اجازه، سپس صفحه را رفرش کنید.';
+  T.testWait  = FA ? 'تست ارسال شد… صفحه را ببندید یا قفل کنید (۸ ثانیه)' : 'Test sent… lock the phone or switch tab (8 s)';
   var MAX=50, FRESH=600, TOAST_MS=7000;
   var items=[], seen={}, login=null, lastSig='';
-  var btn, badge, panel, listEl, countEl, allBtn, clrBtn, deskBtn, toasts, rtf;
+  var btn, badge, panel, listEl, countEl, allBtn, clrBtn, deskBtn, diagEl, toasts, rtf;
   try{ rtf=new Intl.RelativeTimeFormat(FA?'fa-u-nu-latn':'en',{numeric:'auto'}); }catch(e){ rtf=null; }
 
   function $(id){ return document.getElementById(id); }
@@ -6903,7 +6904,7 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
     bell:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 17v-6a6 6 0 1 1 12 0v6l1.6 2.2H4.4z"/><path d="M10 21.5h4"/></svg>'
   };
   function msg(n){
-    return n.dir==='down' ? T.down+' <i>'+esc(n.level)+'</i> '+T.hit : T.up+' <i>'+esc(n.level)+'</i> '+T.hit;
+    return T.crossA+'<i>'+esc(n.level)+'</i>'+T.crossB;
   }
   function itemHtml(n){
     return '<button type="button" class="hsn-item '+n.dir+(n.read?'':' unread')+'" data-id="'+esc(n.id)+'">'+
@@ -6918,6 +6919,7 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
     var u=unreadCount();
     badge.hidden=!u; badge.textContent=u>9?'9+':String(u);
     btn.classList.toggle('has-new',u>0);
+    try{ if(navigator.setAppBadge){ if(u) navigator.setAppBadge(u); else navigator.clearAppBadge(); } }catch(e){}   // number on the app icon
     btn.title=T.bell+(u?' ('+u+')':'');
     btn.setAttribute('aria-label',T.bell+(u?' ('+u+')':''));
     document.title=(u?'('+u+') ':'')+baseTitle.replace(/^\(\d+\)\s/,'');
@@ -6926,8 +6928,8 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
     listEl.innerHTML=items.length?items.map(itemHtml).join(''):
       '<div class="hsn-empty"><div class="ring">'+ICON.bell+'</div><b>'+T.emptyT+'</b><span>'+T.emptyD+'</span></div>';
     var canDesk='Notification' in window;
-    deskBtn.hidden=!canDesk;
-    if(canDesk) deskBtn.textContent=Notification.permission==='granted'?T.deskOn:T.desk;
+    if(deskBtn){ deskBtn.hidden=!canDesk; if(canDesk) deskBtn.textContent=Notification.permission==='granted'?T.deskOn:T.desk; }
+    showDiag();
   }
 
   /* ---- building the UI ---- */
@@ -6936,11 +6938,10 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
     panel=document.createElement('div'); panel.className='hsn-panel'; panel.id='hsnPanel'; panel.setAttribute('role','dialog'); panel.setAttribute('aria-label',T.title);
     panel.innerHTML='<div class="hsn-head"><div class="hsn-title">'+T.title+'<span class="hsn-count" hidden>0</span></div>'+
       '<button type="button" class="hsn-act" data-a="all">'+T.all+'</button><button type="button" class="hsn-act" data-a="clear">'+T.clear+'</button></div>'+
-      '<div class="hsn-list"></div>'+
-      '<div class="hsn-foot"><span class="live"><i></i>'+T.live+'</span><button type="button" data-a="desk"></button></div>';
+      '<div class="hsn-list"></div>';
     document.documentElement.appendChild(panel); // outside <body>: the page applies CSS zoom to body
     listEl=panel.querySelector('.hsn-list'); countEl=panel.querySelector('.hsn-count');
-    allBtn=panel.querySelector('[data-a="all"]'); clrBtn=panel.querySelector('[data-a="clear"]'); deskBtn=panel.querySelector('[data-a="desk"]');
+    allBtn=panel.querySelector('[data-a="all"]'); clrBtn=panel.querySelector('[data-a="clear"]'); deskBtn=panel.querySelector('[data-a="desk"]'); diagEl=panel.querySelector('.hsn-diag');
     toasts=document.createElement('div'); toasts.className='hsn-toasts'; document.documentElement.appendChild(toasts);
 
     btn.addEventListener('click',function(e){ e.stopPropagation(); panel.classList.contains('show')?closePanel():openPanel(); });
@@ -6951,7 +6952,6 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
         var k=a.getAttribute('data-a');
         if(k==='all') markAll();
         else if(k==='clear'){ items=[]; save(); render(); }
-        else if(k==='desk' && 'Notification' in window && Notification.permission==='default'){ Notification.requestPermission().then(render); }
         return;
       }
       var it=e.target.closest('.hsn-item');
@@ -6982,10 +6982,15 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
   function markAll(){ items.forEach(function(n){ n.read=true; }); save(); render(); }
 
   /* ---- toast / sound / desktop ---- */
+  /* phones: no in-page toast; the alert goes to the phone's own notification list instead */
+  var IS_MOBILE=(function(){ try{ return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent||'') || (window.matchMedia && matchMedia('(pointer:coarse)').matches && matchMedia('(hover:none)').matches); }catch(e){ return false; } })();
   function toast(n){
+    if(IS_MOBILE) return;
     var el=document.createElement('div'); el.className='hsn-toast '+n.dir; el.setAttribute('role','status');
-    el.innerHTML='<span class="hsn-ic">'+ICON[n.dir]+'</span><span class="hsn-body"><span class="hsn-row"><b class="hsn-sym">'+esc(n.sym)+'</b><span class="hsn-tag">'+T.alert+'</span></span>'+
-      '<span class="hsn-msg">'+msg(n)+'</span></span><button type="button" class="hsn-x" aria-label="'+T.close+'">✕</button><span class="hsn-bar"></span>';
+    el.innerHTML='<span class="hsn-tmain"><span class="hsn-trow"><b class="hsn-sym">'+esc(n.sym)+'</b><span class="hsn-tag">'+T.alert+'</span></span>'+
+      '<span class="hsn-tprice"><small>'+(n.dir==='down'?'▼':'▲')+'</small>'+esc(n.level)+'</span>'+
+      '<span class="hsn-tsub">'+T.cross+' · '+T.now+' '+esc(n.price)+'</span></span>'+
+      '<button type="button" class="hsn-x" aria-label="'+T.close+'">✕</button><span class="hsn-bar"></span>';
     toasts.appendChild(el);
     while(toasts.children.length>3) toasts.removeChild(toasts.firstChild);
     var gone=false;
@@ -6996,14 +7001,131 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
     el.addEventListener('mouseleave',function(){ el.querySelector('.hsn-bar').style.animationPlayState='running'; tm=setTimeout(dismiss,2500); });
     el.addEventListener('click',function(e){ if(e.target.closest('.hsn-x')){ dismiss(); return; } dismiss(); openPanel(); });
   }
+  /* ---- Web Push: phone / desktop notification list, works even when the site is closed ---- */
+  var permBusy=false;
+  function idbSet(k,v){
+    return new Promise(function(res){
+      try{
+        var r=indexedDB.open('hs-push',1);
+        r.onupgradeneeded=function(){ r.result.createObjectStore('kv'); };
+        r.onsuccess=function(){ try{ var t=r.result.transaction('kv','readwrite'); t.objectStore('kv').put(v,k); t.oncomplete=function(){ res(); }; t.onerror=function(){ res(); }; }catch(e){ res(); } };
+        r.onerror=function(){ res(); };
+      }catch(e){ res(); }
+    });
+  }
+  function b64uBytes(s){ s=s.replace(/-/g,'+').replace(/_/g,'/'); while(s.length%4) s+='='; var b=atob(s), o=new Uint8Array(b.length); for(var i=0;i<b.length;i++) o[i]=b.charCodeAt(i); return o; }
+  function cloudCfg(){
+    if(typeof jrMode!=='function' || jrMode()!=='online') return null;
+    var c=jrCloud(); if(!c.url || !c.key) return null;
+    return {url:String(c.url).replace(/\/+$/,''), key:c.key, login:String(c.login||(typeof jrLogin==='function'?jrLogin():'')), lang:FA?'fa':'en'};
+  }
+  function regSW(){
+    if(!('serviceWorker' in navigator)) return Promise.resolve(null);
+    return navigator.serviceWorker.register('sw.js').then(function(){ return navigator.serviceWorker.ready; }).catch(function(){ return null; });
+  }
+  var diagInfo={sub:'',srv:'',local:'',test:'',err:''};
+  function errMsg(er){ return String((er && er.message) || er || 'error').slice(0,90); }
+  function showDiag(){
+    if(!diagEl) return;
+    var perm=('Notification' in window)?Notification.permission:'unsupported';
+    var rows=[T.dPerm+': '+perm, T.dPush+': '+(diagInfo.sub||'-')+(diagInfo.srv?' ('+diagInfo.srv+')':'')];
+    if(diagInfo.local) rows.push(T.dLocal+': '+diagInfo.local);
+    if(diagInfo.test) rows.push(T.dTest+': '+diagInfo.test);
+    if(diagInfo.err) rows.push(T.dErr+': '+diagInfo.err);
+    if(perm==='denied') rows.push(T.dFix);
+    diagEl.innerHTML=rows.map(esc).join('<br>');
+  }
+  function subscribePush(){
+    try{
+      if(!('Notification' in window) || Notification.permission!=='granted'){ showDiag(); return Promise.resolve(false); }
+      if(!('PushManager' in window)){ diagInfo.sub='not supported'; showDiag(); return Promise.resolve(false); }
+      var c=cloudCfg(); if(!c){ diagInfo.sub='no online dashboard key'; showDiag(); return Promise.resolve(false); }
+      return regSW().then(function(reg){
+        if(!reg){ diagInfo.sub='service worker failed'; return false; }
+        return idbSet('cfg',c).then(function(){ return fetch(c.url+'/v1/push/key',{cache:'no-store'}); })
+          .then(function(r){ return r.json(); })
+          .then(function(d){
+            if(!d || !d.ok){ diagInfo.sub='no push key from server'; return false; }
+            var want=d.key;
+            return reg.pushManager.getSubscription().then(function(sub){
+              if(sub && sub.options && sub.options.applicationServerKey){
+                var have=btoa(String.fromCharCode.apply(null,new Uint8Array(sub.options.applicationServerKey))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+                if(have!==want) return sub.unsubscribe().then(function(){ return null; });
+              }
+              return sub;
+            }).then(function(sub){
+              return sub || reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64uBytes(want)});
+            }).then(function(sub){
+              try{ diagInfo.sub=new URL(sub.endpoint).host; }catch(e){ diagInfo.sub='subscribed'; }
+              return fetch(c.url+'/v1/push/subscribe?login='+encodeURIComponent(c.login),{method:'POST',headers:{'Content-Type':'application/json','X-HeySolo-Dashboard-Key':c.key},body:JSON.stringify({subscription:sub.toJSON()})});
+            }).then(function(r){ diagInfo.srv=r.ok?'server ok':('server HTTP '+r.status); return r.ok; });
+          });
+      }).catch(function(er){ diagInfo.sub='error: '+errMsg(er); return false; }).then(function(ok){ showDiag(); return ok; });
+    }catch(e){ diagInfo.sub='error: '+errMsg(e); showDiag(); return Promise.resolve(false); }
+  }
+  /* test: 1) a local notification right now (proves the phone can show system notifications),
+           2) the Worker adds a TEST alert and sends a real push ~8 s later (lock the phone / close the browser first) */
+  function testPush(){
+    var c=cloudCfg();
+    diagInfo.local=''; diagInfo.test=''; diagInfo.err='';
+    if(deskBtn) deskBtn.textContent=T.testWait;
+    regSW().then(function(reg){
+      if(!reg || !reg.showNotification){ diagInfo.local='no service worker'; return; }
+      return reg.showNotification('HeySolo · '+T.localTest,{body:T.localBody,tag:'hsn-local-test',icon:'logo.jpg',badge:'badge.png',silent:false})
+        .then(function(){ diagInfo.local='shown'; }).catch(function(er){ diagInfo.local='error: '+errMsg(er); });
+    }).then(function(){ showDiag(); return subscribePush(); }).then(function(){
+      if(!c){ diagInfo.test='no online dashboard key'; return; }
+      diagInfo.test='...';
+      showDiag();
+      return fetch(c.url+'/v1/push/test?login='+encodeURIComponent(c.login),{method:'POST',headers:{'Content-Type':'application/json','X-HeySolo-Dashboard-Key':c.key},body:'{}'})
+        .then(function(r){ return r.json(); })
+        .then(function(d){ diagInfo.test=(d && d.ok) ? ('sent to '+d.sent+' device(s), codes '+((d.codes||[]).join(',')||'-')) : 'failed'; })
+        .catch(function(er){ diagInfo.test='error: '+errMsg(er); });
+    }).then(function(){ showDiag(); if(deskBtn) setTimeout(render,500); });
+    setTimeout(pollWorker,1500);
+  }
+  function askNative(cb){
+    if(permBusy) return; permBusy=true;
+    var fin=function(){ if(!permBusy) return; permBusy=false; render(); if(Notification.permission==='granted') regSW(); subscribePush(); if(cb) cb(); };
+    try{ var p=Notification.requestPermission(function(){ fin(); }); if(p && p.then) p.then(fin); }catch(e){ permBusy=false; }
+  }
+  /* Same chimes as plain audio files: used when WebAudio is locked / suspended (page in background, no tap yet) */
+  var wavCache={};
+  function wavFor(dir){
+    if(wavCache[dir]) return wavCache[dir];
+    var notes = dir==='down' ? [[554.37,0,.16],[415.30,.14,.16],[277.18,.28,.38]] : [[659.25,0,.13],[880,.11,.13],[1108.73,.22,.30]];
+    var sr=22050, len=Math.floor(sr*0.75), pcm=new Int16Array(len), i;
+    notes.forEach(function(n){
+      var s0=Math.floor(n[1]*sr), cnt=Math.floor(n[2]*sr);
+      for(var k=0;k<cnt && s0+k<len;k++){
+        var t=k/sr, env=Math.min(1,k/(sr*.012))*Math.exp(-3.2*t/n[2]), v=Math.sin(2*Math.PI*n[0]*t)*env*0.55;
+        pcm[s0+k]=Math.max(-32767,Math.min(32767,pcm[s0+k]+v*32767));
+      }
+    });
+    var buf=new ArrayBuffer(44+len*2), dv=new DataView(buf);
+    function str(o,s){ for(var j=0;j<s.length;j++) dv.setUint8(o+j,s.charCodeAt(j)); }
+    str(0,'RIFF'); dv.setUint32(4,36+len*2,true); str(8,'WAVEfmt '); dv.setUint32(16,16,true); dv.setUint16(20,1,true); dv.setUint16(22,1,true);
+    dv.setUint32(24,sr,true); dv.setUint32(28,sr*2,true); dv.setUint16(32,2,true); dv.setUint16(34,16,true); str(36,'data'); dv.setUint32(40,len*2,true);
+    for(i=0;i<len;i++) dv.setInt16(44+i*2,pcm[i],true);
+    var u8=new Uint8Array(buf), bin='';
+    for(i=0;i<u8.length;i+=8192) bin+=String.fromCharCode.apply(null,u8.subarray(i,i+8192));
+    return (wavCache[dir]='data:audio/wav;base64,'+btoa(bin));
+  }
   /* Different sound per direction: BUY (price crossed up) = bright rising 3-note chime,
      SELL (price crossed down) = lower falling 3-note tone. A mixed batch plays both, one after the other. */
   function chime(list){
     try{
-      if(typeof SOUND_ALERTS_ON==='undefined' || !SOUND_ALERTS_ON || typeof playTone!=='function') return;
+      if(typeof SOUND_ALERTS_ON==='undefined' || !SOUND_ALERTS_ON) return;
       var hasUp=false, hasDown=false;
       (list||[]).forEach(function(n){ if(n.dir==='down') hasDown=true; else hasUp=true; });
       if(!hasUp && !hasDown) hasUp=true;
+      var ctx=(typeof getAudioCtx==='function')?getAudioCtx():null;
+      if(typeof playTone!=='function' || !ctx || ctx.state!=='running'){
+        try{ if(ctx && ctx.resume) ctx.resume(); }catch(e){}
+        var seq=[]; if(hasUp) seq.push('up'); if(hasDown) seq.push('down');
+        seq.forEach(function(d,i){ setTimeout(function(){ try{ var a=new Audio(wavFor(d)); a.volume=1; var p=a.play(); if(p && p.catch) p.catch(function(){}); }catch(e){} },i*800); });
+        return;
+      }
       var off=0;
       if(hasUp){
         playTone(659.25,off,.13,'sine',.18);      // E5
@@ -7018,11 +7140,24 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
       }
     }catch(e){}
   }
+  /* System notification (phone notification list). Uses the service worker: plain "new Notification()" does not work on Android. */
   function desktop(n){
     try{
-      if(!('Notification' in window) || Notification.permission!=='granted' || !document.hidden) return;
-      var nt=new Notification(n.sym+' · '+T.alert,{body:(n.dir==='down'?T.down:T.up)+' '+n.level+(T.hit?' '+T.hit:''),tag:'hsn-'+n.id});
-      nt.onclick=function(){ window.focus(); nt.close(); };
+      if(!('Notification' in window) || Notification.permission!=='granted') return;
+      if(!IS_MOBILE && !document.hidden && document.hasFocus()) return;   // desktop: while you look at the page the toast + sound are enough; phone: always use the system notification
+      // minimal monochrome style: one-line title, one-line body, no action buttons
+      var title=n.sym+'  '+(n.dir==='down'?'↓':'↑')+'  '+n.level;
+      var o={body:T.cross+' · '+T.now+' '+n.price,tag:'hsn-'+n.id,renotify:false,requireInteraction:false,silent:false,vibrate:(n.dir==='down'?[400,120,400,120,400]:[150,80,150,80,300]),icon:'n-logo.png?v=1',badge:'badge.png'};
+      var getReg=regSW();   // registers sw.js if needed: on phones a system notification is only possible through the service worker
+      getReg.then(function(reg){
+        if(reg && reg.showNotification) return reg.showNotification(title,o).then(function(){
+          setTimeout(function(){ try{ reg.getNotifications({tag:o.tag}).then(function(l){ l.forEach(function(x){ x.close(); }); }); }catch(e){} },60000);   // auto-remove after 1 minute
+        });
+        throw new Error('no service worker');
+      }).catch(function(er){
+        diagInfo.err=errMsg(er); showDiag();
+        try{ var nt=new Notification(title,o); nt.onclick=function(){ window.focus(); nt.close(); }; setTimeout(function(){ try{ nt.close(); }catch(e){} },60000); }catch(e){ diagInfo.err+=' / '+errMsg(e); showDiag(); }
+      });
     }catch(e){}
   }
   function ring(){
@@ -7062,7 +7197,7 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
   var polling=false, noEndpoint=false;
   function pollWorker(){
     try{
-      if(polling || noEndpoint || document.hidden) return;
+      if(polling || noEndpoint) return;
       if(typeof jrMode!=='function' || jrMode()!=='online') return;
       var c=jrCloud(); if(!c.url || !c.key) return;
       var lg=String(c.login||(typeof jrLogin==='function'?jrLogin():''));
@@ -7074,31 +7209,43 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
     }catch(e){ polling=false; }
   }
 
-  /* ---- ask the user to allow sound + browser notifications (browsers need a click for both) ---- */
+  /* ---- ask for notification permission: ONLY the browser's own native prompt (no custom pre-prompt card) ----
+     1) try right away on load (Chrome / Edge / Android allow it without a tap)
+     2) if the browser suppressed it instantly (Firefox / Safari need a user gesture), retry on the very first tap / click
+     3) asked again on every refresh until the user allows or blocks it */
   function askPerm(){
     try{
-      var needN=('Notification' in window) && Notification.permission==='default';
-      var needS=!(typeof SOUND_ALERTS_ON!=='undefined' && SOUND_ALERTS_ON);
-      if(!needN && !needS) return;
-      try{ var v=localStorage.getItem('heySolo_permAsk'); if(v==='never') return; if(Date.now()-(+v||0)<864e5) return; localStorage.setItem('heySolo_permAsk',String(Date.now())); }catch(e){} // at most once a day
-      if(document.getElementById('hsnAsk')) return;
-      var el=document.createElement('div'); el.className='hsn-ask'; el.id='hsnAsk'; el.setAttribute('role','dialog');
-      el.innerHTML='<span class="hsn-ic">'+ICON.bell+'</span><div class="hsn-atx"><b>'+T.permTitle+'</b><span class="d">'+T.permDesc+'</span></div>'+
-        '<div class="btns"><button type="button" class="go">'+T.permGo+'</button><button type="button" class="never">'+T.permNever+'</button></div>';
-      document.documentElement.appendChild(el);
-      requestAnimationFrame(function(){ requestAnimationFrame(function(){ el.classList.add('show'); }); });
-      function done(){
-        try{ localStorage.setItem('heySolo_permAsk',String(Date.now())); }catch(e){}
-        el.classList.remove('show'); setTimeout(function(){ if(el.parentNode) el.parentNode.removeChild(el); },350);
+      if(!('Notification' in window) || Notification.permission!=='default') return;
+      try{ if(localStorage.getItem('heySolo_permAsk')==='never') return; }catch(e){}   // legacy "Never" choice
+      var armed=false;
+      function afterGrant(){
+        if(Notification.permission!=='granted') return;
+        // first-time grant: also switch the sound alerts on, unless the user already chose something for sound
+        try{
+          if(localStorage.getItem('heySolo_soundAlerts')===null && typeof toggleSoundAlerts==='function' && !(typeof SOUND_ALERTS_ON!=='undefined' && SOUND_ALERTS_ON)) toggleSoundAlerts();
+          if(typeof unlockAudio==='function') unlockAudio();
+        }catch(e){}
       }
-      el.querySelector('.never').addEventListener('click',function(){ done(); try{ localStorage.setItem('heySolo_permAsk','never'); }catch(e){} });
-      el.querySelector('.go').addEventListener('click',function(){
-        try{ if(needS && typeof toggleSoundAlerts==='function') toggleSoundAlerts(); }catch(e){}
-        try{ if(typeof unlockAudio==='function') unlockAudio(); }catch(e){}
-        try{ if(needN){ var p=Notification.requestPermission(); if(p && p.then) p.then(render); } }catch(e){}
-        setTimeout(function(){ chime([{dir:'up'}]); },300); // short confirmation sound
-        done();
-      });
+      function attempt(fromGesture){
+        var t0=Date.now();
+        askNative(function(){
+          if(Notification.permission==='default'){
+            if(!fromGesture && Date.now()-t0<400) armGesture();            // browser blocked it silently: needs a tap
+            // user dismissed the prompt: nothing stored, it is asked again on the next refresh
+          } else afterGrant();
+        });
+      }
+      function armGesture(){
+        if(armed) return; armed=true;
+        var evs=['pointerdown','touchend','keydown','click'];
+        function once(){
+          evs.forEach(function(ev){ document.removeEventListener(ev,once,true); });
+          attempt(true);
+        }
+        evs.forEach(function(ev){ document.addEventListener(ev,once,true); });
+      }
+      if(IS_MOBILE) armGesture();   // phones: ask on the first tap (Android browsers often hide a prompt that has no tap behind it)
+      else attempt(false);
     }catch(e){}
   }
 
@@ -7108,8 +7255,10 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
     readFromPage();
     setInterval(readFromPage,1500);
     setInterval(pollWorker,10000); pollWorker();
-    document.addEventListener('visibilitychange',function(){ if(!document.hidden) pollWorker(); });
+    document.addEventListener('visibilitychange',function(){ if(!document.hidden){ pollWorker(); idbSet('badge',0); } });
     setTimeout(askPerm,2500);
+    try{ if('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message',function(ev){ if(ev.data && ev.data.type==='hs-poll') pollWorker(); }); }catch(e){}
+    if('Notification' in window && Notification.permission==='granted'){ regSW(); setTimeout(subscribePush,3000); }   // keep this device registered for push
     window.hsNotify=ingest; // handy for testing: hsNotify([{id:'1',t:Date.now()/1000,sym:'XAUUSD',dir:'up',level:'2345.60',price:'2345.70'}])
   }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init); else init();

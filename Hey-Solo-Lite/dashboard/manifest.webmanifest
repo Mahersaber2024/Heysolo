@@ -1,0 +1,12 @@
+{
+  "name": "HeySolo Dashboard",
+  "short_name": "HeySolo",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0b0e14",
+  "theme_color": "#0b0e14",
+  "icons": [
+    { "src": "logo.jpg", "sizes": "640x640", "type": "image/jpeg", "purpose": "any" }
+  ]
+}
