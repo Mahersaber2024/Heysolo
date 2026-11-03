@@ -1887,7 +1887,12 @@ install_system_packages(){
 }
 
 ensure_wine32(){
-
+  local _p
+  for _p in winehq-devel winehq-staging winehq-stable; do
+    if dpkg -s "${_p}" 2>/dev/null | grep -q '^Status: install ok installed'; then
+      return 0
+    fi
+  done
   apt-get install -y wine32 >/dev/null 2>&1 \
     || apt-get install -y wine32:i386 >/dev/null 2>&1 \
     || apt-get install -y libwine:i386 >/dev/null 2>&1 \
