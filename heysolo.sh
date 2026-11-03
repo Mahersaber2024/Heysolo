@@ -17,12 +17,28 @@ warn(){ echo -e "${YELLOW}[!]${NC} $1"; }
 err(){  echo -e "${RED}[ERROR]${NC} $1"; }
 pause(){ read -rp "${DIM}Enter to go back...${NC}" _ || true; }
 [[ $EUID -eq 0 ]] || { err "Run as root:  sudo heysolo"; exit 1; }
+bot_checkout(){
+local d=""
+[[ -s "${BOT_STATE_FILE:-/etc/heysolo-bot.install_dir}" ]] && d="$(cat "${BOT_STATE_FILE:-/etc/heysolo-bot.install_dir}")"
+echo "${d:-/opt/heysolo/bot}"
+}
+FETCH_VIA=""
 fetch_one(){
-mkdir -p "$(dirname "${SCRIPTS_DIR}/$1")" 2>/dev/null || true
-curl -fsSL "${REPO_RAW}/$1" -o "${SCRIPTS_DIR}/$1.part" 2>/dev/null \
-&& [[ -s "${SCRIPTS_DIR}/$1.part" ]] \
-&& mv -f "${SCRIPTS_DIR}/$1.part" "${SCRIPTS_DIR}/$1" \
-|| { rm -f "${SCRIPTS_DIR}/$1.part" 2>/dev/null; return 1; }
+local f="$1" dst="${SCRIPTS_DIR}/$1" src
+FETCH_VIA=""
+mkdir -p "$(dirname "${dst}")" 2>/dev/null || true
+if curl -4fsSL --retry 2 --connect-timeout 10 "${REPO_RAW}/${f}" -o "${dst}.part" 2>/dev/null && [[ -s "${dst}.part" ]]; then
+mv -f "${dst}.part" "${dst}"
+FETCH_VIA="web"
+return 0
+fi
+rm -f "${dst}.part" 2>/dev/null
+src="$(bot_checkout)/${f}"
+if [[ -s "${src}" ]] && cp -f "${src}" "${dst}" 2>/dev/null; then
+FETCH_VIA="local checkout"
+return 0
+fi
+return 1
 }
 ensure_scripts(){
 mkdir -p "${SCRIPTS_DIR}"
@@ -36,16 +52,16 @@ chmod +x "${SCRIPTS_DIR}"/*.sh "${SCRIPTS_DIR}"/*/*.sh 2>/dev/null || true
 }
 update_scripts(){
 local f
-for f in "${SCRIPT_LIST[@]}"; do
-if fetch_one "${f}"; then ok "${f}"; else warn "${f} kept (download failed)"; fi
-done
-chmod +x "${SCRIPTS_DIR}"/*.sh "${SCRIPTS_DIR}"/*/*.sh 2>/dev/null || true
-if [[ -s "${BOT_STATE_FILE}" && -s "${SCRIPTS_DIR}/install.sh" ]]; then
-echo
+if [[ -s "${BOT_STATE_FILE:-/etc/heysolo-bot.install_dir}" && -s "${SCRIPTS_DIR}/install.sh" ]]; then
 bash "${SCRIPTS_DIR}/install.sh" update-files || warn "bot file update failed - check the output above."
+echo
 else
 warn "bot not installed yet - skipping bot update (press T to install it first)."
 fi
+for f in "${SCRIPT_LIST[@]}"; do
+if fetch_one "${f}"; then ok "${f} (${FETCH_VIA})"; else warn "${f} kept (web download and local checkout both failed)"; fi
+done
+chmod +x "${SCRIPTS_DIR}"/*.sh "${SCRIPTS_DIR}"/*/*.sh 2>/dev/null || true
 warn "Re-open the panel to pick up a new heysolo.sh."
 }
 install_cli(){
