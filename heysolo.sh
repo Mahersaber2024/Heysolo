@@ -95,6 +95,15 @@ systemctl is-active "${BOT_SERVICE}" 2>/dev/null || echo "stopped"
 }
 vnc_up(){    pgrep -u "${MT5_USER}" -x x11vnc >/dev/null 2>&1; }
 screen_up(){ pgrep -u "${MT5_USER}" -x Xvfb >/dev/null 2>&1; }
+display_ok(){ screen_up && timeout 5 su - "${MT5_USER}" -c "DISPLAY=:${DISPLAY_NUM} xdpyinfo" >/dev/null 2>&1; }
+ensure_display(){
+display_ok && return 0
+declare -F start_display >/dev/null 2>&1 || { err "mt5.sh library not loaded - press u to update scripts."; return 1; }
+if [[ -s "${TERMINALS_FILE}" ]]; then export DESKTOP_ICONS=1; else export DESKTOP_ICONS=0; fi
+say "${YELLOW}Display :${DISPLAY_NUM} is down - starting Xvfb + VNC...${NC}"
+start_display
+display_ok || { err "display :${DISPLAY_NUM} did not come up - run: sudo heysolo ?"; return 1; }
+}
 my_ip(){ hostname -I 2>/dev/null | awk '{print $1}'; }
 declare -a T_SLUG T_EXE T_PREFIX T_PATH
 scan_terminals(){
@@ -175,6 +184,7 @@ ok "$(pretty "${T_SLUG[$i]}") stopped."
 }
 t_start(){
 local i="$1"
+ensure_display || return 1
 start_terminal "${T_SLUG[$i]}" "${T_PREFIX[$i]}" "${T_PATH[$i]}" \
 && ok "$(pretty "${T_SLUG[$i]}") started."
 }
@@ -229,7 +239,7 @@ rm -f "/home/${MT5_USER}/Desktop/mt5-${T_SLUG[$i]}.desktop" \
 declare -F remove_terminal_desktop_visible >/dev/null 2>&1 \
 && remove_terminal_desktop_visible "${T_SLUG[$i]}"
 ok "removed."; sleep 1 ;;
-a)  if declare -F start_all_terminals >/dev/null 2>&1; then start_all_terminals; else warn "library not loaded"; fi
+a)  if declare -F start_all_terminals >/dev/null 2>&1; then ensure_display && start_all_terminals; else warn "library not loaded"; fi
 pause ;;
 z)  for i in "${!T_SLUG[@]}"; do t_stop "$i"; done; sleep 1 ;;
 v)  if vnc_up; then
@@ -237,11 +247,15 @@ as_mt5 "pkill x11vnc" 2>/dev/null || true
 sleep 1
 if vnc_up; then err "VNC still running - kill failed."; else ok "VNC off (terminals keep running)."; fi
 else
+if display_ok; then
 as_mt5 "x11vnc -display :${DISPLAY_NUM} ${VNC_OPTS} -rfbauth ~/.vnc/passwd -rfbport ${VNC_PORT} -bg"
 if [[ -s "${TERMINALS_FILE}" ]]; then export DESKTOP_ICONS=1; else export DESKTOP_ICONS=0; fi
 declare -F desktop_start >/dev/null 2>&1 && desktop_start >/dev/null 2>&1
+else
+ensure_display
+fi
 sleep 1
-if vnc_up; then ok "VNC on - connect to localhost:${VNC_PORT} through the ssh tunnel above."; else err "VNC did not start - check ~/.vnc/passwd exists for ${MT5_USER}."; fi
+if vnc_up; then ok "VNC on - connect to localhost:${VNC_PORT} through the ssh tunnel above."; else err "VNC did not start - display: $(display_ok && echo up || echo down), passwd: $([[ -s /home/${MT5_USER}/.vnc/passwd ]] && echo ok || echo MISSING)"; fi
 fi
 sleep 1 ;;
 p)  run_mt5 step1; pause ;;
