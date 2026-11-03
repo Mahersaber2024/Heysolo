@@ -1400,6 +1400,10 @@ LOCK="${TINT2_LOCK}"
 PROFILE="${PCMAN_PROFILE}"
 WANT_ICONS="${DESKTOP_ICONS}"
 while true; do
+  if ! pgrep -x openbox >/dev/null 2>&1; then
+    setsid openbox >/dev/null 2>&1 &
+    sleep 2
+  fi
   if [[ "\${WANT_ICONS}" == "1" ]] && command -v pcmanfm >/dev/null 2>&1 \
      && ! pgrep -f 'pcmanfm[[:space:]]+--desktop' >/dev/null 2>&1; then
     if command -v dbus-launch >/dev/null 2>&1; then
@@ -1667,6 +1671,15 @@ desktop_ensure_pcmanfm(){
   command -v pcmanfm >/dev/null 2>&1 || { warn "Could not install pcmanfm, skipping desktop icons (wallpaper/taskbar still work)."; return 1; }
 }
 
+desktop_ensure_openbox(){
+  pgrep -u "${MT5_USER}" -x openbox >/dev/null 2>&1 && return 0
+  timeout 5 xdpyinfo -display ":${DISPLAY_NUM}" >/dev/null 2>&1 || return 0
+  warn "openbox (the window manager) is not running - starting it."
+  mt5_run_quiet 10 "setsid openbox >/dev/null 2>&1 &" || true
+  sleep 1
+  pgrep -u "${MT5_USER}" -x openbox >/dev/null 2>&1
+}
+
 desktop_start(){
   DESK_STEP=0
   step "creating folders / configs"
@@ -1674,6 +1687,7 @@ desktop_start(){
   desktop_write_openbox_rules
   step "waiting for the virtual display :${DISPLAY_NUM}"
   desktop_wait_for_x 30 || { warn "Desktop layer skipped - display :${DISPLAY_NUM} is not up."; return 0; }
+  desktop_ensure_openbox
   step "painting a safety background immediately (no white/default flash)"
   if as_mt5 "command -v xsetroot" >/dev/null 2>&1; then
     as_mt5_nogui_block 5 "xsetroot -solid '${DESKTOP_BG_COLOR}'"
@@ -3127,6 +3141,7 @@ fit_new_window_to_workarea(){
 
 start_terminal(){
   local slug="$1" wineprefix="$2" termpath="${3:-}"
+  declare -F desktop_ensure_openbox >/dev/null 2>&1 && desktop_ensure_openbox
   [[ -z "$termpath" ]] && termpath=$(resolve_terminal_exe "${wineprefix}")
   if [[ -z "$termpath" ]]; then
     warn "${slug}: terminal64.exe not found (was the wizard completed?)."
