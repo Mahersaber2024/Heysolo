@@ -11,7 +11,7 @@ HEYSOLO_LAST_ERR=""
 trap 'HEYSOLO_LAST_ERR="line ${LINENO} (exit $?)"' ERR
 
 REPO_OWNER="Mahersaber2024"
-REPO_NAME="HeysoloPublic"
+REPO_NAME="Heysolo"
 REPO_API="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents"
 REPO_RAW="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main"
 
@@ -454,7 +454,7 @@ compute_work_res(){
 }
 WORK_RES_WH="${WORK_RES_WH:-$(compute_work_res)}"
 REPO_OWNER="${REPO_OWNER:-Mahersaber2024}"
-REPO_NAME="${REPO_NAME:-HeysoloPublic}"
+REPO_NAME="${REPO_NAME:-Heysolo}"
 REPO_RAW="${REPO_RAW:-https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main}"
 BG_SUBDIR="${BG_SUBDIR:-BG}"
 WALLPAPER_NAME="${WALLPAPER_NAME:-heysolo-des.png}"
@@ -2087,9 +2087,17 @@ setup_mt5_user(){
   else
     info "Creating user ${MT5_USER}..."
     adduser --disabled-password --gecos "" "${MT5_USER}"
-    echo
-    warn "Set a login password for ${MT5_USER} (used for su/ssh):"
-    passwd "${MT5_USER}"
+    local upw="${MT5_USER_PASSWORD:-}"
+    [[ -z "${upw}" ]] && upw=$(tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 16 || true)
+    [[ -z "${upw}" ]] && upw=$(date +%s%N | sha256sum | head -c 16)
+    if printf '%s:%s\n' "${MT5_USER}" "${upw}" | chpasswd; then
+      HEYSOLO_MT5USER_PW_SHOWN="${upw}"
+      ok "Login password for ${MT5_USER} generated automatically."
+      echo -e "   ${BOLD}${MT5_USER} password: ${GREEN}${upw}${NC}   (write this down)"
+    else
+      warn "Could not set a password for ${MT5_USER} automatically - set one yourself:"
+      passwd "${MT5_USER}"
+    fi
     ok "User ${MT5_USER} created."
   fi
   loginctl enable-linger "${MT5_USER}" 2>/dev/null || true
@@ -2115,6 +2123,7 @@ setup_vnc_password(){
     chown "${MT5_USER}:${MT5_USER}" "${VNC_PASS_FILE}" 2>/dev/null || true
     ok "VNC password set automatically."
     echo -e "   ${BOLD}VNC password: ${GREEN}${pw}${NC}   (write this down)"
+    HEYSOLO_VNC_PW_SHOWN="${pw}"
     return
   fi
   mkdir -p "/home/${MT5_USER}/.vnc"
@@ -2130,6 +2139,7 @@ setup_vnc_password(){
       [[ -z "${VNC_PASS_1}" ]] && VNC_PASS_1="Heysolo$$vnc"
       VNC_PASS_2="${VNC_PASS_1}"
       echo -e "   ${BOLD}VNC password: ${GREEN}${VNC_PASS_1}${NC}   (write this down)"
+      HEYSOLO_VNC_PW_SHOWN="${VNC_PASS_1}"
       break
     fi
     read -rsp "VNC Password: " VNC_PASS_1 || VNC_PASS_1=""; echo
@@ -2214,6 +2224,19 @@ print_vnc_access(){
   echo " From your computer:"
   echo "   ssh -L ${VNC_PORT}:localhost:${VNC_PORT} ${MT5_USER}@${ip}"
   echo "   Then connect RealVNC Viewer to localhost:${VNC_PORT}"
+  echo
+  echo " Login details:"
+  echo "   VNC user     : (none - password only)"
+  if [[ -n "${HEYSOLO_VNC_PW_SHOWN:-}" ]]; then
+    echo -e "   VNC password : ${BOLD}${GREEN}${HEYSOLO_VNC_PW_SHOWN}${NC}   (generated in this run - write it down)"
+  else
+    echo "   VNC password : the one you chose during setup (not stored in plain text)"
+  fi
+  if [[ -n "${HEYSOLO_MT5USER_PW_SHOWN:-}" ]]; then
+    echo -e "   SSH user     : ${MT5_USER}   password: ${BOLD}${GREEN}${HEYSOLO_MT5USER_PW_SHOWN}${NC}   (generated in this run - write it down)"
+  else
+    echo "   SSH user     : ${MT5_USER}   (user already existed - its password was not changed)"
+  fi
   echo
 }
 
