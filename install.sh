@@ -421,7 +421,7 @@ if [[ -f "requirements.txt" ]]; then
 pip install -r requirements.txt -q
 else
 
-pip install "python-telegram-bot==20.7" "psycopg2-binary==2.9.9" -q
+pip install "python-telegram-bot[rate-limiter]" "psycopg2-binary" -q
 fi
 pip install "certbot>=2.6" "certbot-dns-cloudflare>=2.6" -q 2>/dev/null || warn "certbot could not be installed now - the bot installs it itself when it needs a certificate."
 deactivate
