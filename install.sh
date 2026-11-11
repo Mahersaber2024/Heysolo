@@ -484,6 +484,8 @@ User=root
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/venv/bin/python3 ${INSTALL_DIR}/heysolo_bot.py
 Environment=PYTHONUNBUFFERED=1
+Environment=MALLOC_ARENA_MAX=2
+Environment=PYTHONDONTWRITEBYTECODE=1
 UMask=0002
 Restart=on-failure
 RestartSec=10

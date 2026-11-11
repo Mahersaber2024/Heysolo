@@ -22,7 +22,22 @@ MAGIC = "HEYSOLO-BACKUP"
 VERSION = 3
 INSTALL_DIR = Path(settings.SETTINGS_FILE).resolve().parent
 ASSETS_DIR = INSTALL_DIR / "MT5"
-INCOMING_DIR = Path(tempfile.gettempdir()) / "heysolo-incoming"
+def _work_root() -> Path:
+    """Big temporary files (backup zips, uploads) must NOT live in /tmp: on many VPS images
+    that is a small RAM-backed tmpfs, so every MB written there is a MB of RAM."""
+    for base in ("/var/tmp", str(INSTALL_DIR)):
+        try:
+            p = Path(base) / "heysolo-work"
+            p.mkdir(parents=True, exist_ok=True)
+            os.chmod(p, 0o700)
+            return p
+        except OSError:
+            continue
+    return Path(tempfile.gettempdir())
+
+
+WORK_ROOT = _work_root()
+INCOMING_DIR = WORK_ROOT / "incoming"
 SETTINGS_NAME = Path(settings.SETTINGS_FILE).name
 DATA_DIRS = ("biasfeed",)
 SKIP_SUFFIXES = {".py", ".pyc", ".pyo", ".sh", ".md", ".tmp", ".lock"}
@@ -172,11 +187,14 @@ def dump_db(zf: zipfile.ZipFile) -> dict:
                 cols = [c for c, _ in _columns(cur, table)]
                 if not cols:
                     continue
-                buf = io.StringIO()
-                cur.copy_expert(
-                    f"COPY (SELECT {', '.join(_q(c) for c in cols)} FROM public.{_q(table)}) "
-                    f"TO STDOUT WITH (FORMAT csv, HEADER true)", buf)
-                zf.writestr(f"db/{table}.csv", buf.getvalue())
+                # stream to a disk file, never hold a whole table (twice) in RAM
+                with tempfile.NamedTemporaryFile("w+", encoding="utf-8", newline="",
+                                                 dir=str(WORK_ROOT), suffix=".csv") as buf:
+                    cur.copy_expert(
+                        f"COPY (SELECT {', '.join(_q(c) for c in cols)} FROM public.{_q(table)}) "
+                        f"TO STDOUT WITH (FORMAT csv, HEADER true)", buf)
+                    buf.flush()
+                    zf.write(buf.name, f"db/{table}.csv")
                 cur.execute(f"SELECT count(*) FROM public.{_q(table)}")
                 rows = int(cur.fetchone()[0])
                 info["tables"][table] = {"rows": rows, "columns": cols}
@@ -217,8 +235,9 @@ def restore_db(zf: zipfile.ZipFile, manifest: dict) -> dict:
                 name = f"db/{table}.csv"
                 if name not in zf.namelist():
                     continue
-                data = zf.read(name).decode("utf-8")
-                header = next(csv.reader(io.StringIO(data)), None) or []
+                with zf.open(name) as raw:
+                    head_io = io.TextIOWrapper(raw, encoding="utf-8", newline="")
+                    header = next(csv.reader(head_io), None) or []
                 if not header:
                     continue
                 cur_cols = dict(_columns(cur, table))
@@ -228,8 +247,10 @@ def restore_db(zf: zipfile.ZipFile, manifest: dict) -> dict:
                 tmp = f"_hs_restore_{done}"
                 cur.execute(f"CREATE TEMP TABLE {_q(tmp)} ("
                             + ", ".join(f"{_q(c)} text" for c in header) + ") ON COMMIT DROP")
-                cur.copy_expert(f"COPY {_q(tmp)} ({', '.join(_q(c) for c in header)}) "
-                                f"FROM STDIN WITH (FORMAT csv, HEADER true)", io.StringIO(data))
+                with zf.open(name) as raw:   # streamed, not read() into memory
+                    cur.copy_expert(f"COPY {_q(tmp)} ({', '.join(_q(c) for c in header)}) "
+                                    f"FROM STDIN WITH (FORMAT csv, HEADER true)",
+                                    io.TextIOWrapper(raw, encoding="utf-8", newline=""))
                 cur.execute(
                     f"INSERT INTO public.{_q(table)} ({', '.join(_q(c) for c in common)}) "
                     f"SELECT {', '.join(f'{_q(c)}::{cur_cols[c]}' for c in common)} FROM {_q(tmp)}")
@@ -333,7 +354,7 @@ def create_backup(reason: str = "manual", kind: str = "bot") -> dict:
     kind = "terminals" if kind in ("terminals", "full") else "bot"
     prefix = TERM_PREFIX if kind == "terminals" else NAME_PREFIX
     with _lock:
-        out_dir = Path(tempfile.mkdtemp(prefix="heysolo-backup-"))
+        out_dir = Path(tempfile.mkdtemp(prefix="heysolo-backup-", dir=str(WORK_ROOT)))
         try:
             return _build_backup(out_dir, reason, prefix, kind)
         except BaseException:
@@ -366,7 +387,7 @@ def _build_backup(out_dir: Path, reason: str, prefix: str, kind: str) -> dict:
         "created_ts": int(time.time()), "host": socket.gethostname(),
         "install_dir": str(INSTALL_DIR), "files": [], "system": [], "db": {},
     }
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=9,
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=6,
                          strict_timestamps=False) as zf:
         if kind == "bot":
             manifest["db"] = dump_db(zf)

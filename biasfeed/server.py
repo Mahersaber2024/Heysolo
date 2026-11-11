@@ -446,6 +446,9 @@ def objects_for(symbol: str, cfg: dict | None = None) -> tuple[int, list[str]] |
                     hit = _obj_cache.get(key)
                     if not hit or hit[0] != mtime:
                         hit = (mtime, _parse_objects(f))
+                        if len(_obj_cache) >= 256:      # bounded: drop the oldest entries
+                            for k in sorted(_obj_cache, key=lambda x: _obj_cache[x][0])[:64]:
+                                _obj_cache.pop(k, None)
                         _obj_cache[key] = hit
                 data = hit[1]
                 if symbol in data["syms"] and (best is None or mtime > best[0]):

@@ -740,7 +740,7 @@ ACCOUNTS_TTL = 5.0
 _accounts_cache: dict[str, object] = {"at": 0.0, "roots": (), "value": [], "registered": set()}
 _accounts_lock = threading.Lock()
 
-_SCAN_WORKERS = 48
+_SCAN_WORKERS = int(os.environ.get("HEYSOLO_SCAN_WORKERS", "8"))
 _scan_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=_SCAN_WORKERS, thread_name_prefix="hs-scan"
 )

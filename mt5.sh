@@ -118,6 +118,14 @@ vm.vfs_cache_pressure=50
 vm.page-cluster=0
 EOF
   sysctl --system >/dev/null 2>&1 || true
+  # journald keeps its runtime journal in /run (RAM) and can otherwise grow to 10% of it
+  mkdir -p /etc/systemd/journald.conf.d 2>/dev/null || true
+  cat > /etc/systemd/journald.conf.d/99-heysolo.conf <<'JEOF'
+[Journal]
+RuntimeMaxUse=16M
+SystemMaxUse=150M
+JEOF
+  systemctl restart systemd-journald >/dev/null 2>&1 || true
   swap_total_kb=$(awk 'NR>1 {s+=$3} END{print s+0}' /proc/swaps 2>/dev/null || echo 0)
   if (( swap_total_kb < STARTUP_SWAP_MIN_GB * 1024 * 1024 )) && [[ ! -e /swapfile ]]; then
     ram_kb=$(awk '/MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo 0)
@@ -2011,7 +2019,11 @@ pick = [u for u in urls if ok(u, "-amd64-wow64.tar.xz")] or [u for u in urls if 
 print(pick[0] if pick else "")
 ' 2>/dev/null)
   [[ -z "${url}" ]] && { warn "Could not find a prebuilt Wine to download."; return 1; }
-  tmp=$(mktemp -d /tmp/heysolo-wine.XXXXXX) || return 1
+  # NOT /tmp: on many VPS images /tmp is a small RAM-backed tmpfs, and the Wine tarball
+  # (~0.5 GB) unpacks to well over 1 GB -> "No space left on device". /opt is on the real
+  # disk and on the same filesystem as ${dest}, so the final mv is instant too.
+  mkdir -p /opt
+  tmp=$(mktemp -d /opt/.heysolo-wine.XXXXXX) || return 1
   info "Downloading ${url##*/} ..."
   if ! curl -fL --max-time 900 -o "${tmp}/wine.tar.xz" "${url}"; then
     warn "Download failed."; rm -rf "${tmp}"; return 1
