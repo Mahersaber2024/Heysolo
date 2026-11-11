@@ -182,11 +182,48 @@ say "             [${BOLD}A${NC}] start all    [${BOLD}Z${NC}] stop all   [${BOL
 echo
 say "  ${CYAN}SETUP${NC}      [${BOLD}P${NC}] prepare server   [${BOLD}I${NC}] install/add terminal   [${BOLD}M${NC}] sync MQL5 files"
 say "             [${BOLD}S${NC}] wine compliance  ${DIM}standardize Windows environment for MT5${NC}"
+say "             [${BOLD}F${NC}] restore backup   ${DIM}from a backup .zip file on this server${NC}"
 echo
 say "  ${CYAN}BOT${NC}        [${BOLD}T${NC}] bot setup        [${BOLD}B${NC}] restart bot            [${BOLD}L${NC}] bot logs"
 echo
 say "  ${CYAN}SYSTEM${NC}     [${BOLD}?${NC}] doctor           [${BOLD}U${NC}] update scripts         [${BOLD}X${NC}] uninstall   [${BOLD}Q${NC}] quit"
 echo
+}
+restore_backup(){
+local d f scope ans rc
+local -a args
+d="$(bot_checkout)"
+if [[ ! -x "${d}/venv/bin/python" || ! -d "${d}/backup" ]]; then
+warn "bot not installed yet - press T first (restore needs the bot's database), then come back."
+return 0
+fi
+if ! "${d}/venv/bin/python" -c "import psycopg2" >/dev/null 2>&1; then
+warn "the bot's Python packages are missing - finish the bot setup (T) first."
+return 0
+fi
+scan_terminals
+(( ${#T_SLUG[@]} > 0 )) || warn "no terminals installed yet - a full backup skips terminals that are not installed (press I first)."
+say "Copy the backup .zip to this server first (scp / SFTP), for example into /root."
+read -rp "Path of the backup file: " f || return 0
+f="$(printf '%s' "${f}" | sed -e "s/^[[:space:]'\"]*//" -e "s/[[:space:]'\"]*$//")"
+f="${f/#\~/${HOME}}"
+[[ -n "${f}" ]] || { warn "cancelled"; return 0; }
+[[ -f "${f}" ]] || { err "file not found: ${f}"; return 0; }
+(cd "${d}" && "${d}/venv/bin/python" -m backup.cli inspect "${f}") || return 0
+echo
+say "  1) restore everything (bot data + terminals)"
+say "  2) bot data only (skip terminals)"
+read -rp "Choice [1]: " scope || return 0
+args=(restore "${f}")
+[[ "${scope:-1}" == "2" ]] && args+=(--bot-only)
+(cd "${d}" && "${d}/venv/bin/python" -m backup.cli "${args[@]}")
+rc=$?
+if (( rc == 0 )); then
+read -rp "Delete the backup file from this server now? [Y/n]: " ans || ans=""
+if [[ "${ans,,}" != "n" ]]; then rm -f -- "${f}" && ok "backup file deleted."; fi
+else
+warn "restore did not finish - the backup file was kept so you can try again."
+fi
 }
 t_stop(){
 local i="$1"
@@ -292,6 +329,7 @@ sync_mql5_assets_all
 declare -F sync_heysolo_atm_sets_all >/dev/null 2>&1 && sync_heysolo_atm_sets_all
 else warn "library not loaded"; fi
 pause ;;
+f)  restore_backup; pause ;;
 t)  bash "${SCRIPTS_DIR}/install.sh"; pause ;;
 b)  if systemctl restart "${BOT_SERVICE}" 2>/dev/null; then ok "bot restarted."; else err "could not restart ${BOT_SERVICE}"; fi; sleep 1 ;;
 l)  say "${DIM}Ctrl+C to come back${NC}"; journalctl -u "${BOT_SERVICE}" -n 50 -f || true ;;
