@@ -315,6 +315,101 @@ def _ref_mtime(t: Terminal) -> float:
         return time.time()
 
 
+# ---------------------------------------------------------------- machine identity
+# MT5 encrypts the saved passwords (config/accounts.dat) with an id derived from the "machine".
+# Under Wine that id lives in the wine prefix, not in the MT5 data folder: the registry value
+# HKLM\\Software\\Microsoft\\Cryptography\\MachineGuid (system.reg) and the C: drive serial
+# (.windows-serial). A prefix created on another server has other values, so the copied
+# accounts.dat cannot be decrypted and MT5 asks for the login again. The backup therefore keeps
+# these two values and the restore puts them back, which makes the saved logins work as they did.
+_GUID_RE = re.compile(r'^"MachineGuid"="([0-9A-Fa-f-]{8,64})"\s*$')
+_GUID_SECTIONS = (
+    "[software\\\\microsoft\\\\cryptography]",
+    "[software\\\\wow6432node\\\\microsoft\\\\cryptography]",
+)
+
+
+def _sysreg(prefix: Path) -> Path:
+    return Path(prefix) / "system.reg"
+
+
+def read_identity(prefix: Path) -> dict:
+    """MachineGuid + C: serial of a wine prefix ('' when not found)."""
+    out = {"machine_guid": "", "windows_serial": ""}
+    try:
+        section = False
+        for line in read_text(_sysreg(prefix)).splitlines():
+            if line.startswith("["):
+                section = line.lower().split("]")[0] + "]" in _GUID_SECTIONS
+                continue
+            if section:
+                m = _GUID_RE.match(line.strip())
+                if m:
+                    out["machine_guid"] = m.group(1)
+                    break
+    except OSError:
+        pass
+    try:
+        out["windows_serial"] = (Path(prefix) / ".windows-serial").read_text(
+            encoding="utf-8", errors="ignore").strip()
+    except OSError:
+        pass
+    return out
+
+
+def restore_identity(t: Terminal, bt: dict) -> dict:
+    """Put the backed-up MachineGuid / drive serial into this terminal's wine prefix.
+    Call only while that prefix's wineserver is stopped (it rewrites system.reg on exit)."""
+    want = bt.get("identity") or {}
+    res = {"guid": "", "serial": "", "changed": False, "error": ""}
+    guid = (want.get("machine_guid") or "").strip()
+    serial = (want.get("windows_serial") or "").strip()
+    owner = _owner()
+    reg = _sysreg(t.prefix)
+    if guid and reg.is_file():
+        try:
+            raw = reg.read_bytes()
+            text = raw.decode("utf-8", "surrogateescape")
+            nl = "\r\n" if "\r\n" in text else "\n"
+            lines = text.split(nl)
+            section, found, changed = False, 0, False
+            for i, line in enumerate(lines):
+                if line.startswith("["):
+                    section = line.lower().split("]")[0] + "]" in _GUID_SECTIONS
+                    continue
+                if section and _GUID_RE.match(line.strip()):
+                    found += 1
+                    new = f'"MachineGuid"="{guid}"'
+                    if line.strip() != new:
+                        lines[i] = new
+                        changed = True
+            if found and changed:
+                bak = reg.with_name("system.reg.heysolo-bak")
+                if not bak.exists():
+                    shutil.copy2(reg, bak)
+                mode = reg.stat().st_mode & 0o7777
+                _write(reg, nl.join(lines).encode("utf-8", "surrogateescape"), owner, mode)
+                res["changed"] = True
+            res["guid"] = guid if found else ""
+            if not found:
+                res["error"] = "MachineGuid entry not found in system.reg (start the terminal once, then restore again)"
+        except OSError as exc:
+            res["error"] = f"system.reg: {exc}"
+    elif guid:
+        res["error"] = "system.reg not found in this wine prefix"
+    if serial:
+        try:
+            cur = (Path(t.prefix) / ".windows-serial")
+            old = cur.read_text(encoding="utf-8", errors="ignore").strip() if cur.is_file() else ""
+            if old != serial:
+                _write(cur, (serial + "\n").encode("utf-8"), owner)
+                res["changed"] = True
+            res["serial"] = serial
+        except OSError as exc:
+            res["error"] = (res["error"] + "; " if res["error"] else "") + f".windows-serial: {exc}"
+    return res
+
+
 def backup_terminals(zf: zipfile.ZipFile) -> list[dict]:
     out: list[dict] = []
     by_data: dict[str, str] = {}
@@ -322,7 +417,7 @@ def backup_terminals(zf: zipfile.ZipFile) -> list[dict]:
         entry = {"slug": t.slug, "exe": t.exe, "install_win": t.install_win, "running": is_running(t),
                  "data": False, "error": "", "files": 0, "bytes": 0, "skipped": [],
                  "skipped_count": 0, "login": "", "server": "", "charts": 0, "experts": 0,
-                 "accounts": False, "hash": "", "portable": False, "same_as": ""}
+                 "accounts": False, "hash": "", "portable": False, "same_as": "", "identity": {}}
         out.append(entry)
         if not t.exe_path:
             entry["error"] = "terminal64.exe not found - install it first"
@@ -338,6 +433,7 @@ def backup_terminals(zf: zipfile.ZipFile) -> list[dict]:
             continue
         by_data[key] = t.slug
         entry["portable"] = t.portable
+        entry["identity"] = read_identity(t.prefix)
         entry["hash"] = "" if t.portable else t.data_dir.name
         entry["login"], entry["server"] = _login_info(t.data_dir)
         try:
@@ -455,8 +551,9 @@ def _is_chart(rel: str) -> bool:
     return low.startswith(CHART_DIRS)
 
 
-def restore_terminal(zf: zipfile.ZipFile, bt: dict, t: Terminal, skip_charts: bool = False) -> dict:
-    res = {"slug": t.slug, "ok": False, "files": 0, "error": ""}
+def restore_terminal(zf: zipfile.ZipFile, bt: dict, t: Terminal, skip_charts: bool = False,
+                     keep_identity: bool = False) -> dict:
+    res = {"slug": t.slug, "ok": False, "files": 0, "error": "", "identity": "", "identity_note": ""}
     if not bt.get("data"):
         res["error"] = bt.get("error") or "no data in the backup"
         return res
@@ -491,6 +588,14 @@ def restore_terminal(zf: zipfile.ZipFile, bt: dict, t: Terminal, skip_charts: bo
             res["error"] = f"{name[len(prefix):]}: {exc}"
             return res
         res["files"] += 1
+    if keep_identity:
+        res["identity_note"] = "wine prefix is shared with a terminal that is not in this restore - its machine id was left as it is, the saved logins may ask again"
+    elif (bt.get("identity") or {}).get("machine_guid") or (bt.get("identity") or {}).get("windows_serial"):
+        ir = restore_identity(t, bt)
+        res["identity"] = "restored" if ir["guid"] or ir["serial"] else ""
+        res["identity_note"] = ir["error"]
+    else:
+        res["identity_note"] = "this backup has no machine id (made by an older version) - the saved logins may ask again"
     res["ok"] = True
     return res
 

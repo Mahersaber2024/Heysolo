@@ -187,7 +187,7 @@ def _term_detail(bt: dict) -> str:
     if bt.get("login"):
         bits.append(f"{bt['login']}" + (f"@{bt['server']}" if bt.get("server") else ""))
     if bt.get("accounts"):
-        bits.append("logins saved")
+        bits.append("logins saved" + (" + machine id" if (bt.get("identity") or {}).get("machine_guid") else " (no machine id)"))
     if bt.get("charts"):
         bits.append(f"{bt['charts']} charts")
     if bt.get("experts"):
@@ -291,6 +291,10 @@ def _done_lines(res: dict) -> list[str]:
                 extra = f"{r['files']} files" if r.get("files") else (r.get("error") or "ok")
                 who = f" · {_e(r['login'])}" if r.get("login") else ""
                 lines.append(f"  {OK} <code>{_e(r['slug'])}</code>{who} - {_e(extra)}")
+                if r.get("identity"):
+                    lines.append("    🔑 saved login restored (machine id put back)")
+                elif r.get("identity_note"):
+                    lines.append(f"    ⚠️ {_e(r['identity_note'])}")
             elif r.get("missing"):
                 lines.append(f"  {BAD} <code>{_e(r['slug'])}</code> - not installed here"
                              + (f" (install <code>{_e(r['exe'])}</code>, then restore again)" if r.get("exe") else ""))

@@ -3165,7 +3165,97 @@ slugify(){
   echo "$base" | tr '[:upper:] ' '[:lower:]_' | tr -cd 'a-z0-9_-'
 }
 
+# ---------------------------------------------------------------------------
+# Low-RAM protection for terminal installs (added): the installer used to leave
+# orphaned wine services behind and had no memory / concurrency checks.
+# ---------------------------------------------------------------------------
+INSTALL_LOCK_FILE="${INSTALL_LOCK_FILE:-/run/heysolo-install.pid}"
+INSTALL_MIN_AVAIL_MB="${INSTALL_MIN_AVAIL_MB:-450}"
+
+wine_prefix_of_pid(){
+  # prints the WINEPREFIX a process was started with (empty if none / unreadable)
+  tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | sed -n 's/^WINEPREFIX=//p' | head -n1
+}
+
+reap_orphan_wine(){
+  # Kills wine processes of ${MT5_USER} that do NOT belong to a running terminal64.exe.
+  # Orphaned services.exe / plugplay.exe / svchost.exe / rpcss.exe (parent = PID 1)
+  # are what silently ate the RAM after interrupted installs.
+  local pid pfx killed=0 keep=" "
+  # 1) prefixes of terminals that are really running right now -> keep untouched
+  for pid in $(pgrep -u "${MT5_USER}" -f 'terminal(64)?\.exe' 2>/dev/null); do
+    pfx="$(wine_prefix_of_pid "${pid}")"
+    [[ -n "${pfx}" ]] && keep+="${pfx} "
+  done
+  # 2) every other wine process (WINEPREFIX in env, or a Windows-style command line)
+  for pid in $(pgrep -u "${MT5_USER}" 2>/dev/null); do
+    [[ "${pid}" == "$$" ]] && continue
+    local args
+    args="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null)"
+    pfx="$(wine_prefix_of_pid "${pid}")"
+    if [[ -n "${pfx}" ]]; then
+      [[ "${keep}" == *" ${pfx} "* ]] && continue
+    elif ! [[ "${args}" =~ ^[A-Za-z]:\\ || "${args}" == *wineserver* || "${args}" == *wine-preloader* || "${args}" == *wine64-preloader* ]]; then
+      continue
+    fi
+    kill -9 "${pid}" 2>/dev/null && killed=$((killed+1))
+  done
+  if (( killed > 0 )); then
+    info "Cleaned ${killed} leftover wine process(es) from earlier/interrupted runs."
+    sleep 1
+  fi
+  sync 2>/dev/null || true
+  echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+  return 0
+}
+
+mem_available_mb(){
+  awk '/MemAvailable:/ {printf "%d", $2/1024; exit}' /proc/meminfo 2>/dev/null || echo 0
+}
+
+ensure_install_memory(){
+  # returns 0 = go ahead, 1 = user/low-memory says skip this terminal
+  local avail running
+  avail="$(mem_available_mb)"
+  if (( avail >= INSTALL_MIN_AVAIL_MB )); then
+    info "Memory check OK: ${avail} MB available."
+    return 0
+  fi
+  running="$(pgrep -u "${MT5_USER}" -fc 'terminal(64)?\.exe' 2>/dev/null)" || true
+  [[ "${running}" =~ ^[0-9]+$ ]] || running=0
+  warn "Only ${avail} MB of RAM is available (recommended: ${INSTALL_MIN_AVAIL_MB} MB+). Installing now can freeze this server (even SSH)."
+  (( running > 0 )) && warn "${running} terminal(s) are running and using RAM - stop them first (menu: Z = stop all), then retry."
+  warn "Swap: $(awk '/SwapFree:/ {printf "%d MB free", $2/1024}' /proc/meminfo 2>/dev/null)."
+  if [[ "${NONINTERACTIVE}" == "1" ]]; then
+    warn "Non-interactive mode: continuing anyway."
+    return 0
+  fi
+  local ans=""
+  read -rp "Continue anyway? [y/N]: " ans || ans=""
+  [[ "${ans,,}" == "y" ]]
+}
+
+acquire_install_lock(){
+  local old
+  if [[ -s "${INSTALL_LOCK_FILE}" ]]; then
+    old="$(cat "${INSTALL_LOCK_FILE}" 2>/dev/null)"
+    if [[ "${old}" =~ ^[0-9]+$ && "${old}" != "$$" ]] && kill -0 "${old}" 2>/dev/null \
+       && tr '\0' ' ' < "/proc/${old}/cmdline" 2>/dev/null | grep -qE 'mt5|heysolo'; then
+      err "Another terminal install is already running (pid ${old}). Wait for it to finish - running two wine installs at once fills the RAM."
+      return 1
+    fi
+  fi
+  echo "$$" > "${INSTALL_LOCK_FILE}" 2>/dev/null || true
+  return 0
+}
+
+release_install_lock(){
+  [[ "$(cat "${INSTALL_LOCK_FILE}" 2>/dev/null)" == "$$" ]] && rm -f "${INSTALL_LOCK_FILE}" 2>/dev/null
+  return 0
+}
+
 install_selected(){
+  acquire_install_lock || return 1
   start_display
   print_vnc_access
 
@@ -3181,6 +3271,12 @@ install_selected(){
       grep -q "^${slug}|" "${TERMINALS_FILE}" 2>/dev/null \
         || register_terminal "${slug}" "${exe}" "${wineprefix}" "${have_path}"
       ok "${exe} is already installed (${have_path}) - skipped, nothing reinstalled."
+      continue
+    fi
+
+    reap_orphan_wine
+    if ! ensure_install_memory; then
+      warn "Skipped ${exe} (not enough free RAM). Free memory and retry."
       continue
     fi
 
@@ -3237,6 +3333,10 @@ install_selected(){
     fi
     rm -f "${marker}"
 
+    # the installer may leave its own wine processes running: close this prefix now
+    # (the terminal is started properly later, in its own screen session)
+    as_wine "${wineprefix}" "wineserver -k" >/dev/null 2>&1 || true
+
     purge_wine_shortcuts
 
     if [[ -z "${termpath}" ]]; then
@@ -3265,6 +3365,7 @@ install_selected(){
       fi
     fi
   done
+  release_install_lock
   desktop_sync_icons
 }
 

@@ -88,6 +88,10 @@ def _cmd_restore(args) -> int:
     for r in res["terminals"]:
         state = "restored" if r["ok"] else ("not installed" if r.get("missing") else f"failed: {r.get('error')}")
         print(f"terminal  : {r['slug']}: {state}" + (f" ({r['files']} files)" if r.get("files") else ""))
+        if r.get("ok") and r.get("identity"):
+            print("            saved login: machine id restored")
+        elif r.get("ok") and r.get("identity_note"):
+            print(f"            warning: {r['identity_note']}")
     if res.get("start_error"):
         print("terminals :", res["start_error"])
     if res.get("bot") and not args.no_restart and shutil.which("systemctl"):

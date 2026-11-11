@@ -535,6 +535,14 @@ def restore(path: Path, scope: str = "all") -> dict:
         extras_res: dict = {}
         start_error = ""
         if full:
+            plan_slugs = {p["target"].slug for p in plan if p["target"]}
+            plan_prefixes = {str(p["target"].prefix) for p in plan if p["target"]}
+            # a wine prefix that also hosts a terminal outside this restore keeps its machine id,
+            # otherwise that other terminal's saved logins would stop working
+            shared = set()
+            for other in term.read_registry():
+                if other.slug not in plan_slugs and str(other.prefix) in plan_prefixes:
+                    shared.add(str(other.prefix))
             for item in plan:
                 bt, t = item["backup"], item["target"]
                 if t is None:
@@ -543,7 +551,8 @@ def restore(path: Path, scope: str = "all") -> dict:
                                       "error": "not installed on this server"})
                     continue
                 try:
-                    r = term.restore_terminal(zf, bt, t, skip_charts=skip_charts)
+                    r = term.restore_terminal(zf, bt, t, skip_charts=skip_charts,
+                                             keep_identity=str(t.prefix) in shared)
                 except Exception as exc:
                     log.exception("Restore: terminal %s failed", t.slug)
                     r = {"slug": t.slug, "ok": False, "files": 0, "error": str(exc)}
