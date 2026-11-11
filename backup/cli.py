@@ -49,9 +49,10 @@ def _cmd_inspect(args) -> int:
         return 1
     print(f"type      : {info['kind']}")
     print(f"made      : {info['created']} on {info['host']}")
-    print(f"database  : {info['tables']} tables, {info['rows']} rows" if info["db_ok"] else "database  : not included")
-    print(f"files     : {info['files']}")
-    if info["kind"] == "full":
+    if info["has_bot"]:
+        print(f"database  : {info['tables']} tables, {info['rows']} rows" if info["db_ok"] else "database  : not included")
+        print(f"files     : {info['files']}")
+    if info["has_terminals"]:
         print("terminals :")
         print("\n".join(_plan_text(info)) or "  none")
     return 0
@@ -70,25 +71,26 @@ def _cmd_restore(args) -> int:
     except core.BadBackup as exc:
         print(f"cannot use this file: {exc}")
         return 1
-    scope = "bot" if args.bot_only else "all"
+    scope = "bot" if args.bot_only else ("nocharts" if args.no_charts else "all")
     print(f"restoring a {info['kind']} backup made {info['created']} on {info['host']}")
-    if info["kind"] == "full" and scope == "all":
+    if info["has_terminals"] and scope != "bot":
         print("terminals:")
         print("\n".join(_plan_text(info)) or "  none")
-    print("everything now on this server will be replaced")
+    print("what is in this file will replace the same data on this server")
     if not args.yes and input("type yes to continue: ").strip().lower() != "yes":
         print("cancelled")
         return 1
     res = core.restore(path, scope)
     db = res["db"]
-    print("database  :", "skipped" if db.get("skipped") else f"{db['tables']} tables, {db['rows']} rows")
-    print("files     :", res["files"])
+    if res.get("bot"):
+        print("database  :", "skipped" if db.get("skipped") else f"{db['tables']} tables, {db['rows']} rows")
+        print("files     :", res["files"])
     for r in res["terminals"]:
         state = "restored" if r["ok"] else ("not installed" if r.get("missing") else f"failed: {r.get('error')}")
         print(f"terminal  : {r['slug']}: {state}" + (f" ({r['files']} files)" if r.get("files") else ""))
     if res.get("start_error"):
         print("terminals :", res["start_error"])
-    if not args.no_restart and shutil.which("systemctl"):
+    if res.get("bot") and not args.no_restart and shutil.which("systemctl"):
         subprocess.run(["systemctl", "restart", SERVICE_NAME], check=False)
         print(f"{SERVICE_NAME} restarted")
     return 0
@@ -101,7 +103,8 @@ def main(argv=None) -> int:
     i.add_argument("file")
     r = sub.add_parser("restore", help="restore a backup file")
     r.add_argument("file")
-    r.add_argument("--bot-only", action="store_true")
+    r.add_argument("--bot-only", action="store_true", help="old combined backups: skip the terminals")
+    r.add_argument("--no-charts", action="store_true", help="restore terminals without saved chart layouts")
     r.add_argument("-y", "--yes", action="store_true")
     r.add_argument("--no-restart", action="store_true")
     args = ap.parse_args(argv)

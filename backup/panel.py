@@ -93,7 +93,8 @@ def _days(n: int) -> str:
 
 # ------------------------------------------------------------------ views
 def _kind_label(kind: str) -> str:
-    return "🧳 Full" if kind == "full" else "🤖 Bot"
+    return {"terminals": "🖥 Terminals", "full": "🧳 Bot + terminals (old)",
+            "both": "📦 Bot + Terminals (2 files)"}.get(kind, "🤖 Bot")
 
 
 def main_view() -> dict:
@@ -115,9 +116,10 @@ def main_view() -> dict:
         "💾 <b>Backup &amp; Restore</b>",
         "🤖 <b>Bot backup</b> - database (users, accounts, access, topics, alerts), bot settings, "
         "Copy Server, Liquidity Hunter Feed links and certificates.",
-        "🧳 <b>Full backup</b> - all of that + every MT5 terminal's saved logins, charts, EAs, "
-        "indicators, sets and settings. The terminals themselves and price history are not copied: "
-        "on a new server install the terminals first, then restore this file.",
+        "🖥 <b>Terminals backup</b> - a separate file with every MT5 terminal's saved logins, charts, "
+        "EAs, indicators, sets and settings, plus the shared Common\\Files. The terminals themselves, "
+        "price history, the VNC password and desktop settings are not copied: on a new server "
+        "install the terminals first, then restore this file. It never touches the bot or its database.",
         "",
         f"{ROW} Last backup: {last}",
         f"{ROW} Auto backup: {auto}",
@@ -128,8 +130,8 @@ def main_view() -> dict:
         lines.append(f"<i>{BAD} Last backup had a problem: {_e(cfg['last_error'])}</i>")
     lines.append("<i>The file holds the bot token, DB password, TLS keys and saved MT5 logins - keep it private.</i>")
     rows = [
-        [_btn("🧳 Full backup now", "ADM_BK_FNOW")],
-        [_btn("🤖 Bot backup now", "ADM_BK_NOW")],
+        [_btn("🤖 Bot backup now", "ADM_BK_NOW"), _btn("🖥 Terminals backup now", "ADM_BK_TNOW")],
+        [_btn("📦 Both now (2 files)", "ADM_BK_BNOW")],
         [_btn("⏸ Auto: on" if cfg.get("auto_enabled") else "▶ Auto: off", "ADM_BK_AUTO"),
          _btn(f"📅 {_days(cfg['every_days']).capitalize()}", "ADM_BK_DAYS")],
         [_btn(f"🧬 Auto type: {_kind_label(cfg['auto_kind'])}", "ADM_BK_KIND")],
@@ -153,8 +155,8 @@ def days_view() -> dict:
     rows.append([_btn("✎ Other number", "ADM_BK_DCUSTOM")])
     rows.append([_btn(f"{BACK} Back", "ADM_BK")])
     return _view(["📅 <b>Auto backup - how often</b>",
-                  f"Now: <b>{_days(cur)}</b>. The bot makes a full backup by itself every N days "
-                  "and sends it to the main admin."], rows)
+                  f"Now: <b>{_days(cur)}</b>. The bot makes the backup by itself every N days "
+                  "(type set in Auto type) and sends it to the main admin."], rows)
 
 
 def restore_prompt_view() -> dict:
@@ -167,13 +169,16 @@ def restore_prompt_view() -> dict:
 
 def _summary_lines(info: dict) -> list[str]:
     out = [
-        f"{ROW} Type: <b>{'🧳 Full (bot + terminals)' if info['kind'] == 'full' else '🤖 Bot only'}</b>",
+        f"{ROW} Type: <b>{ {'full': '🧳 Bot + terminals (old format)', 'terminals': '🖥 Terminals', 'bot': '🤖 Bot'}[info['kind']] }</b>",
         f"{ROW} Made: <code>{_e(info['created'])}</code> on <code>{_e(info['host'])}</code>",
-        f"{ROW} Database: " + (f"<code>{info['tables']}</code> tables · <code>{info['rows']}</code> rows"
-                               if info["db_ok"] else f"{BAD} not in this backup"),
-        f"{ROW} Files: <code>{info['files']}</code>" + (f" + system <code>{info['system']}</code>" if info["system"] else ""),
-        f"{ROW} Size: {core.human_size(info['size'])}",
     ]
+    if info["has_bot"]:
+        out += [
+            f"{ROW} Database: " + (f"<code>{info['tables']}</code> tables · <code>{info['rows']}</code> rows"
+                                   if info["db_ok"] else f"{BAD} not in this backup"),
+            f"{ROW} Files: <code>{info['files']}</code>" + (f" + system <code>{info['system']}</code>" if info["system"] else ""),
+        ]
+    out.append(f"{ROW} Size: {core.human_size(info['size'])}")
     return out
 
 
@@ -226,24 +231,30 @@ def stage(uid: int, path: Path, upload: bool) -> dict:
     tok = secrets.token_hex(6)
     _staged[tok] = {"path": path, "uid": uid, "ts": time.time(), "upload": upload}
     lines = ["♻️ <b>Restore this backup?</b>"] + _summary_lines(info)
-    full = info["kind"] == "full"
-    if full:
+    has_t, has_b = info["has_terminals"], info["has_bot"]
+    if has_t:
         lines += _plan_lines(core.preview(info))
         extras = info.get("extras") or {}
-        if extras.get("vnc") or extras.get("common") or extras.get("assets"):
-            lines.append(f"{ROW} Also: VNC password, shared Common\\Files, MQL5 asset folder")
-    lines += [
-        "",
-        "<b>Everything now on this server is replaced</b> (database + settings"
-        + (" + the terminals' logins, charts and MQL5 data" if full else "") + ").",
-    ]
-    if full:
-        lines.append("Terminals are closed, restored and started again, then the bot restarts by itself. "
-                     "Terminals marked ✖ are skipped - install them, then restore again.")
+        if extras.get("common") or extras.get("assets"):
+            lines.append(f"{ROW} Also: shared Common\\Files, MQL5 asset folder")
+    if has_b and has_t:
+        what = "database + settings + the terminals' logins, charts and MQL5 data"
+    elif has_t:
+        what = "the terminals' logins, charts and MQL5 data (the bot and its database are NOT touched)"
+    else:
+        what = "database + settings"
+    lines += ["", f"<b>Replaced on this server:</b> {what}."]
+    if has_t:
+        lines.append("Terminals are closed, their wine sessions are cleaned, the data is put back and they "
+                     "start again one by one. Terminals marked ✖ are skipped - install them, then restore again."
+                     + (" The bot restarts by itself." if has_b else ""))
     else:
         lines.append("The bot restarts by itself after the restore.")
-    rows = [[_btn("✅ Restore everything now" if full else "✅ Restore now", f"ADM_BK_DO:{tok}")]]
-    if full:
+    rows = [[_btn("✅ Restore now" if not (has_b and has_t) else "✅ Restore everything now",
+                  f"ADM_BK_DO:{tok}")]]
+    if has_t:
+        rows.append([_btn("🖥 Same, but without saved charts", f"ADM_BK_DOC:{tok}")])
+    if has_b and has_t:
         rows.append([_btn("🤖 Bot data only (skip terminals)", f"ADM_BK_DOB:{tok}")])
     rows.append([_btn("✕ Cancel", f"ADM_BK_NO:{tok}")])
     return _view(lines, rows)
@@ -252,20 +263,24 @@ def stage(uid: int, path: Path, upload: bool) -> dict:
 def needs_working(data: str) -> str | None:
     if data == "ADM_BK_NOW":
         return "Making a bot backup..."
-    if data == "ADM_BK_FNOW":
-        return "Making a full backup (bot + terminals)..."
-    if data.startswith(("ADM_BK_DO:", "ADM_BK_DOB:")):
+    if data == "ADM_BK_TNOW":
+        return "Making a terminals backup..."
+    if data == "ADM_BK_BNOW":
+        return "Making the bot backup and the terminals backup..."
+    if data.startswith(("ADM_BK_DO:", "ADM_BK_DOB:", "ADM_BK_DOC:")):
         return "Restoring... terminals are being closed and restored. Don't send anything until it's done."
     return None
 
 
 def _done_lines(res: dict) -> list[str]:
     db = res["db"]
-    lines = [f"{OK} <b>Restore done</b>"] + _summary_lines(res["info"]) + [
-        f"{ROW} Database: " + ("skipped (not in the backup)" if db.get("skipped")
-                               else f"<code>{db['tables']}</code> tables · <code>{db['rows']}</code> rows written"),
-        f"{ROW} Files written: <code>{res['files']}</code>" + (f" + system <code>{res['system']}</code>" if res["system"] else ""),
-    ]
+    lines = [f"{OK} <b>Restore done</b>"] + _summary_lines(res["info"])
+    if res.get("bot"):
+        lines += [
+            f"{ROW} Database: " + ("skipped (not in the backup)" if db.get("skipped")
+                                   else f"<code>{db['tables']}</code> tables · <code>{db['rows']}</code> rows written"),
+            f"{ROW} Files written: <code>{res['files']}</code>" + (f" + system <code>{res['system']}</code>" if res["system"] else ""),
+        ]
     if db.get("missing"):
         lines.append(f"<i>Tables this bot doesn't have (ignored): {_e(', '.join(db['missing']))}</i>")
     if res.get("full"):
@@ -283,21 +298,20 @@ def _done_lines(res: dict) -> list[str]:
                 lines.append(f"  {BAD} <code>{_e(r['slug'])}</code> - {_e(r.get('error') or 'failed')}")
         ex = res.get("extras") or {}
         bits = []
-        if ex.get("vnc"):
-            bits.append("VNC password")
         if ex.get("common"):
             bits.append(f"Common\\Files ({ex['common']})")
         if ex.get("assets"):
             bits.append(f"MQL5 assets ({ex['assets']})")
-        if ex.get("state"):
-            bits.append("desktop settings")
         if bits:
             lines.append(f"{ROW} Also restored: {_e(', '.join(bits))}")
         if res.get("start_error"):
             lines.append(f"<i>{BAD} {_e(res['start_error'])}</i>")
         elif done or res.get("stopped"):
             lines.append(f"{ROW} Terminals are starting again one by one (about 20s each).")
-    lines.append("\n🔄 <b>Restarting the bot now</b> - send /start in a few seconds.")
+        if res.get("skip_charts"):
+            lines.append(f"{ROW} Saved charts were left out on purpose.")
+    if res.get("bot"):
+        lines.append("\n🔄 <b>Restarting the bot now</b> - send /start in a few seconds.")
     return lines[:60]
 
 
@@ -306,20 +320,21 @@ async def handle_callback(data: str, uid: int, pending: dict) -> dict:
     t = asyncio.to_thread
     if data == "ADM_BK":
         return _result(await t(main_view))
-    if data in ("ADM_BK_NOW", "ADM_BK_FNOW"):
-        kind = "full" if data == "ADM_BK_FNOW" else "bot"
+    if data in ("ADM_BK_NOW", "ADM_BK_TNOW", "ADM_BK_BNOW"):
+        kind = {"ADM_BK_NOW": "bot", "ADM_BK_TNOW": "terminals", "ADM_BK_BNOW": "both"}[data]
         try:
-            res = await t(core.create_backup, "manual", kind)
+            docs = await t(core.create_backups, "manual", kind)
         except Exception as exc:
             log.exception("Manual backup failed")
             return _result(await t(main_view), f"Backup failed: {exc}", alert=True)
-        msg = "Backup ready - sent to your private chat"
-        return _result(await t(main_view), msg, docs=[res])
+        msg = "Backup ready - sent to your private chat" if len(docs) == 1 else "Backups ready - sent to your private chat"
+        return _result(await t(main_view), msg, docs=docs)
     if data == "ADM_BK_KIND":
         cfg = core.get_config()
-        cfg["auto_kind"] = "bot" if cfg.get("auto_kind") == "full" else "full"
+        order = list(core.AUTO_KINDS)
+        cfg["auto_kind"] = order[(order.index(cfg.get("auto_kind", "bot")) + 1) % len(order)]
         await t(core.save_config, cfg)
-        return _result(await t(main_view), "Auto backup type: " + ("full" if cfg["auto_kind"] == "full" else "bot only"))
+        return _result(await t(main_view), "Auto backup type: " + _kind_label(cfg["auto_kind"]))
     if data == "ADM_BK_AUTO":
         cfg = core.get_config()
         cfg["auto_enabled"] = not cfg.get("auto_enabled")
@@ -347,13 +362,13 @@ async def handle_callback(data: str, uid: int, pending: dict) -> dict:
         if st and st.get("upload"):
             core.remove(st["path"])
         return _result(await t(main_view), "Restore cancelled")
-    if data.startswith(("ADM_BK_DO:", "ADM_BK_DOB:")):
-        bot_only = data.startswith("ADM_BK_DOB:")
+    if data.startswith(("ADM_BK_DO:", "ADM_BK_DOB:", "ADM_BK_DOC:")):
+        scope = "bot" if data.startswith("ADM_BK_DOB:") else ("nocharts" if data.startswith("ADM_BK_DOC:") else "all")
         st = _staged.pop(data.split(":", 1)[1], None)
         if not st or st["uid"] != uid or not Path(st["path"]).is_file():
             return _result(await t(main_view), "This restore request expired - send the file again", alert=True)
         try:
-            res = await t(core.restore, Path(st["path"]), "bot" if bot_only else "all")
+            res = await t(core.restore, Path(st["path"]), scope)
         except Exception as exc:
             log.exception("Restore failed")
             if st.get("upload"):
@@ -362,7 +377,7 @@ async def handle_callback(data: str, uid: int, pending: dict) -> dict:
                                  [[_btn(f"{BACK} Back", "ADM_BK")]]), "Restore failed", alert=True)
         if st.get("upload"):
             core.remove(st["path"])
-        return _result(_view(_done_lines(res), [[_btn("🏠 Admin", "ADM_PANEL")]]), "Restored", restart=True)
+        return _result(_view(_done_lines(res), [[_btn("🏠 Admin", "ADM_PANEL")]]), "Restored", restart=bool(res.get("bot")))
     return _result(await t(main_view))
 
 
@@ -416,22 +431,23 @@ def caption(res: dict, auto: bool = False) -> str:
     m = res.get("manifest") or {}
     db = m.get("db") or {}
     tables = db.get("tables") or {}
-    full = m.get("kind") == "full" or res["name"].startswith(core.FULL_PREFIX)
-    lines = [f"{'🧳 Hey Solo full backup' if full else '💾 Hey Solo backup'}{' · auto' if auto else ''}",
+    full = m.get("kind") == "terminals" or res["name"].startswith(core.TERM_PREFIX)
+    lines = [f"{'🖥 Hey Solo terminals backup' if full else '💾 Hey Solo bot backup'}{' · auto' if auto else ''}",
              f"<code>{_e(res['name'])}</code> · {core.human_size(res['size'])}"]
     if m:
-        if db.get("ok"):
-            lines.append(f"Database: {len(tables)} tables · {sum(int(t.get('rows') or 0) for t in tables.values())} rows")
-        else:
-            lines.append(f"⚠️ Database NOT included: {_e(db.get('error') or 'unknown error')}")
-        lines.append(f"Files: {len(m.get('files') or [])}" + (f" + system {len(m['system'])}" if m.get("system") else ""))
+        if not full:
+            if db.get("ok"):
+                lines.append(f"Database: {len(tables)} tables · {sum(int(t.get('rows') or 0) for t in tables.values())} rows")
+            else:
+                lines.append(f"⚠️ Database NOT included: {_e(db.get('error') or 'unknown error')}")
+            lines.append(f"Files: {len(m.get('files') or [])}" + (f" + system {len(m['system'])}" if m.get("system") else ""))
         if full:
             for bt in (m.get("terminals") or [])[:12]:
                 mark = OK if bt.get("data") and not bt.get("error") else BAD
                 lines.append(f"{mark} {_e(bt.get('slug', '?'))} {_e(_term_detail(bt))}".rstrip())
             if m.get("terminal_error"):
                 lines.append(f"⚠️ Terminals: {_e(m['terminal_error'])}")
-    lines.append("🔒 Holds the bot token, DB password, TLS keys" + (" and MT5 logins" if full else "")
+    lines.append("🔒 Holds " + ("the MT5 logins" if full else "the bot token, DB password and TLS keys")
                  + " - don't share it.")
     lines.append("Restore: Admin › 💾 Backup › ♻️ Restore, then send this file."
                  + (" On a new server install the terminals first." if full else ""))
@@ -456,7 +472,7 @@ async def send_doc(bot, chat_id: int, res: dict, auto: bool = False) -> bool:
                                        text=f"💾 Backup <code>{_e(res['name'])}</code> is "
                                             f"{core.human_size(res['size'])} - too big for Telegram, "
                                             "so it was NOT sent and has been deleted. "
-                                            "Use a Bot backup (smaller) instead.")
+                                            "Copy it off the server by scp/SFTP instead.")
             except TelegramError:
                 pass
             return False
@@ -479,19 +495,20 @@ async def watch(app, admin_ids_fn, every: int = 300) -> None:
             cfg = await asyncio.to_thread(core.get_config)
             if core.is_due(cfg):
                 try:
-                    res = await asyncio.to_thread(core.create_backup, "auto", cfg.get("auto_kind", "bot"))
+                    docs = await asyncio.to_thread(core.create_backups, "auto", cfg.get("auto_kind", "bot"))
                 except Exception as exc:
                     log.error("Auto backup failed: %s - retrying in 1h", exc)
                     cfg["last_auto"] = int(time.time()) - cfg["every_days"] * 86400 + 3600
                     cfg["last_error"] = str(exc)[:200]
                     await asyncio.to_thread(core.save_config, cfg)
                 else:
-                    log.info("Auto backup made: %s (%s)", res["name"], core.human_size(res["size"]))
                     aid = main_admin()
-                    if aid:
-                        await send_doc(app.bot, aid, res, auto=True)
-                    else:
-                        core.discard(res)
+                    for res in docs:
+                        log.info("Auto backup made: %s (%s)", res["name"], core.human_size(res["size"]))
+                        if aid:
+                            await send_doc(app.bot, aid, res, auto=True)
+                        else:
+                            core.discard(res)
             await asyncio.to_thread(core.cleanup_incoming)
         except asyncio.CancelledError:
             raise

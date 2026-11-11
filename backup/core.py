@@ -19,7 +19,7 @@ from backup import terminals as term
 log = logging.getLogger("heysolo_backup")
 
 MAGIC = "HEYSOLO-BACKUP"
-VERSION = 2
+VERSION = 3
 INSTALL_DIR = Path(settings.SETTINGS_FILE).resolve().parent
 ASSETS_DIR = INSTALL_DIR / "MT5"
 INCOMING_DIR = Path(tempfile.gettempdir()) / "heysolo-incoming"
@@ -30,8 +30,11 @@ SKIP_DIRS = {"__pycache__", ".git", "venv"}
 SYSTEM_FILES = ("/etc/mt5-share.credentials",)
 LOCAL_KEYS = ("bot_token", "db_host", "db_port", "db_name", "db_user", "db_password")
 NAME_PREFIX = "heysolo_backup_"
-FULL_PREFIX = "heysolo_full_"
-ALL_PREFIXES = (NAME_PREFIX, FULL_PREFIX)
+TERM_PREFIX = "heysolo_terminals_"
+FULL_PREFIX = "heysolo_full_"  # old combined backups: still accepted for restore
+ALL_PREFIXES = (NAME_PREFIX, TERM_PREFIX, FULL_PREFIX)
+KINDS = ("bot", "terminals")
+AUTO_KINDS = ("bot", "terminals", "both")
 MAX_FILE_MB = 20
 
 DEFAULTS = {
@@ -53,8 +56,12 @@ def get_config() -> dict:
     cfg = dict(DEFAULTS)
     cfg.update(settings.get_backup_config() or {})
     cfg["every_days"] = max(1, min(365, int(cfg.get("every_days") or 3)))
-    if cfg.get("auto_kind") not in ("bot", "full"):
+    if cfg.get("auto_kind") == "full":
+        cfg["auto_kind"] = "both"
+    if cfg.get("auto_kind") not in AUTO_KINDS:
         cfg["auto_kind"] = "bot"
+    if cfg.get("last_kind") == "full":
+        cfg["last_kind"] = "terminals"
     return cfg
 
 
@@ -321,9 +328,10 @@ def _merged_settings(backup_bytes: bytes) -> bytes:
 
 # ------------------------------------------------------------------ create
 def create_backup(reason: str = "manual", kind: str = "bot") -> dict:
-    """Build a backup in a private temp folder. The caller sends it and then calls discard()."""
-    kind = "full" if kind == "full" else "bot"
-    prefix = FULL_PREFIX if kind == "full" else NAME_PREFIX
+    """Build ONE backup (bot or terminals) in a private temp folder.
+    The caller sends it and then calls discard()."""
+    kind = "terminals" if kind in ("terminals", "full") else "bot"
+    prefix = TERM_PREFIX if kind == "terminals" else NAME_PREFIX
     with _lock:
         out_dir = Path(tempfile.mkdtemp(prefix="heysolo-backup-"))
         try:
@@ -333,36 +341,51 @@ def create_backup(reason: str = "manual", kind: str = "bot") -> dict:
             raise
 
 
+def create_backups(reason: str = "manual", kind: str = "bot") -> list[dict]:
+    """kind: bot | terminals | both. 'both' makes two separate files."""
+    kinds = list(KINDS) if kind in ("both", "full") else [kind]
+    out: list[dict] = []
+    try:
+        for k in kinds:
+            out.append(create_backup(reason, k))
+    except BaseException:
+        for r in out:
+            discard(r)
+        raise
+    return out
+
+
 def _build_backup(out_dir: Path, reason: str, prefix: str, kind: str) -> dict:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     name = f"{prefix}{_host()}_{stamp}.zip"
     path = out_dir / name
     tmp = path.with_suffix(".zip.tmp")
     manifest = {
-        "magic": MAGIC, "version": 2 if kind == "full" else 1, "kind": kind, "reason": reason,
+        "magic": MAGIC, "version": 3, "kind": kind, "reason": reason,
         "created": datetime.now().astimezone().isoformat(timespec="seconds"),
         "created_ts": int(time.time()), "host": socket.gethostname(),
         "install_dir": str(INSTALL_DIR), "files": [], "system": [], "db": {},
     }
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=9,
                          strict_timestamps=False) as zf:
-        manifest["db"] = dump_db(zf)
-        for p in _data_files():
-            rel = p.relative_to(INSTALL_DIR).as_posix()
-            try:
-                zf.write(p, "files/" + rel)
-                manifest["files"].append(rel)
-            except OSError as exc:
-                log.warning("Backup: skipped %s (%s)", p, exc)
-        for sp in SYSTEM_FILES:
-            p = Path(sp)
-            try:
-                if p.is_file():
-                    zf.write(p, "system/" + sp.lstrip("/"))
-                    manifest["system"].append(sp)
-            except OSError as exc:
-                log.warning("Backup: skipped %s (%s)", sp, exc)
-        if kind == "full":
+        if kind == "bot":
+            manifest["db"] = dump_db(zf)
+            for p in _data_files():
+                rel = p.relative_to(INSTALL_DIR).as_posix()
+                try:
+                    zf.write(p, "files/" + rel)
+                    manifest["files"].append(rel)
+                except OSError as exc:
+                    log.warning("Backup: skipped %s (%s)", p, exc)
+            for sp in SYSTEM_FILES:
+                p = Path(sp)
+                try:
+                    if p.is_file():
+                        zf.write(p, "system/" + sp.lstrip("/"))
+                        manifest["system"].append(sp)
+                except OSError as exc:
+                    log.warning("Backup: skipped %s (%s)", sp, exc)
+        else:
             try:
                 manifest["terminals"] = term.backup_terminals(zf)
                 manifest["extras"] = term.backup_extras(zf, ASSETS_DIR)
@@ -375,8 +398,11 @@ def _build_backup(out_dir: Path, reason: str, prefix: str, kind: str) -> dict:
     os.replace(tmp, path)
     size = path.stat().st_size
     cfg = get_config()
-    cfg.update(last_ts=int(time.time()), last_name=name, last_size=size, last_kind=kind,
-               last_error="" if manifest["db"].get("ok") else manifest["db"].get("error", ""))
+    if kind == "bot":
+        err = "" if manifest["db"].get("ok") else manifest["db"].get("error", "")
+    else:
+        err = manifest.get("terminal_error", "")
+    cfg.update(last_ts=int(time.time()), last_name=name, last_size=size, last_kind=kind, last_error=err)
     if reason == "auto":
         cfg["last_auto"] = int(time.time())
     save_config(cfg)
@@ -408,9 +434,12 @@ def inspect(path: Path) -> dict:
     if int(m.get("version") or 0) > VERSION:
         raise BadBackup("this backup was made by a newer bot version - update the bot first")
     tables = (m.get("db") or {}).get("tables") or {}
+    kind = m.get("kind") if m.get("kind") in ("terminals", "full") else "bot"
     return {
         "manifest": m,
-        "kind": "full" if m.get("kind") == "full" else "bot",
+        "kind": kind,
+        "has_bot": kind in ("bot", "full"),
+        "has_terminals": kind in ("terminals", "full"),
         "created": m.get("created", "?"),
         "host": m.get("host", "?"),
         "tables": len(tables),
@@ -425,7 +454,7 @@ def inspect(path: Path) -> dict:
 
 
 def preview(info: dict) -> list[dict]:
-    if info["kind"] != "full":
+    if not info["has_terminals"]:
         return []
     try:
         return term.match_plan(info["manifest"])
@@ -435,9 +464,13 @@ def preview(info: dict) -> list[dict]:
 
 
 def restore(path: Path, scope: str = "all") -> dict:
+    """scope: all (everything in the file) | bot (skip the terminals of an old combined file)
+    | nocharts (everything, but leave the saved chart layouts out)."""
     info = inspect(path)
     m = info["manifest"]
-    full = info["kind"] == "full" and scope == "all"
+    do_bot = info["has_bot"]
+    full = info["has_terminals"] and scope in ("all", "nocharts")
+    skip_charts = scope == "nocharts"
     with _lock, zipfile.ZipFile(path) as zf:
         plan = term.match_plan(m) if full else []
         stopped: list[str] = []
@@ -447,10 +480,11 @@ def restore(path: Path, scope: str = "all") -> dict:
             except Exception:
                 log.exception("Restore: stopping the terminals failed")
         names = set(zf.namelist())
-        db_res = restore_db(zf, m) if info["db_ok"] else {"ok": True, "skipped": True, "rows": 0,
-                                                        "tables": 0, "missing": []}
+        no_db = {"ok": True, "skipped": True, "rows": 0, "tables": 0, "missing": []}
+        db_res = restore_db(zf, m) if (do_bot and info["db_ok"]) else no_db
         restored_files = 0
-        for name in sorted(names):
+        restored_system = 0
+        for name in sorted(names if do_bot else ()):
             rel = _safe_rel(name, "files/")
             if not rel or name.endswith("/"):
                 continue
@@ -464,8 +498,7 @@ def restore(path: Path, scope: str = "all") -> dict:
             else:
                 _write_atomic(target, data)
             restored_files += 1
-        restored_system = 0
-        for name in sorted(names):
+        for name in sorted(names if do_bot else ()):
             rel = _safe_rel(name, "system/")
             if not rel or name.endswith("/"):
                 continue
@@ -489,7 +522,7 @@ def restore(path: Path, scope: str = "all") -> dict:
                                       "error": "not installed on this server"})
                     continue
                 try:
-                    r = term.restore_terminal(zf, bt, t)
+                    r = term.restore_terminal(zf, bt, t, skip_charts=skip_charts)
                 except Exception as exc:
                     log.exception("Restore: terminal %s failed", t.slug)
                     r = {"slug": t.slug, "ok": False, "files": 0, "error": str(exc)}
@@ -501,11 +534,16 @@ def restore(path: Path, scope: str = "all") -> dict:
                 extras_res = term.restore_extras(zf, ASSETS_DIR, slugs)
             except Exception:
                 log.exception("Restore: extra files failed")
+            try:
+                term.settle_wine([p["target"] for p in plan if p["target"]])
+            except Exception:
+                log.exception("Restore: wine cleanup failed")
             if any(r["ok"] for r in terms_res) or stopped:
                 start_error = term.start_detached()
-    settings.reload_settings()
+    if do_bot:
+        settings.reload_settings()
     return {"info": info, "db": db_res, "files": restored_files, "system": restored_system,
-            "full": full, "terminals": terms_res,
+            "full": full, "bot": do_bot, "skip_charts": skip_charts, "terminals": terms_res,
             "extras": extras_res, "stopped": stopped, "start_error": start_error}
 
 

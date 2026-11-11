@@ -81,14 +81,15 @@ MQL5 assets are kept during routine updates and only overwritten when you force 
 In Telegram: **Admin → 💾 Backup**.
 
 - **🤖 Bot backup** - database, bot settings, Copy Server, Liquidity Hunter Feed.
-- **🧳 Full backup** - the above plus, for every terminal, the saved logins, open charts and templates, EAs / indicators / sets you added, terminal settings, the shared `Common\Files`, the MQL5 assets folder and the VNC password. Terminals themselves, price history, logs and MetaQuotes sample files are left out, so the file stays small.
-- Auto backup can run every N days (bot or full). Every backup, manual or auto, is sent only to the main admin's private chat and is deleted from the server right after - nothing is stored on the server.
+- **🖥 Terminals backup** - a separate file: for every terminal the saved logins, open charts and templates, EAs / indicators / sets you added, terminal settings, the shared `Common\Files` and the MQL5 assets folder. It never touches the bot or its database. Terminals themselves, price history, logs, the VNC password and desktop settings are not backed up.
+- **📦 Both** - makes the two files above, one after the other.
+- Auto backup can run every N days (bot, terminals or both). Every backup, manual or auto, is sent only to the main admin's private chat and is deleted from the server right after - nothing is stored on the server.
 
 Moving to a new server:
 
 1. On the new server run `sudo heysolo`: **P** prepare, **I** install the same terminals (same installers, so same names), **T** set up the bot.
-2. In Telegram open **Backup → ♻️ Restore from file** and send the full backup.
-3. Check the list it shows, press **Restore everything now**. Terminals are closed, their data is put back, they start again and the bot restarts. Terminals that are not installed yet are skipped - install them and restore again.
+2. In Telegram open **Backup → ♻️ Restore from file** and send the bot backup, then the terminals backup.
+3. Check the list it shows, press **Restore now**. For the terminals file the terminals are closed, their wine sessions are cleaned, their data is put back and they start again one by one (the bot is not restarted). If a terminal misbehaves after a restore, use **Same, but without saved charts**. Terminals that are not installed yet are skipped - install them and restore again.
 
 Restore replaces the current state and no safety copy is kept. Telegram bots can only download files up to 20 MB: for a bigger backup copy it to the server and run `cd /opt/heysolo/bot && venv/bin/python -m backup.cli restore <file>`.
 

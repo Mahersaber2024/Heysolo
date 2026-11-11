@@ -20,8 +20,6 @@ STATE_DIR = Path(os.environ.get("HEYSOLO_STATE_DIR", "/etc/heysolo-mt5"))
 SCRIPTS_DIR = Path(os.environ.get("HEYSOLO_SCRIPTS_DIR", "/opt/heysolo/scripts"))
 TERMINALS_FILE = STATE_DIR / "terminals.list"
 COMMON_DIR = MT5_HOME / ".heysolo-common"
-VNC_PASSWD = MT5_HOME / ".vnc" / "passwd"
-STATE_FILES = ("desktop.env", "desktop_visible.list", "compliance-profile.conf")
 
 MAX_FILE = 20 * 1024 * 1024
 MAX_TERMINAL = 150 * 1024 * 1024
@@ -31,6 +29,7 @@ RESCUE_MARGIN = 2 * 3600
 
 TOP_KEEP = ("config", "profiles", "mql5", "templates")
 REPLACE_DIRS = ("profiles/charts",)
+CHART_DIRS = ("profiles/charts/", "mql5/profiles/charts/")
 SKIP_SUFFIXES = (".log", ".tmp", ".lock", ".etl")
 HARD_SKIP = ("mql5/logs",)
 DEFAULT_DIRS = (
@@ -394,21 +393,9 @@ def _add_tree(zf, base: Path, arc: str, skip: tuple[str, ...], limit: int) -> tu
 
 
 def backup_extras(zf: zipfile.ZipFile, assets_dir: Path | None) -> dict:
-    info: dict = {"state": [], "vnc": False, "common": 0, "assets": 0}
-    for name in STATE_FILES:
-        p = STATE_DIR / name
-        try:
-            if p.is_file():
-                zf.write(p, f"state/{name}")
-                info["state"].append(name)
-        except (OSError, ValueError):
-            pass
-    try:
-        if VNC_PASSWD.is_file():
-            zf.write(VNC_PASSWD, "vnc/passwd")
-            info["vnc"] = True
-    except (OSError, ValueError):
-        pass
+    """Only terminal-related extras: the shared Common\\Files and the MQL5 assets folder.
+    The VNC password and desktop settings are deliberately NOT part of any backup."""
+    info: dict = {"common": 0, "assets": 0}
     info["common"], _ = _add_tree(zf, COMMON_DIR, "common", COMMON_SKIP, MAX_EXTRA)
     if assets_dir:
         info["assets"], _ = _add_tree(zf, assets_dir, "assets/MT5", (), MAX_EXTRA)
@@ -463,7 +450,12 @@ def _prepare_target(bt: dict, t: Terminal) -> tuple[Path | None, str]:
     return None, "terminal was never started here - start it once, then restore again"
 
 
-def restore_terminal(zf: zipfile.ZipFile, bt: dict, t: Terminal) -> dict:
+def _is_chart(rel: str) -> bool:
+    low = rel.lower()
+    return low.startswith(CHART_DIRS)
+
+
+def restore_terminal(zf: zipfile.ZipFile, bt: dict, t: Terminal, skip_charts: bool = False) -> dict:
     res = {"slug": t.slug, "ok": False, "files": 0, "error": ""}
     if not bt.get("data"):
         res["error"] = bt.get("error") or "no data in the backup"
@@ -479,6 +471,8 @@ def restore_terminal(zf: zipfile.ZipFile, bt: dict, t: Terminal) -> dict:
     cm = _CaseMap()
     prefix = f"terminals/{bt['slug']}/data/"
     names = [n for n in zf.namelist() if n.startswith(prefix) and not n.endswith("/")]
+    if skip_charts:
+        names = [n for n in names if not _is_chart(n[len(prefix):])]
     present = {n[len(prefix):].lower() for n in names}
     for rd in REPLACE_DIRS:
         if any(p.startswith(rd + "/") for p in present):
@@ -519,34 +513,11 @@ def _restore_tree(zf, arc: str, base: Path, owner) -> int:
     return n
 
 
-def restore_extras(zf: zipfile.ZipFile, assets_dir: Path | None, slugs: set[str]) -> dict:
+def restore_extras(zf: zipfile.ZipFile, assets_dir: Path | None, slugs: set[str] | None = None) -> dict:
+    """Restores Common\\Files and the MQL5 assets. Older backups also carried the VNC password and
+    desktop settings - those are ignored on purpose, a restore never touches them."""
     owner = _owner()
-    names = set(zf.namelist())
-    out = {"state": 0, "vnc": False, "common": 0, "assets": 0}
-    for name in STATE_FILES:
-        arc = f"state/{name}"
-        if arc not in names:
-            continue
-        data = zf.read(arc)
-        try:
-            if name == "desktop_visible.list":
-                keep = []
-                if (STATE_DIR / name).is_file():
-                    keep = [ln for ln in (STATE_DIR / name).read_text(errors="ignore").splitlines()
-                            if ln.split("=", 1)[0] not in slugs and ln.strip()]
-                add = [ln for ln in data.decode("utf-8", "ignore").splitlines()
-                       if ln.split("=", 1)[0] in slugs]
-                data = ("\n".join(keep + add) + "\n").encode()
-            _write(STATE_DIR / name, data, None, 0o644)
-            out["state"] += 1
-        except OSError as exc:
-            log.warning("Restore: could not write %s (%s)", name, exc)
-    if "vnc/passwd" in names:
-        try:
-            _write(VNC_PASSWD, zf.read("vnc/passwd"), owner, 0o600)
-            out["vnc"] = True
-        except OSError as exc:
-            log.warning("Restore: could not write the VNC password (%s)", exc)
+    out = {"common": 0, "assets": 0}
     out["common"] = _restore_tree(zf, "common", COMMON_DIR, owner)
     if assets_dir:
         out["assets"] = _restore_tree(zf, "assets/MT5", assets_dir, owner)
@@ -569,6 +540,8 @@ def _lib_script(body: str) -> str:
 def stop_terminals(terms: list[Terminal], timeout: int = 90) -> list[str]:
     running = [t for t in terms if is_running(t)]
     if not running:
+        if terms:
+            settle_wine(terms)
         return []
     mt5 = SCRIPTS_DIR / "mt5.sh"
     if mt5.is_file():
@@ -594,7 +567,56 @@ def stop_terminals(terms: list[Terminal], timeout: int = 90) -> list[str]:
             subprocess.run(["pkill", "-KILL", "-f", _pat(t.exe_path)], timeout=10)
         except (OSError, subprocess.SubprocessError):
             pass
+    settle_wine(terms)
     return [t.slug for t in running]
+
+
+def _as_mt5(cmd: list[str], timeout: int) -> None:
+    """Run a command as the MT5 user (the terminals' owner), never failing the caller."""
+    full = cmd if os.geteuid() != 0 else ["runuser", "-u", MT5_USER, "--", *cmd]
+    try:
+        subprocess.run(full, timeout=timeout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def settle_wine(terms: list[Terminal]) -> None:
+    """Leave every touched wine prefix completely idle before files are put back / terminals start.
+
+    A terminal that was force-closed can leave its wineserver, a winedbg crash handler or its screen
+    session behind; the next start then attaches to that half-dead state and MT5 shows
+    "A debugger has been found running". Each prefix is shut down with its own wineserver only,
+    so terminals that are not part of the restore are not touched."""
+    for t in terms:
+        env = ["env", f"HOME={MT5_HOME}", f"WINEPREFIX={t.prefix}", "WINEDEBUG=-all"]
+        _as_mt5(["screen", "-S", t.slug, "-X", "quit"], 10)
+        _as_mt5([*env, "wineserver", "-k"], 20)
+    deadline = time.time() + 20
+    pending = list(terms)
+    while pending and time.time() < deadline:
+        still = []
+        for t in pending:
+            try:
+                r = subprocess.run(["pgrep", "-f", _pat(str(t.prefix))], capture_output=True, timeout=10)
+                alive = r.returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                alive = False
+            if alive:
+                still.append(t)
+        pending = still
+        if pending:
+            time.sleep(1)
+    for t in pending:
+        try:
+            subprocess.run(["pkill", "-KILL", "-f", _pat(str(t.prefix))], timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    try:
+        subprocess.run(["pkill", "-KILL", "-u", MT5_USER, "-x", "winedbg"], timeout=10, stderr=subprocess.DEVNULL)
+        subprocess.run(["pkill", "-KILL", "-u", MT5_USER, "-f", "winedbg.exe"], timeout=10, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    time.sleep(1)
 
 
 def start_detached() -> str:
