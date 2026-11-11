@@ -415,7 +415,7 @@ def _parse_objects(path: Path) -> dict:
         elif ln.startswith("#S="):
             name = ln[3:]
             cur = out["syms"].setdefault(name, []) if _SYM_RE.match(name) else None
-        elif cur is not None and ln.startswith("O|") and len(ln) <= _OBJ_MAX_LEN and len(cur) < _OBJ_MAX_LINES:
+        elif cur is not None and ln.startswith(("O|", "L|")) and len(ln) <= _OBJ_MAX_LEN and len(cur) < _OBJ_MAX_LINES:
             cur.append(ln)
     return out
 
