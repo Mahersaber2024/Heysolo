@@ -506,7 +506,7 @@ remove_mt5_user(){
 
 remove_wine_leftovers(){
   local b
-  rm -f /etc/apt/sources.list.d/winehq.list /etc/apt/sources.list.d/winehq*.sources /etc/apt/keyrings/winehq-archive.key 2>/dev/null || true
+  rm -f /etc/apt/sources.list.d/winehq.list /etc/apt/sources.list.d/winehq*.sources /etc/apt/keyrings/winehq-archive.key /etc/apt/keyrings/winehq-archive.asc 2>/dev/null || true
   rm -rf /opt/wine-stable /opt/wine-staging /opt/wine-devel 2>/dev/null || true
   for b in wine wine64 wineboot wineserver winecfg; do
     [[ -L "/usr/local/bin/${b}" ]] && rm -f "/usr/local/bin/${b}"

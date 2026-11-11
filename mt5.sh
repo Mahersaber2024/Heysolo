@@ -1864,7 +1864,7 @@ show_banner(){
   title "  __  __ _____ ____    _____                    _             _ _"
   title " |  \\/  |_   _| ___|  |_   _|__ _ __ _ __ ___  (_)_ __   __ _| | |___"
   title " | |\\/| | | | |___ \\    | |/ _ \\ '__| '_ \` _ \\ | | '_ \\ / _\` | | / __|"
-  title " | |  | | | |  ___) |   | |  __/ |  | | | | | || | | | | (_| | | / __\\"
+  title " | |  | | | |  ___) |   | |  __/ |  | | | | | || | | | | (_| | | / __\\ "
   title " |_|  |_| |_| |____/    |_|\\___|_|  |_| |_| |_|/ |_| |_|\\__,_|_|_|___/"
   title "                                              |__/"
   title "     MT5 / Prop-firm Terminals over VNC - Local Installer"
@@ -1961,13 +1961,30 @@ add_winehq_repo(){
   fi
   info "Adding the WineHQ repository for ${osid}/${codename}..."
   mkdir -p /etc/apt/keyrings
+  # apt only accepts keyring files ending in .asc (armored) or .gpg (binary); a ".key" file is ignored
+  # ("unsupported filetype") and the repo then fails with NO_PUBKEY.
+  rm -f /etc/apt/keyrings/winehq-archive.key
   curl -fsSL https://dl.winehq.org/wine-builds/winehq.key \
-    -o /etc/apt/keyrings/winehq-archive.key || return 1
-  echo "deb [signed-by=/etc/apt/keyrings/winehq-archive.key] https://dl.winehq.org/wine-builds/${osid}/ ${codename} main" \
+    -o /etc/apt/keyrings/winehq-archive.asc || return 1
+  chmod 644 /etc/apt/keyrings/winehq-archive.asc
+  echo "deb [signed-by=/etc/apt/keyrings/winehq-archive.asc] https://dl.winehq.org/wine-builds/${osid}/ ${codename} main" \
     > /etc/apt/sources.list.d/winehq.list
-  apt-get update -y || true
+  local _upd
+  _upd=$(apt-get update -y 2>&1 || true)
+  if grep -qi 'dl.winehq.org' <<<"${_upd}" && grep -qiE 'NO_PUBKEY|is not signed|^Err:.*winehq' <<<"${_upd}"; then
+    warn "WineHQ repository cannot be verified - removing it so apt keeps working."
+    remove_winehq_repo
+    return 1
+  fi
   WINEHQ_REPO_READY=1
   return 0
+}
+
+# Remove the WineHQ apt source + key (used when it is broken or not needed).
+remove_winehq_repo(){
+  rm -f /etc/apt/sources.list.d/winehq.list /etc/apt/sources.list.d/winehq*.sources \
+        /etc/apt/keyrings/winehq-archive.key /etc/apt/keyrings/winehq-archive.asc 2>/dev/null || true
+  apt-get update -y >/dev/null 2>&1 || true
 }
 
 install_wine_winehq(){
@@ -2161,6 +2178,11 @@ install_wine(){
   link_winehq_binaries
   if [[ "${WINE_PREFER_LATEST}" == "1" ]] && ! wine_bin_dir >/dev/null 2>&1; then
     install_wine_portable || true
+  fi
+  # If no winehq-* package got installed, the WineHQ apt source is useless - don't leave it behind.
+  if [[ -f /etc/apt/sources.list.d/winehq.list ]] \
+     && ! dpkg -l 'winehq-*' 2>/dev/null | grep -q '^ii'; then
+    remove_winehq_repo
   fi
   ensure_wine_on_path
 
