@@ -14,14 +14,15 @@ from datetime import datetime
 from pathlib import Path
 
 import heysolo_settings as settings
+from backup import terminals as term
 
 log = logging.getLogger("heysolo_backup")
 
 MAGIC = "HEYSOLO-BACKUP"
-VERSION = 1
+VERSION = 2
 INSTALL_DIR = Path(settings.SETTINGS_FILE).resolve().parent
-BACKUP_DIR = INSTALL_DIR / "backups"
-INCOMING_DIR = BACKUP_DIR / "incoming"
+ASSETS_DIR = INSTALL_DIR / "MT5"
+INCOMING_DIR = Path(tempfile.gettempdir()) / "heysolo-incoming"
 SETTINGS_NAME = Path(settings.SETTINGS_FILE).name
 DATA_DIRS = ("biasfeed",)
 SKIP_SUFFIXES = {".py", ".pyc", ".pyo", ".sh", ".md", ".tmp", ".lock"}
@@ -29,14 +30,15 @@ SKIP_DIRS = {"__pycache__", ".git", "venv"}
 SYSTEM_FILES = ("/etc/mt5-share.credentials",)
 LOCAL_KEYS = ("bot_token", "db_host", "db_port", "db_name", "db_user", "db_password")
 NAME_PREFIX = "heysolo_backup_"
-PRE_RESTORE_PREFIX = "heysolo_prerestore_"
+FULL_PREFIX = "heysolo_full_"
+ALL_PREFIXES = (NAME_PREFIX, FULL_PREFIX)
 MAX_FILE_MB = 20
 
 DEFAULTS = {
+    "auto_kind": "bot",
+    "last_kind": "bot",
     "auto_enabled": False,
     "every_days": 3,
-    "keep": 7,
-    "send_admins": True,
     "last_auto": 0,
     "last_ts": 0,
     "last_name": "",
@@ -51,7 +53,8 @@ def get_config() -> dict:
     cfg = dict(DEFAULTS)
     cfg.update(settings.get_backup_config() or {})
     cfg["every_days"] = max(1, min(365, int(cfg.get("every_days") or 3)))
-    cfg["keep"] = max(1, min(100, int(cfg.get("keep") or 7)))
+    if cfg.get("auto_kind") not in ("bot", "full"):
+        cfg["auto_kind"] = "bot"
     return cfg
 
 
@@ -317,93 +320,67 @@ def _merged_settings(backup_bytes: bytes) -> bytes:
 
 
 # ------------------------------------------------------------------ create
-def _rotate(prefix: str, keep: int) -> None:
-    files = sorted(BACKUP_DIR.glob(prefix + "*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
-    for old in files[keep:]:
-        try:
-            old.unlink()
-        except OSError:
-            pass
-
-
-def create_backup(reason: str = "manual", prefix: str = NAME_PREFIX) -> dict:
+def create_backup(reason: str = "manual", kind: str = "bot") -> dict:
+    """Build a backup in a private temp folder. The caller sends it and then calls discard()."""
+    kind = "full" if kind == "full" else "bot"
+    prefix = FULL_PREFIX if kind == "full" else NAME_PREFIX
     with _lock:
-        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        out_dir = Path(tempfile.mkdtemp(prefix="heysolo-backup-"))
         try:
-            os.chmod(BACKUP_DIR, 0o700)
-        except OSError:
-            pass
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        name = f"{prefix}{_host()}_{stamp}.zip"
-        path = BACKUP_DIR / name
-        tmp = path.with_suffix(".zip.tmp")
-        manifest = {
-            "magic": MAGIC, "version": VERSION, "reason": reason,
-            "created": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "created_ts": int(time.time()), "host": socket.gethostname(),
-            "install_dir": str(INSTALL_DIR), "files": [], "system": [], "db": {},
-        }
-        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-            manifest["db"] = dump_db(zf)
-            for p in _data_files():
-                rel = p.relative_to(INSTALL_DIR).as_posix()
-                try:
-                    zf.write(p, "files/" + rel)
-                    manifest["files"].append(rel)
-                except OSError as exc:
-                    log.warning("Backup: skipped %s (%s)", p, exc)
-            for sp in SYSTEM_FILES:
-                p = Path(sp)
-                try:
-                    if p.is_file():
-                        zf.write(p, "system/" + sp.lstrip("/"))
-                        manifest["system"].append(sp)
-                except OSError as exc:
-                    log.warning("Backup: skipped %s (%s)", sp, exc)
-            zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-        size = path.stat().st_size
-        if prefix == NAME_PREFIX:
-            cfg = get_config()
-            cfg.update(last_ts=int(time.time()), last_name=name, last_size=size,
-                       last_error="" if manifest["db"].get("ok") else manifest["db"].get("error", ""))
-            if reason == "auto":
-                cfg["last_auto"] = int(time.time())
-            save_config(cfg)
-            _rotate(NAME_PREFIX, cfg["keep"])
-        else:
-            _rotate(prefix, 3)
-        return {"path": path, "name": name, "size": size, "manifest": manifest}
+            return _build_backup(out_dir, reason, prefix, kind)
+        except BaseException:
+            shutil.rmtree(out_dir, ignore_errors=True)
+            raise
 
 
-def list_local(limit: int = 10) -> list[dict]:
-    if not BACKUP_DIR.is_dir():
-        return []
-    files = [p for p in BACKUP_DIR.glob("*.zip")
-             if p.name.startswith((NAME_PREFIX, PRE_RESTORE_PREFIX))]
-    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return [{"name": p.name, "path": p, "size": p.stat().st_size, "ts": int(p.stat().st_mtime)}
-            for p in files[:limit]]
-
-
-def ref_of(name: str) -> str:
-    import hashlib
-    return hashlib.sha1(name.encode("utf-8")).hexdigest()[:12]
-
-
-def local_by_ref(ref: str) -> Path | None:
-    for it in list_local(200):
-        if ref_of(it["name"]) == ref:
-            return it["path"]
-    return None
-
-
-def local_path(name: str) -> Path | None:
-    if not re.fullmatch(r"[A-Za-z0-9_.-]{5,120}\.zip", name or ""):
-        return None
-    p = BACKUP_DIR / name
-    return p if p.is_file() else None
+def _build_backup(out_dir: Path, reason: str, prefix: str, kind: str) -> dict:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    name = f"{prefix}{_host()}_{stamp}.zip"
+    path = out_dir / name
+    tmp = path.with_suffix(".zip.tmp")
+    manifest = {
+        "magic": MAGIC, "version": 2 if kind == "full" else 1, "kind": kind, "reason": reason,
+        "created": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "created_ts": int(time.time()), "host": socket.gethostname(),
+        "install_dir": str(INSTALL_DIR), "files": [], "system": [], "db": {},
+    }
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=9,
+                         strict_timestamps=False) as zf:
+        manifest["db"] = dump_db(zf)
+        for p in _data_files():
+            rel = p.relative_to(INSTALL_DIR).as_posix()
+            try:
+                zf.write(p, "files/" + rel)
+                manifest["files"].append(rel)
+            except OSError as exc:
+                log.warning("Backup: skipped %s (%s)", p, exc)
+        for sp in SYSTEM_FILES:
+            p = Path(sp)
+            try:
+                if p.is_file():
+                    zf.write(p, "system/" + sp.lstrip("/"))
+                    manifest["system"].append(sp)
+            except OSError as exc:
+                log.warning("Backup: skipped %s (%s)", sp, exc)
+        if kind == "full":
+            try:
+                manifest["terminals"] = term.backup_terminals(zf)
+                manifest["extras"] = term.backup_extras(zf, ASSETS_DIR)
+            except Exception as exc:
+                log.exception("Backup: terminal data failed")
+                manifest.setdefault("terminals", [])
+                manifest["terminal_error"] = str(exc)
+        zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    size = path.stat().st_size
+    cfg = get_config()
+    cfg.update(last_ts=int(time.time()), last_name=name, last_size=size, last_kind=kind,
+               last_error="" if manifest["db"].get("ok") else manifest["db"].get("error", ""))
+    if reason == "auto":
+        cfg["last_auto"] = int(time.time())
+    save_config(cfg)
+    return {"path": path, "name": name, "size": size, "manifest": manifest}
 
 
 # ------------------------------------------------------------------ inspect / restore
@@ -422,6 +399,10 @@ def inspect(path: Path) -> dict:
                 raise BadBackup(f"the file is damaged ({bad})")
     except zipfile.BadZipFile:
         raise BadBackup("this is not a valid zip file")
+    except (ValueError, UnicodeDecodeError) as exc:
+        if isinstance(exc, BadBackup):
+            raise
+        raise BadBackup("the backup manifest is unreadable")
     if m.get("magic") != MAGIC:
         raise BadBackup("this is not a Hey Solo backup")
     if int(m.get("version") or 0) > VERSION:
@@ -429,6 +410,7 @@ def inspect(path: Path) -> dict:
     tables = (m.get("db") or {}).get("tables") or {}
     return {
         "manifest": m,
+        "kind": "full" if m.get("kind") == "full" else "bot",
         "created": m.get("created", "?"),
         "host": m.get("host", "?"),
         "tables": len(tables),
@@ -436,19 +418,34 @@ def inspect(path: Path) -> dict:
         "db_ok": bool((m.get("db") or {}).get("ok")),
         "files": len(m.get("files") or []),
         "system": len(m.get("system") or []),
+        "terminals": m.get("terminals") or [],
+        "extras": m.get("extras") or {},
         "size": path.stat().st_size,
     }
 
 
-def restore(path: Path) -> dict:
+def preview(info: dict) -> list[dict]:
+    if info["kind"] != "full":
+        return []
+    try:
+        return term.match_plan(info["manifest"])
+    except Exception:
+        log.exception("Restore preview failed")
+        return [{"backup": bt, "target": None} for bt in info["terminals"]]
+
+
+def restore(path: Path, scope: str = "all") -> dict:
     info = inspect(path)
     m = info["manifest"]
+    full = info["kind"] == "full" and scope == "all"
     with _lock, zipfile.ZipFile(path) as zf:
-        safety = None
-        try:
-            safety = create_backup("pre-restore", PRE_RESTORE_PREFIX)
-        except Exception as exc:
-            log.warning("Restore: could not make the safety copy first: %s", exc)
+        plan = term.match_plan(m) if full else []
+        stopped: list[str] = []
+        if full:
+            try:
+                stopped = term.stop_terminals([p["target"] for p in plan if p["target"]])
+            except Exception:
+                log.exception("Restore: stopping the terminals failed")
         names = set(zf.namelist())
         db_res = restore_db(zf, m) if info["db_ok"] else {"ok": True, "skipped": True, "rows": 0,
                                                         "tables": 0, "missing": []}
@@ -480,9 +477,36 @@ def restore(path: Path) -> dict:
                 restored_system += 1
             except OSError as exc:
                 log.warning("Restore: could not write %s (%s)", target, exc)
+        terms_res: list[dict] = []
+        extras_res: dict = {}
+        start_error = ""
+        if full:
+            for item in plan:
+                bt, t = item["backup"], item["target"]
+                if t is None:
+                    terms_res.append({"slug": bt.get("slug", "?"), "exe": bt.get("exe", ""), "ok": False,
+                                      "missing": True, "files": 0,
+                                      "error": "not installed on this server"})
+                    continue
+                try:
+                    r = term.restore_terminal(zf, bt, t)
+                except Exception as exc:
+                    log.exception("Restore: terminal %s failed", t.slug)
+                    r = {"slug": t.slug, "ok": False, "files": 0, "error": str(exc)}
+                r["missing"] = False
+                r["login"], r["server"] = bt.get("login", ""), bt.get("server", "")
+                terms_res.append(r)
+            try:
+                slugs = {p["target"].slug for p in plan if p["target"]}
+                extras_res = term.restore_extras(zf, ASSETS_DIR, slugs)
+            except Exception:
+                log.exception("Restore: extra files failed")
+            if any(r["ok"] for r in terms_res) or stopped:
+                start_error = term.start_detached()
     settings.reload_settings()
     return {"info": info, "db": db_res, "files": restored_files, "system": restored_system,
-            "safety": safety["name"] if safety else ""}
+            "full": full, "terminals": terms_res,
+            "extras": extras_res, "stopped": stopped, "start_error": start_error}
 
 
 def cleanup_incoming(max_age: int = 3600) -> None:
@@ -499,11 +523,19 @@ def cleanup_incoming(max_age: int = 3600) -> None:
 
 def incoming_path(token: str) -> Path:
     INCOMING_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(INCOMING_DIR, 0o700)
+    return INCOMING_DIR / f"upload_{token}.zip"
+
+
+def discard(res: dict) -> None:
+    """Delete a freshly made backup (and its temp folder) from this server."""
     try:
-        os.chmod(BACKUP_DIR, 0o700)
+        f = Path(res["path"])
+        f.unlink(missing_ok=True)
+        if f.parent.name.startswith("heysolo-backup-"):
+            shutil.rmtree(f.parent, ignore_errors=True)
     except OSError:
         pass
-    return INCOMING_DIR / f"upload_{token}.zip"
 
 
 def remove(path: Path | None) -> None:
