@@ -3081,6 +3081,119 @@ async def provision_group(bot, chat_id_str: str, force: bool = False) -> tuple[b
         + "\n".join(f"{G_ROW} {name}" for _, name in TOPIC_SPECS)
     ), None
 
+
+# ---------------------------------------------------------------------------
+# Topic wizard: asks about the topics one by one. For each one the admin either
+# sends the link / number of an existing topic, or taps "Create".
+# Topics already saved in the settings JSON for the same group are reused
+# without asking.
+# ---------------------------------------------------------------------------
+_topic_wiz: dict[int, dict] = {}
+TW_CREATE_CB = "ADM_TW_CREATE"
+
+def _parse_topic_ref(text: str, chat_id: int):
+    """Returns (thread_id, None) or (None, error_text)."""
+    t = (text or "").strip().translate(_DIGITS_TO_ASCII)
+    if t.isdigit() and int(t) > 0:
+        return int(t), None
+    m = re.search(r"t\.me/c/(\d+)/(\d+)", t)
+    if m:
+        s_id = str(abs(chat_id))
+        if s_id.startswith("100"):
+            s_id = s_id[3:]
+        if m.group(1) != s_id:
+            return None, "That link belongs to a different group."
+        return int(m.group(2)), None
+    m = re.search(r"t\.me/[A-Za-z0-9_]+/(\d+)", t)
+    if m:
+        return int(m.group(1)), None
+    return None, "I could not read that. Send the topic link or just its number."
+
+async def _topic_exists(bot, chat_id: int, thread_id: int):
+    """Silent probe (typing action inside the topic, no message is posted).
+    Returns (True, None) if the topic exists, else (False, error_text)."""
+    try:
+        await bot.send_chat_action(chat_id=chat_id, action="typing", message_thread_id=thread_id)
+        return True, None
+    except BadRequest as e:
+        low = str(e).lower()
+        if "thread not found" in low or "topic" in low and "not found" in low:
+            return False, f"No topic with number <code>{thread_id}</code> exists in this group."
+        return False, f"Could not check it: <code>{html.escape(str(e))}</code>"
+    except TelegramError as e:
+        return False, f"Could not check it: <code>{html.escape(str(e))}</code>"
+
+def _topic_ask_view(wiz: dict, prefix: str = "") -> tuple[str, InlineKeyboardMarkup]:
+    key, name = wiz["queue"][0]
+    n = wiz["total"] - len(wiz["queue"]) + 1
+    text = (
+        (prefix + "\n\n" if prefix else "")
+        + f"▣ <b>Topic {n}/{wiz['total']}: {name}</b>\n"
+        f"Does a <b>{name}</b> topic already exist in this group?\n\n"
+        f"{G_ROW} If yes, send its link (e.g. <code>https://t.me/c/4423911233/11</code>) "
+        "or its topic number.\n"
+        f"{G_ROW} If not, tap <b>Create</b>."
+    )
+    kb = cancel_kb([InlineKeyboardButton(f"{G_AUTO} Create {name}", callback_data=TW_CREATE_CB)])
+    return text, kb
+
+async def topic_wizard_begin(bot, uid: int, chat_id_str: str):
+    """Returns (state, text, kb). state: 'bad' | 'ok' | 'ask'."""
+    try:
+        chat_id = int(chat_id_str)
+    except ValueError:
+        return "bad", f"{G_BAD} That is not a numeric chat ID.", None
+    existing = settings.get_threads()
+    same_chat = str(chat_id) == str(settings.get_chat_id())
+    threads, how, queue = {}, {}, []
+    for key, name in TOPIC_SPECS:
+        if same_chat and existing.get(key):
+            threads[key] = existing[key]
+            how[key] = "saved"
+        else:
+            queue.append((key, name))
+    if not queue:
+        ok, text, kb = await provision_group(bot, chat_id_str, force=False)
+        return "ok", text, kb
+    wiz = {"chat_id": chat_id, "chat_id_str": chat_id_str, "threads": threads,
+           "how": how, "queue": queue, "total": len(queue)}
+    _topic_wiz[uid] = wiz
+    text, kb = _topic_ask_view(wiz)
+    return "ask", text, kb
+
+async def topic_wizard_step(bot, uid: int, thread_id: int | None = None):
+    """Handles one answer. thread_id=None means 'create it'.
+    Returns (done, text, kb)."""
+    wiz = _topic_wiz.get(uid)
+    if not wiz or not wiz["queue"]:
+        return True, f"{G_BAD} Nothing to do. Open Set group again.", None
+    key, name = wiz["queue"][0]
+    if thread_id is None:
+        try:
+            topic = await bot.create_forum_topic(chat_id=wiz["chat_id"], name=name)
+        except TelegramError as e:
+            text, kb = _topic_ask_view(
+                wiz,
+                prefix=(f"{G_BAD} Could not create <b>{name}</b>: <code>{html.escape(str(e))}</code>\n"
+                        "Check that the bot is an admin in that group with <b>Manage Topics</b>, "
+                        "and that Topics are enabled (forum supergroup). Then tap Create again."))
+            return False, text, kb
+        thread_id = topic.message_thread_id
+        wiz["how"][key] = "created"
+    else:
+        wiz["how"][key] = "linked"
+    wiz["threads"][key] = int(thread_id)
+    wiz["queue"].pop(0)
+    if wiz["queue"]:
+        text, kb = _topic_ask_view(wiz, prefix=f"{G_OK} {name}: <code>{thread_id}</code>")
+        return False, text, kb
+    _apply_group(wiz["chat_id_str"], wiz["threads"])
+    _topic_wiz.pop(uid, None)
+    lines = [f"{G_OK} <b>Group linked</b>"]
+    for k, nm in TOPIC_SPECS:
+        lines.append(f"{G_ROW} {nm}: <code>{wiz['threads'][k]}</code> ({wiz['how'][k]})")
+    return True, "\n".join(lines), None
+
 async def safe_edit_message_text(q, *args, **kwargs):
     try:
         return await q.edit_message_text(*args, **kwargs)
@@ -3287,7 +3400,8 @@ async def _handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         await safe_edit_message_text(q,
             f"▣ <b>Reporting Group</b>\n{cur_line}"
             "Send the numeric group ID (e.g. <code>-1001234567890</code>). "
-            "The bot creates the Bias, Trades, Logs, Results and Alerts topics itself.",
+            "Then the bot asks about the Bias, Trades, Logs, Results and Alerts topics one by one: "
+            "send the link of an existing topic, or let it create it.",
             reply_markup=cancel_kb(),
             parse_mode=ParseMode.HTML,
         )
@@ -3301,8 +3415,22 @@ async def _handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     elif data == "ADM_TOPICS_FILL":
         await q.answer()
-        await show_working(q, "Creating missing topics...")
-        ok, text, kb = await provision_group(context.bot, settings.get_chat_id(), force=False)
+        state, text, kb = await topic_wizard_begin(context.bot, uid, settings.get_chat_id())
+        if state == "ask":
+            _pending[uid] = "topic_ask"
+        await safe_edit_message_text(q, text, parse_mode=ParseMode.HTML, reply_markup=kb or
+                                  InlineKeyboardMarkup([[InlineKeyboardButton(f"{G_BACK} Back", callback_data="ADM_REPORT")]]))
+
+    elif data == TW_CREATE_CB:
+        if _pending.get(uid) != "topic_ask":
+            await q.answer("This question has expired. Open Set group again.", show_alert=True)
+            return
+        await q.answer()
+        done, text, kb = await topic_wizard_step(context.bot, uid, None)
+        if not done:
+            _pending[uid] = "topic_ask"
+        else:
+            _pending.pop(uid, None)
         await safe_edit_message_text(q, text, parse_mode=ParseMode.HTML, reply_markup=kb or
                                   InlineKeyboardMarkup([[InlineKeyboardButton(f"{G_BACK} Back", callback_data="ADM_REPORT")]]))
 
@@ -3421,7 +3549,7 @@ async def _handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         elif res["alert"] and res["answer"] and not res["view"]:
             await context.bot.send_message(chat_id=q.message.chat_id, text=res["answer"])
         for doc in res["docs"]:
-            if not await backup_panel.send_doc(context.bot, uid, doc):
+            if not await backup_panel.send_doc(context.bot, backup_panel.main_admin(uid), doc):
                 await context.bot.send_message(
                     chat_id=q.message.chat_id,
                     text="✖ Could not send the backup to your private chat - open the bot "
@@ -3567,15 +3695,42 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             v = prop_notifications.settings_view(uid, config, target_login)
             await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         elif action == "set_chat":
-            ok, result_text, kb = await provision_group(context.bot, text)
+            state, result_text, kb = await topic_wizard_begin(context.bot, uid, text)
             await msg.reply_text(result_text, parse_mode=ParseMode.HTML,
-                                 reply_markup=kb if ok else (kb or cancel_kb()))
-            if not ok:
+                                 reply_markup=kb if state != "bad" else (kb or cancel_kb()))
+            if state == "bad":
                 _pending[uid] = "set_chat"
+                return
+            if state == "ask":
+                _pending[uid] = "topic_ask"
                 return
             if kb is None:
                 v = reporting_view()
                 await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+        elif action == "topic_ask":
+            wiz = _topic_wiz.get(uid)
+            if not wiz:
+                await msg.reply_text(f"{G_BAD} Nothing to do. Open Set group again.")
+                return
+            thread_id, err = _parse_topic_ref(text, wiz["chat_id"])
+            if err:
+                ask_text, ask_kb = _topic_ask_view(wiz, prefix=f"{G_BAD} {err}")
+                await msg.reply_text(ask_text, reply_markup=ask_kb, parse_mode=ParseMode.HTML)
+                _pending[uid] = "topic_ask"
+                return
+            exists, err = await _topic_exists(context.bot, wiz["chat_id"], thread_id)
+            if not exists:
+                ask_text, ask_kb = _topic_ask_view(wiz, prefix=f"{G_BAD} {err}")
+                await msg.reply_text(ask_text, reply_markup=ask_kb, parse_mode=ParseMode.HTML)
+                _pending[uid] = "topic_ask"
+                return
+            done, result_text, kb = await topic_wizard_step(context.bot, uid, thread_id)
+            await msg.reply_text(result_text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            if not done:
+                _pending[uid] = "topic_ask"
+                return
+            v = reporting_view()
+            await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
         elif action == "set_common":
             p = Path(text)
             if not p.is_absolute():
@@ -3751,6 +3906,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == CANCEL_CB:
         uid = update.effective_user.id
         action = _pending.pop(uid, None) or ""
+        _topic_wiz.pop(uid, None)
         await q.answer(L.tu(uid, "cancelled_toast"))
         if action == "set_dest_group":
             v = user_settings_view(uid, resolve_login(uid))

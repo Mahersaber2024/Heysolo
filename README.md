@@ -76,6 +76,22 @@ Then connect [RealVNC Viewer](https://www.realvnc.com/en/connect/download/viewer
 
 MQL5 assets are kept during routine updates and only overwritten when you force a sync.
 
+## Backup and moving to a new server
+
+In Telegram: **Admin → 💾 Backup**.
+
+- **🤖 Bot backup** - database, bot settings, Copy Server, Liquidity Hunter Feed.
+- **🧳 Full backup** - the above plus, for every terminal, the saved logins, open charts and templates, EAs / indicators / sets you added, terminal settings, the shared `Common\Files`, the MQL5 assets folder and the VNC password. Terminals themselves, price history, logs and MetaQuotes sample files are left out, so the file stays small.
+- Auto backup can run every N days (bot or full). Every backup, manual or auto, is sent only to the main admin's private chat and is deleted from the server right after - nothing is stored on the server.
+
+Moving to a new server:
+
+1. On the new server run `sudo heysolo`: **P** prepare, **I** install the same terminals (same installers, so same names), **T** set up the bot.
+2. In Telegram open **Backup → ♻️ Restore from file** and send the full backup.
+3. Check the list it shows, press **Restore everything now**. Terminals are closed, their data is put back, they start again and the bot restarts. Terminals that are not installed yet are skipped - install them and restore again.
+
+Restore replaces the current state and no safety copy is kept. Telegram bots can only download files up to 20 MB: for a bigger backup copy it to the server and run `cd /opt/heysolo/bot && venv/bin/python -m backup.cli restore <file>`.
+
 ## Security
 
 Never commit passwords, tokens, private keys, certificates, customer data, or live server settings. Use a dedicated server user, keep VNC behind the SSH tunnel, keep the OS updated, and read shell scripts before running them as root.
