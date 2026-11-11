@@ -7,20 +7,10 @@
 //|  SECTION 3: Trade Journal      (web journal + screenshots)         |
 //|  SECTION 4: Liquidity Hunter Bias Gate (scanner panel + trade lock)|
 //|                                                                    |
-//|  Use: HeySolo_ATM.mq5 includes this file ONCE, at the top, before  |
-//|  <Trade\Trade.mqh> (Replay Broker hooks must come first).          |
-//|  MQL5 includes a file only once, so it can not be split in two.    |
 //+--------------------------------------------------------------------+
 #ifndef HEYSOLO_ATM_HELPER_MQH
 #define HEYSOLO_ATM_HELPER_MQH
-
-
-//+==================================================================+
-//|  SECTION 1: REPLAY BROKER                                        |
-//|  Virtual positions / orders / deals for Replay mode.             |
-//|  Hooks OnTick, OrderSend, PositionsTotal... (VB_*).              |
-//|  (was ReplayBroker.mqh)                                          |
-//+==================================================================+
+#ifndef HS_PANEL_ONLY 
 #ifndef REPLAY_BROKER_MQH
 #define REPLAY_BROKER_MQH
 #ifndef VB_SUFFIX
@@ -551,7 +541,7 @@ void VB_NewSession(long ses)
    vb_session=ses;
    vb_proc=VB_LastBarTime(); vb_fBar=0;
    vb_lastT=VB_Now(); vb_lastBid=VB_Bid(); vb_lastAsk=VB_Ask();
-   Print("[ReplayBroker] New replay session: open trades closed, balance ",DoubleToString(vb_bal,2));
+   Print("open trades closed, balance ",DoubleToString(vb_bal,2));
 }
 void VB_Publish(bool force=false)
 {
@@ -602,7 +592,7 @@ void VB_Init()
    SymbolSelect(vb_rp,true);
    if(!VB_Load() || vb_epoch!=VB_GVEpoch()) VB_Fresh();
    VB_DrawOrders();
-   Print("[ReplayBroker] Virtual account active on ",vb_rp," (source ",vb_src,")  balance ",DoubleToString(vb_bal,2));
+   Print("Virtual account active on ",vb_rp," (source ",vb_src,")  balance ",DoubleToString(vb_bal,2));
 }
 void VB_Sync()
 {
@@ -617,7 +607,7 @@ void VB_Sync()
       if(VB_GVEpoch()!=vb_epoch)
       {
          VB_Fresh(); VB_DrawOrders();
-         Print("[ReplayBroker] Replay was reset: virtual account back to ",DoubleToString(vb_bal,2));
+         Print("Replay was reset: virtual account back to ",DoubleToString(vb_bal,2));
       }
       if(GlobalVariableCheck(VB_GV("cmdbal")))
       {
@@ -625,7 +615,7 @@ void VB_Sync()
          GlobalVariableDel(VB_GV("cmdbal"));
          VB_ResetAccount(b);
          vb_proc=VB_LastBarTime(); vb_fBar=0;
-         Print("[ReplayBroker] Account reset, balance ",DoubleToString(b,2));
+         Print("Account reset, balance ",DoubleToString(b,2));
       }
    }
    datetime now=VB_Now();
@@ -713,7 +703,7 @@ uint VB_Exec(const MqlTradeRequest &rq,MqlTradeResult &rs)
             if((vb_pos[k].type==0)==(rq.type==ORDER_TYPE_BUY)) return TRADE_RETCODE_INVALID_ORDER;
             if(rq.volume<=0 || rq.volume>vb_pos[k].vol+1e-9) return TRADE_RETCODE_INVALID_VOLUME;
             rs.order=0; rs.volume=rq.volume; rs.price=price;
-            PrintFormat("[ReplayBroker] CLOSE by EA request: position #%I64u  %.2f of %.2f lots at %s  magic=%I64d  comment=\"%s\"",
+            PrintFormat("CLOSE by EA request: position #%I64u  %.2f of %.2f lots at %s  magic=%I64d  comment=\"%s\"",
                         rq.position,rq.volume,vb_pos[k].vol,DoubleToString(price,VB_Dg()),(long)rq.magic,rq.comment);
             rs.deal=VB_Close(k,rq.volume,price,DEAL_REASON_EXPERT,t,rq.comment,DEAL_ENTRY_OUT,(long)rq.magic);
             rs.order=vb_hord[ArraySize(vb_hord)-1].ticket;
@@ -730,7 +720,7 @@ uint VB_Exec(const MqlTradeRequest &rq,MqlTradeResult &rs)
          VB_Evt(TRADE_TRANSACTION_ORDER_ADD,0,o.ticket,0,o.type,0,price,rq.volume,sl,tp,ORDER_STATE_STARTED);
          VB_AddHistOrder(o);
          VB_Open(o.ticket,buy?0:1,rq.volume,price,sl,tp,(long)rq.magic,rq.comment,DEAL_REASON_EXPERT,t);
-         PrintFormat("[ReplayBroker] OPEN %s %.2f lots at %s  sl=%s tp=%s  position #%I64u  magic=%I64d  comment=\"%s\"",
+         PrintFormat("OPEN %s %.2f lots at %s  sl=%s tp=%s  position #%I64u  magic=%I64d  comment=\"%s\"",
                      buy?"buy":"sell",rq.volume,DoubleToString(price,VB_Dg()),DoubleToString(sl,VB_Dg()),DoubleToString(tp,VB_Dg()),
                      o.ticket,(long)rq.magic,rq.comment);
          rs.order=o.ticket; rs.deal=vb_nDeal; rs.volume=rq.volume; rs.price=price;
@@ -850,7 +840,7 @@ bool VB_Send(const MqlTradeRequest &rq,MqlTradeResult &rs,bool async)
    bool ok=(rc==TRADE_RETCODE_DONE);
    rs.retcode=(ok && async ? (uint)TRADE_RETCODE_PLACED : rc);
    rs.comment=VB_RetText(rc);
-   if(!ok) PrintFormat("[ReplayBroker] request rejected: %s (%u)  action=%d type=%d vol=%.2f price=%.5f sl=%.5f tp=%.5f",
+   if(!ok) PrintFormat("request rejected: %s (%u)  action=%d type=%d vol=%.2f price=%.5f sl=%.5f tp=%.5f",
                        rs.comment,rc,(int)rq.action,(int)rq.type,rq.volume,rq.price,rq.sl,rq.tp);
    VB_EvtReq(rq,rs);
    VB_Save(); VB_Publish(true); VB_DrawOrders();
@@ -1328,6 +1318,162 @@ enum LogType { LOG_INFO, LOG_SUCCESS, LOG_ERROR };
 //+==================================================================+
 #define JRN_SHOTDIR  "shots"
 #define JRN_MAXLIVE  128
+// ---- Split Orders = ONE trade. The orders of one split share symbol, magic and type and open within seconds of each other.
+#define SPLIT_WINDOW_SEC 5
+// Position ids of the split trade that posId belongs to, oldest first (the deal history must be selected). 1 id = normal trade.
+int SplitGroup(ulong posId, ulong &ids[])
+{
+   ArrayResize(ids, 1);
+   ids[0] = posId;
+   int total = HistoryDealsTotal();
+   ulong mg = 0; string sym = ""; long ty = -1; datetime t0 = 0;
+   for(int i = 0; i < total; i++)
+   {
+      ulong d = HistoryDealGetTicket(i);
+      if(d == 0 || (ENUM_DEAL_ENTRY)HistoryDealGetInteger(d, DEAL_ENTRY) != DEAL_ENTRY_IN) continue;
+      if((ulong)HistoryDealGetInteger(d, DEAL_POSITION_ID) != posId) continue;
+      mg  = (ulong)HistoryDealGetInteger(d, DEAL_MAGIC);
+      sym = HistoryDealGetString(d, DEAL_SYMBOL);
+      ty  = HistoryDealGetInteger(d, DEAL_TYPE);
+      t0  = (datetime)HistoryDealGetInteger(d, DEAL_TIME);
+      break;
+   }
+   if(mg == 0) return 1;
+   int n = 0;
+   ArrayResize(ids, 0);
+   for(int i = 0; i < total; i++)
+   {
+      ulong d = HistoryDealGetTicket(i);
+      if(d == 0 || (ENUM_DEAL_ENTRY)HistoryDealGetInteger(d, DEAL_ENTRY) != DEAL_ENTRY_IN) continue;
+      if((ulong)HistoryDealGetInteger(d, DEAL_MAGIC) != mg || HistoryDealGetString(d, DEAL_SYMBOL) != sym) continue;
+      if(HistoryDealGetInteger(d, DEAL_TYPE) != ty) continue;
+      if(MathAbs((long)HistoryDealGetInteger(d, DEAL_TIME) - (long)t0) > SPLIT_WINDOW_SEC) continue;
+      ArrayResize(ids, n + 1);
+      ids[n++] = (ulong)HistoryDealGetInteger(d, DEAL_POSITION_ID);
+   }
+   if(n == 0) { ArrayResize(ids, 1); ids[0] = posId; return 1; }
+   return n;
+}
+// true for the 2nd, 3rd... order of a split trade (history must be selected)
+bool SplitIsFollower(ulong posId)
+{
+   ulong ids[];
+   return (SplitGroup(posId, ids) > 1 && ids[0] != posId);
+}
+// true while any order of the group is still open
+bool SplitGroupOpen(ulong &ids[])
+{
+   int n = ArraySize(ids);
+   for(int p = PositionsTotal() - 1; p >= 0; p--)
+   {
+      if(PositionGetTicket(p) == 0) continue;
+      ulong pid = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
+      for(int j = 0; j < n; j++) if(ids[j] == pid) return true;
+   }
+   return false;
+}
+// totals of every closing deal of the group; lastDeal = the newest one
+void SplitGroupDeals(ulong &ids[], double &profit, double &commission, double &swap, double &volume, ulong &lastDeal)
+{
+   profit = 0; commission = 0; swap = 0; volume = 0; lastDeal = 0;
+   int n = ArraySize(ids), total = HistoryDealsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      ulong d = HistoryDealGetTicket(i);
+      if(d == 0 || (ENUM_DEAL_ENTRY)HistoryDealGetInteger(d, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+      ulong pid = (ulong)HistoryDealGetInteger(d, DEAL_POSITION_ID);
+      bool mine = false;
+      for(int j = 0; j < n && !mine; j++) mine = (ids[j] == pid);
+      if(!mine) continue;
+      profit     += HistoryDealGetDouble(d, DEAL_PROFIT);
+      commission += HistoryDealGetDouble(d, DEAL_COMMISSION);
+      swap       += HistoryDealGetDouble(d, DEAL_SWAP);
+      volume     += HistoryDealGetDouble(d, DEAL_VOLUME);
+      if(d > lastDeal) lastDeal = d;
+   }
+}
+// net (profit + commission + swap) of the whole split trade; ownNet for a normal trade
+double SplitNetOf(ulong posId, double ownNet)
+{
+   ulong ids[];
+   if(SplitGroup(posId, ids) < 2) return ownNet;
+   double pr, cm, sw, vl; ulong ld;
+   SplitGroupDeals(ids, pr, cm, sw, vl, ld);
+   return pr + cm + sw;
+}
+// total opening volume of the group
+double SplitInVolume(ulong &ids[])
+{
+   double v = 0;
+   int n = ArraySize(ids), total = HistoryDealsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      ulong d = HistoryDealGetTicket(i);
+      if(d == 0 || (ENUM_DEAL_ENTRY)HistoryDealGetInteger(d, DEAL_ENTRY) != DEAL_ENTRY_IN) continue;
+      ulong pid = (ulong)HistoryDealGetInteger(d, DEAL_POSITION_ID);
+      for(int j = 0; j < n; j++) if(ids[j] == pid) { v += HistoryDealGetDouble(d, DEAL_VOLUME); break; }
+   }
+   return v;
+}
+string SplitTickets(ulong &ids[])
+{
+   string s = "";
+   for(int j = 0; j < ArraySize(ids); j++) s += (j > 0 ? ", " : "") + StringFormat("%I64u", ids[j]);
+   return s;
+}
+// open positions: true when posTicket is the 2nd, 3rd... order of a split trade
+bool SplitOpenFollower(ulong posTicket)
+{
+   if(!PositionSelectByTicket(posTicket)) return false;
+   ulong mg = (ulong)PositionGetInteger(POSITION_MAGIC);
+   if(mg == 0) return false;
+   string sym = PositionGetString(POSITION_SYMBOL);
+   long ty = PositionGetInteger(POSITION_TYPE), t0 = PositionGetInteger(POSITION_TIME);
+   bool follower = false;
+   for(int p = PositionsTotal() - 1; p >= 0 && !follower; p--)
+   {
+      ulong tk = PositionGetTicket(p);
+      if(tk == 0 || tk == posTicket) continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC) != mg || PositionGetString(POSITION_SYMBOL) != sym || PositionGetInteger(POSITION_TYPE) != ty) continue;
+      long t = PositionGetInteger(POSITION_TIME);
+      if(MathAbs(t - t0) > SPLIT_WINDOW_SEC) continue;
+      follower = (t < t0 || (t == t0 && tk < posTicket));
+   }
+   PositionSelectByTicket(posTicket);
+   return follower;
+}
+// open trades (a split trade counts once); symbol = "" for all symbols
+int SplitOpenTrades(string symbol = "")
+{
+   int cnt = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(symbol != "" && PositionGetString(POSITION_SYMBOL) != symbol) continue;
+      if(!SplitOpenFollower(tk)) cnt++;
+   }
+   return cnt;
+}
+// volume of the whole open split trade this position belongs to (own volume for a normal trade)
+double SplitOpenVolume(ulong posTicket)
+{
+   if(!PositionSelectByTicket(posTicket)) return 0.0;
+   double v = PositionGetDouble(POSITION_VOLUME);
+   ulong mg = (ulong)PositionGetInteger(POSITION_MAGIC);
+   if(mg == 0) return v;
+   string sym = PositionGetString(POSITION_SYMBOL);
+   long ty = PositionGetInteger(POSITION_TYPE), t0 = PositionGetInteger(POSITION_TIME);
+   for(int p = PositionsTotal() - 1; p >= 0; p--)
+   {
+      ulong tk = PositionGetTicket(p);
+      if(tk == 0 || tk == posTicket) continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC) != mg || PositionGetString(POSITION_SYMBOL) != sym || PositionGetInteger(POSITION_TYPE) != ty) continue;
+      if(MathAbs(PositionGetInteger(POSITION_TIME) - t0) <= SPLIT_WINDOW_SEC) v += PositionGetDouble(POSITION_VOLUME);
+   }
+   PositionSelectByTicket(posTicket);
+   return v;
+}
 bool   JournalShots      = true;
 string JournalStrategies = "";
 string JournalStrategy   = "ICT";
@@ -1642,7 +1788,8 @@ void JrnLastClose(double &lastNet, datetime &lastTime, string &lastSymbol)
       if((ENUM_DEAL_ENTRY)HistoryDealGetInteger(t, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
       int dt = (int)HistoryDealGetInteger(t, DEAL_TYPE);
       if(dt != DEAL_TYPE_BUY && dt != DEAL_TYPE_SELL) continue;
-      lastNet    = HistoryDealGetDouble(t, DEAL_PROFIT) + HistoryDealGetDouble(t, DEAL_COMMISSION) + HistoryDealGetDouble(t, DEAL_SWAP);
+      lastNet    = SplitNetOf((ulong)HistoryDealGetInteger(t, DEAL_POSITION_ID),
+                              HistoryDealGetDouble(t, DEAL_PROFIT) + HistoryDealGetDouble(t, DEAL_COMMISSION) + HistoryDealGetDouble(t, DEAL_SWAP));
       lastTime   = (datetime)HistoryDealGetInteger(t, DEAL_TIME);
       lastSymbol = HistoryDealGetString(t, DEAL_SYMBOL);
       return;
@@ -1657,7 +1804,9 @@ int JrnLossStreak()
       ulong t = HistoryDealGetTicket(i);
       if(t == 0) continue;
       if((ENUM_DEAL_ENTRY)HistoryDealGetInteger(t, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
-      double net = HistoryDealGetDouble(t, DEAL_PROFIT) + HistoryDealGetDouble(t, DEAL_COMMISSION) + HistoryDealGetDouble(t, DEAL_SWAP);
+      ulong lsPos = (ulong)HistoryDealGetInteger(t, DEAL_POSITION_ID);
+      if(SplitIsFollower(lsPos)) continue;
+      double net = SplitNetOf(lsPos, HistoryDealGetDouble(t, DEAL_PROFIT) + HistoryDealGetDouble(t, DEAL_COMMISSION) + HistoryDealGetDouble(t, DEAL_SWAP));
       if(net < 0) streak++;
       else break;
    }
@@ -1671,7 +1820,7 @@ int JrnTradesToday()
    {
       ulong t = HistoryDealGetTicket(i);
       if(t == 0) continue;
-      if((ENUM_DEAL_ENTRY)HistoryDealGetInteger(t, DEAL_ENTRY) == DEAL_ENTRY_IN) n++;
+      if((ENUM_DEAL_ENTRY)HistoryDealGetInteger(t, DEAL_ENTRY) == DEAL_ENTRY_IN && !SplitIsFollower((ulong)HistoryDealGetInteger(t, DEAL_POSITION_ID))) n++;
    }
    return n;
 }
@@ -1683,7 +1832,7 @@ int JrnEntriesWithin(int minutes)
    {
       ulong t = HistoryDealGetTicket(i);
       if(t == 0) continue;
-      if((ENUM_DEAL_ENTRY)HistoryDealGetInteger(t, DEAL_ENTRY) == DEAL_ENTRY_IN) n++;
+      if((ENUM_DEAL_ENTRY)HistoryDealGetInteger(t, DEAL_ENTRY) == DEAL_ENTRY_IN && !SplitIsFollower((ulong)HistoryDealGetInteger(t, DEAL_POSITION_ID))) n++;
    }
    return n;
 }
@@ -1696,7 +1845,11 @@ double JrnAvgVolume(int lookback)
       ulong t = HistoryDealGetTicket(i);
       if(t == 0) continue;
       if((ENUM_DEAL_ENTRY)HistoryDealGetInteger(t, DEAL_ENTRY) != DEAL_ENTRY_IN) continue;
-      sum += HistoryDealGetDouble(t, DEAL_VOLUME);
+      ulong avPos = (ulong)HistoryDealGetInteger(t, DEAL_POSITION_ID);
+      ulong avIds[];
+      int avN = SplitGroup(avPos, avIds);
+      if(avN > 1 && avIds[0] != avPos) continue;
+      sum += (avN > 1 ? SplitInVolume(avIds) : HistoryDealGetDouble(t, DEAL_VOLUME));
       n++;
    }
    return (n > 0) ? sum / n : 0;
@@ -1705,6 +1858,28 @@ int JrnFindLive(ulong posId)
 {
    for(int i = 0; i < ArraySize(g_jrnLive); i++) if(g_jrnLive[i].posId == posId) return i;
    return -1;
+}
+// 2nd, 3rd... order of a split trade whose first order the journal already tracks: it is not a trade of its own
+bool JrnIsFollower(ulong ticket)
+{
+   if(!PositionSelectByTicket(ticket)) return false;
+   ulong mg = (ulong)PositionGetInteger(POSITION_MAGIC);
+   if(mg == 0) return false;
+   string sym = PositionGetString(POSITION_SYMBOL);
+   int ty = (int)PositionGetInteger(POSITION_TYPE);
+   long ot = PositionGetInteger(POSITION_TIME);
+   for(int i = 0; i < ArraySize(g_jrnLive); i++)
+      if(g_jrnLive[i].magic == mg && g_jrnLive[i].symbol == sym && g_jrnLive[i].type == ty &&
+         MathAbs((long)g_jrnLive[i].openTime - ot) <= SPLIT_WINDOW_SEC) return true;
+   return false;
+}
+// the tracked order is closed but other orders of its split trade are still open: the trade is not finished
+bool JrnGroupStillOpen(int i)
+{
+   if(g_jrnLive[i].magic == 0) return false;
+   if(!HistorySelect(g_jrnLive[i].openTime - 60, TimeCurrent() + 60)) return false;
+   ulong ids[];
+   return (SplitGroup(g_jrnLive[i].posId, ids) > 1 && SplitGroupOpen(ids));
 }
 string JrnLiveToLine(int i)
 {
@@ -2004,7 +2179,7 @@ void JrnOnOpen(ulong ticket)
    {
       double tickVal = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
       double tickSz  = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
-      if(tickSz > 0) riskUsd = MathAbs(price - sl) / tickSz * tickVal * vol;
+      if(tickSz > 0) riskUsd = MathAbs(price - sl) / tickSz * tickVal * SplitOpenVolume(ticket);
    }
    double riskPct = (balance > 0) ? (riskUsd / balance) * 100.0 : 0.0;
    double plannedRR = 0.0;
@@ -2065,7 +2240,7 @@ void JrnOnOpen(ulong ticket)
    }
    if(JrnLossStreak() >= 3)               tags = JrnAddTag(tags, "tilt-streak");
    double avgVol = JrnAvgVolume(10);
-   if(avgVol > 0 && vol >= avgVol * 1.8) tags = JrnAddTag(tags, "size-spike");
+   if(avgVol > 0 && SplitOpenVolume(ticket) >= avgVol * 1.8) tags = JrnAddTag(tags, "size-spike");
    for(int i = 0; i < ArraySize(g_jrnLive); i++)
    {
       if(g_jrnLive[i].ticket == ticket) continue;
@@ -2120,23 +2295,41 @@ void JrnOnClose(int liveIdx)
    datetime closeTime = 0;
    int outDeals = 0;
    string closeMethod = "manual";
+   double recVol = g_jrnLive[liveIdx].volume;
    if(HistorySelect(g_jrnLive[liveIdx].openTime - 60, TimeCurrent() + 60))
    {
+      ulong grp[];
+      int nGrp = SplitGroup(posId, grp);   // split orders = one trade: money of every order, prices of the tracked order
       for(int i = 0; i < HistoryDealsTotal(); i++)
       {
          ulong t = HistoryDealGetTicket(i);
          if(t == 0) continue;
-         if((long)HistoryDealGetInteger(t, DEAL_POSITION_ID) != (long)posId) continue;
          if((ENUM_DEAL_ENTRY)HistoryDealGetInteger(t, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+         ulong dp = (ulong)HistoryDealGetInteger(t, DEAL_POSITION_ID);
+         bool inGrp = false;
+         for(int j = 0; j < nGrp && !inGrp; j++) inGrp = (grp[j] == dp);
+         if(!inGrp) continue;
          net        += HistoryDealGetDouble(t, DEAL_PROFIT);
          commission += HistoryDealGetDouble(t, DEAL_COMMISSION);
          swap       += HistoryDealGetDouble(t, DEAL_SWAP);
+         if((datetime)HistoryDealGetInteger(t, DEAL_TIME) > closeTime) closeTime = (datetime)HistoryDealGetInteger(t, DEAL_TIME);
+         if(dp != posId) continue;
          closePrice  = HistoryDealGetDouble(t, DEAL_PRICE);
-         closeTime   = (datetime)HistoryDealGetInteger(t, DEAL_TIME);
          ulong mg    = (ulong)HistoryDealGetInteger(t, DEAL_MAGIC);
          int   rs    = (int)HistoryDealGetInteger(t, DEAL_REASON);
          closeMethod = OpenMethodKey(rs, mg);
          outDeals++;
+      }
+      if(nGrp > 1)
+      {
+         recVol = SplitInVolume(grp);
+         double tkSz = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE), tkVal = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
+         if(g_jrnLive[liveIdx].initSL > 0 && tkSz > 0)
+         {
+            double oldRisk = g_jrnLive[liveIdx].riskUsd;
+            g_jrnLive[liveIdx].riskUsd = MathAbs(g_jrnLive[liveIdx].openPrice - g_jrnLive[liveIdx].initSL) / tkSz * tkVal * recVol;
+            if(oldRisk > 0) g_jrnLive[liveIdx].riskPct *= g_jrnLive[liveIdx].riskUsd / oldRisk;
+         }
       }
    }
    if(closeTime == 0) closeTime = TimeCurrent();
@@ -2184,7 +2377,7 @@ void JrnOnClose(int liveIdx)
       "\"spreadPts\":%.1f,\"strategy\":\"%s\",\"session\":\"%s\",\"exit\":\"%s\",\"closedBy\":\"%s\","
       "\"shotOpen\":\"%s\",\"shotClose\":\"%s\",\"tags\":%s,"
       "\"rulesArmed\":%s,\"rulesDone\":%s}",
-      posId, symbol, (g_jrnLive[liveIdx].type == 0 ? "BUY" : "SELL"), g_jrnLive[liveIdx].volume,
+      posId, symbol, (g_jrnLive[liveIdx].type == 0 ? "BUY" : "SELL"), recVol,
       g_jrnLive[liveIdx].openPrice, closePrice,
       g_jrnLive[liveIdx].initSL, g_jrnLive[liveIdx].initTP, g_jrnLive[liveIdx].curSL,
       TimeToString(g_jrnLive[liveIdx].openTime, TIME_DATE | TIME_SECONDS),
@@ -2210,7 +2403,7 @@ void JrnPoll()
       if(!PositionSelectByTicket(ticket)) continue;
       ulong posId = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
       int idx = JrnFindLive(posId);
-      if(idx < 0) { JrnOnOpen(ticket); liveChanged = true; continue; }
+      if(idx < 0) { if(JrnIsFollower(ticket)) continue; JrnOnOpen(ticket); liveChanged = true; continue; }
       double sl  = PositionGetDouble(POSITION_SL);
       double vol = PositionGetDouble(POSITION_VOLUME);
       if(MathAbs(sl - g_jrnLive[idx].curSL) > SymbolInfoDouble(g_jrnLive[idx].symbol, SYMBOL_POINT))
@@ -2240,6 +2433,7 @@ void JrnPoll()
    for(int i = ArraySize(g_jrnLive) - 1; i >= 0; i--)
    {
       if(PositionSelectByTicket(g_jrnLive[i].ticket)) continue;
+      if(JrnGroupStillOpen(i)) continue;
       JrnOnClose(i);
       for(int j = i; j < ArraySize(g_jrnLive) - 1; j++) g_jrnLive[j] = g_jrnLive[j + 1];
       ArrayResize(g_jrnLive, ArraySize(g_jrnLive) - 1);
@@ -2279,6 +2473,8 @@ void JrnOnEnableChanged()
 }
 
 
+#endif // HS_PANEL_ONLY
+
 //+==================================================================+
 //|  SECTION 4: LIQUIDITY HUNTER BIAS GATE                           |
 //|  Scanner panel + trade lock fed by Liquidity Hunter              |
@@ -2287,13 +2483,25 @@ void JrnOnEnableChanged()
 //+==================================================================+
 #ifndef HS_BIASGATE_MQH
 #define HS_BIASGATE_MQH
-
 #define HSG_NF 6
-
 #define HSG_SALT  "HeySolo-ACHCM-9f3K#2026"
+bool g_sideChart = false;   // true = this EA instance runs on a side chart opened from the Liquidity Hunter panel (Trade/Run/Tools panels + manual trading only)
+#define HS_SIDE_TPL_FILE   "Hey Solo\\HS_SideChart.tpl"           // under MQL5\Files
+#define HS_SIDE_TPL_APPLY  "\\Files\\Hey Solo\\HS_SideChart.tpl"   // same file as ChartSaveTemplate / ChartApplyTemplate want it (relative to MQL5)
+#define HS_SIDE_TPL_APPLY2 "/Files/Hey Solo/HS_SideChart.tpl"
+#define HS_SIDE_MARK       "HSGM_Side"   // hidden stamp saved with a side chart, so it is recognised again after a terminal restart
+string HS_SideGV(const long cid) { return "HSSIDE_" + IntegerToString(cid); }   // terminal variable the main EA sets right before it applies the template
+void HS_SideMark()
+{
+   if(ObjectFind(0, HS_SIDE_MARK) >= 0) return;
+   if(!ObjectCreate(0, HS_SIDE_MARK, OBJ_LABEL, 0, 0, 0)) return;
+   ObjectSetInteger(0, HS_SIDE_MARK, OBJPROP_COLOR, clrNONE);
+   ObjectSetString (0, HS_SIDE_MARK, OBJPROP_TEXT, " ");
+   ObjectSetInteger(0, HS_SIDE_MARK, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, HS_SIDE_MARK, OBJPROP_HIDDEN, true);
+   ObjectSetString (0, HS_SIDE_MARK, OBJPROP_TOOLTIP, "\n");
+}
 
-// Required rules are set by the admin in Liquidity Hunter (Control Center > Hey Solo Rules) and arrive
-// inside the signed feed (a[2] bits 1..6 = rule OFF). Nothing here can be changed by the Hey Solo user.
 
 #define HSG_LOCK_TF       false   // true = only accept the TFs below (old behaviour). false = accept any TF Liquidity Hunter publishes (the feed is signed, TFs cannot be faked)
 #define HSG_TF_BIAS       PERIOD_D1
@@ -2312,6 +2520,7 @@ void JrnOnEnableChanged()
 #define HSG_MAXROWS    40
 
 #define HSG_OPFX         "HSGO_"
+#define HSG_LPFX         "HSGL_"   // Steps legend card (must NOT start with "HSG_")
 #define HSG_OBJ_LOCAL_MS 2000
 #define HSG_OBJ_API_MS   10000
 #define HSG_OBJ_MAXAGE   3600
@@ -2413,6 +2622,13 @@ string   HSG_objLocalBody = "";
 int      HSG_objLocalOff = 0, HSG_objApiOff = 0;
 bool     HSG_objLocalOk = false;
 string   HSG_objLog = "";
+string   HSG_tplName = "";            // template applied to charts opened from the panel ("" = none / default)
+bool     HSG_tplOpen = false;         // drop-down list is open
+int      HSG_tplOff = 0;              // first visible item of the list
+string   HSG_tplList[];               // templates found (*.tpl)
+ulong    HSG_tplScanAt = 0;
+#define  HSG_TPL_DIR   "Hey Solo\\Templates"   // MQL5\Files\Hey Solo\Templates = junction/copy of MQL5\Profiles\Templates
+#define  HSG_TPL_VIS   10
 int      HSG_open[];                 // per row: -1 n/a at broker, 0 chart closed, 1 chart open, 2 = this chart
 string   HSG_lsKey[], HSG_lsVal[];   // cache feed symbol -> broker symbol
 
@@ -2580,55 +2796,151 @@ string HSG_ApiURL()
    return u;
 }
 
+//==================== Liquidity Hunter link: the network work is done by HeySolo_Bridge ====================
+// This EA NEVER calls WebRequest for the feed link (a slow/blocked link used to freeze the whole EA).
+// It only writes a small request file and reads the answer files that HeySolo_Bridge writes into the Common folder.
+#define HSG_RL_DIR "HeySolo_LHRelay"
+#define HSG_RL_GV  "HSBridge_Alive"
+
+int    HSG_rlUrgent  = 0;
+ulong  HSG_rlUrgentAt = 0;
+ulong  HSG_rlWriteAt = 0;
+string HSG_rlSig     = "";
+bool   HSG_rlHadReq  = false;
+long   HSG_rlFeedOk  = 0;       // time of the last feed answer already taken
+
+void HSG_RlWriteReq(const bool force);
+
+string HSG_RlSafe(const string s)
+{
+   string o = "";
+   int n = StringLen(s);
+   for(int i = 0; i < n; i++)
+   {
+      ushort ch = StringGetCharacter(s, i);
+      bool ok = (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_' || ch == '-';   // no '.': "EURUSD." would make "..rsp" and MT5 refuses file names with ".."
+      o += ok ? ShortToString(ch) : "_";
+   }
+   return o;
+}
+
+string HSG_RlLogin()   { return IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)); }
+string HSG_RlReqPath() { return HSG_RL_DIR + "\\req_" + HSG_RlLogin() + ".txt"; }
+string HSG_RlFeedPath(){ return HSG_RL_DIR + "\\feed_" + HSG_RlLogin() + ".rsp"; }
+string HSG_RlObjPath(const string sym) { return HSG_RL_DIR + "\\obj_" + HSG_RlLogin() + "_" + HSG_RlSafe(sym) + ".rsp"; }
+
+// answer file = "#BR_*" header lines + the server answer
+bool HSG_RlRead(const string path, string &body, int &code, long &okAt, long &tryAt, string &err)
+{
+   body = ""; code = 0; okAt = 0; tryAt = 0; err = "";
+   int h = FileOpen(path, FILE_READ | FILE_BIN | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE) return false;
+   uchar a[];
+   FileReadArray(h, a);
+   FileClose(h);
+   if(ArraySize(a) == 0) return false;
+   string s = CharArrayToString(a, 0, WHOLE_ARRAY, CP_UTF8);
+   int pos = 0, n = StringLen(s);
+   while(pos < n && StringSubstr(s, pos, 4) == "#BR_")
+   {
+      int e = StringFind(s, "\n", pos);
+      if(e < 0) e = n;
+      string ln = StringSubstr(s, pos, e - pos);
+      StringReplace(ln, "\r", "");
+      if(StringFind(ln, "#BR_CODE=") == 0)     code  = (int)StringToInteger(StringSubstr(ln, 9));
+      else if(StringFind(ln, "#BR_AT=") == 0)  okAt  = StringToInteger(StringSubstr(ln, 7));
+      else if(StringFind(ln, "#BR_TRY=") == 0) tryAt = StringToInteger(StringSubstr(ln, 8));
+      else if(StringFind(ln, "#BR_ERR=") == 0) err   = StringSubstr(ln, 8);
+      pos = e + 1;
+   }
+   body = (pos < n ? StringSubstr(s, pos) : "");
+   return true;
+}
+
+bool HSG_RlBridgeAlive(const long tryAt)
+{
+   if(GlobalVariableCheck(HSG_RL_GV) && (TimeLocal() - (datetime)GlobalVariableGet(HSG_RL_GV)) < 60) return true;
+   return (tryAt > 0 && (long)TimeLocal() - tryAt < HSG_PollMs() / 1000 + 60);
+}
+
+// The Liquidity Hunter link settings (feed URL, check interval, draw objects) are set in the HeySolo_Bridge inputs;
+// the Bridge publishes them in HeySolo_LHRelay\cfg.txt and this EA only follows that file.
+ulong HSG_cfgAt = 0;
+void HSG_CfgSync()
+{
+   ulong now = GetTickCount64();
+   if(HSG_cfgAt != 0 && now - HSG_cfgAt < 2000) return;
+   HSG_cfgAt = now;
+   int h = FileOpen(HSG_RL_DIR + "\\cfg.txt", FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE) return;
+   string url = LHURL;
+   int poll = LHPollSec;
+   bool obj = LHObjects;
+   while(!FileIsEnding(h))
+   {
+      string ln = HSG_Trim(FileReadString(h));
+      int e = StringFind(ln, "=");
+      if(e <= 0) continue;
+      string k = StringSubstr(ln, 0, e), v = HSG_Trim(StringSubstr(ln, e + 1));
+      if(k == "URL") url = v;
+      else if(k == "POLLSEC") poll = (int)StringToInteger(v);
+      else if(k == "OBJECTS") obj = (v == "1");
+   }
+   FileClose(h);
+   LHURL = url;
+   LHPollSec = (poll < 2 ? 2 : (poll > 3600 ? 3600 : poll));
+   LHObjects = obj;
+}
+
 void HSG_ApiPoll(const bool urgent)
 {
    string url = HSG_ApiURL();
    if(url != HSG_apiLastURL)
    {
       HSG_apiLastURL = url; HSG_apiBody = ""; HSG_apiErr = ""; HSG_apiOk = true; HSG_apiTry = 0; HSG_apiAt = 0;
-
+      HSG_rlFeedOk = 0; HSG_rlSig = "";
    }
-   if(url == "") return;
-   if(!HSG_apiOk && TimeLocal() < HSG_apiFailAt + HSG_API_COOLDOWN) return;
+   if(url == "") { HSG_RlWriteReq(false); return; }
+
    ulong now = GetTickCount64();
-   if(HSG_apiTry != 0 && now - HSG_apiTry < (ulong)(urgent ? 1000 : HSG_PollMs())) return;
+   bool forceReq = false;
+   if(urgent && now - HSG_rlUrgentAt > 3000) { HSG_rlUrgentAt = now; HSG_rlUrgent++; forceReq = true; }   // ask the Bridge for a fresh answer (it answers in the background)
+   HSG_RlWriteReq(forceReq);
+
+   if(HSG_apiTry != 0 && now - HSG_apiTry < 1000) return;
    HSG_apiTry = now;
 
-   char   data[], result[];
-   string rh;
-   ResetLastError();
-
-   int res = WebRequest("GET", url + "?l=" + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)),
-                        "Accept: text/plain\r\nAccept-Encoding: identity\r\nCache-Control: no-cache\r\n",
-                        HSG_API_TIMEOUT, data, result, rh);
-   int err = GetLastError();
-   if(res == 200)
+   string body, err;
+   int code; long okAt, tryAt;
+   bool have = HSG_RlRead(HSG_RlFeedPath(), body, code, okAt, tryAt, err);
+   if(!HSG_RlBridgeAlive(have ? tryAt : 0))
    {
-      HSG_apiBody = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
-      if(!HSG_apiOk || HSG_apiAt == 0) HSG_repKey = "";
-      HSG_apiFresh = true;
-      HSG_apiAt   = GetTickCount64();
-      HSG_apiOk   = true;
-      HSG_apiErr  = "";
+      string why = "HeySolo_Bridge is not running - attach it once on any chart (it fetches the feed link so this EA never waits for the network)";
+      if(why != HSG_apiErr) Print("❌ Bias Gate: Liquidity Hunter API - ", why);
+      HSG_repKey = ""; HSG_apiErr = why; HSG_apiOk = false;
       return;
    }
-   string why;
-   string ans = (res > 0 ? CharArrayToString(result, 0, (int)MathMin(ArraySize(result), 512), CP_UTF8) : "");
-   bool   ours = (StringFind(ans, "HSFEED") >= 0);
-   if(res == -1 && err == 4014)  why = "WebRequest not allowed: Tools > Options > Expert Advisors, add " + HSG_Origin(url);
-   else if(res == -1)            why = "feed server unreachable";
-   else if(res == 403 && ours)   why = (StringFind(ans, "paused") >= 0 ? "feed link paused by the owner" : "invalid or revoked feed link");
-   else if(res == 403)           why = "blocked by Cloudflare (Bot Fight Mode / WAF)";
-   else if(res == 404)           why = "wrong feed link";
-   else if(res == 521 || res == 522 || res == 523) why = "feed server is down (HTTP " + IntegerToString(res) + ")";
-   else if(res == 525 || res == 526) why = "feed server SSL setup (HTTP " + IntegerToString(res) + ")";
-   else if(res >= 1000 && res < 1100) why = "secure connection to " + HSG_Origin(url) + " failed (MT5 code ";
-   else                          why = "HTTP " + IntegerToString(res);
-   if(why != HSG_apiErr) Print("❌ Bias Gate: Liquidity Hunter API - ", why, " (error ", err, "). Retry in ", HSG_API_COOLDOWN, "s");
+   if(!have) { if(HSG_apiErr != "" && HSG_apiAt == 0) { HSG_apiErr = ""; HSG_apiOk = true; } return; }   // Bridge is up, first answer not there yet
+
+   if(code == 200)
+   {
+      if(okAt == HSG_rlFeedOk && HSG_apiOk) return;                  // nothing new
+      long ageSec = (long)TimeLocal() - okAt;
+      if(ageSec < 0) ageSec = 0;
+      if(!HSG_apiOk || HSG_apiAt == 0) HSG_repKey = "";
+      HSG_rlFeedOk = okAt;
+      HSG_apiBody  = body;
+      HSG_apiFresh = true;
+      HSG_apiAt    = now - (ulong)ageSec * 1000;
+      HSG_apiOk    = true;
+      HSG_apiErr   = "";
+      return;
+   }
+   string why2 = (err != "" ? err : "HTTP " + IntegerToString(code));
+   if(why2 != HSG_apiErr) Print("❌ Bias Gate: Liquidity Hunter API - ", why2, " (reported by HeySolo_Bridge)");
    HSG_repKey = "";
-   HSG_apiErr    = why;
-   HSG_apiOk     = false;
-   HSG_apiFailAt = TimeLocal();
+   HSG_apiErr = why2;
+   HSG_apiOk  = false;
 }
 
 void HSG_ReadApi(HSGFeed &rows[])
@@ -2664,7 +2976,7 @@ void HSG_ReadApi(HSGFeed &rows[])
 
 string HSG_NoFeedWhy()
 {
-   if(HSG_ApiURL() == "") return "Liquidity Hunter is not running";
+   if(HSG_ApiURL() == "") return "Liquidity Hunter is not running (local file missing; a remote feed link is set in the HeySolo_Bridge inputs)";
    if(HSG_apiErr != "")   return "Liquidity Hunter API: " + HSG_apiErr;
    return "Liquidity Hunter is not sending (API)";
 }
@@ -2751,13 +3063,14 @@ string HSG_Reason(const HSGFeed &f, const int dir)
 string HSG_CurWhy(const int dir)
 {
    if(ArraySize(HSG_rows) == 0) return HSG_NoFeedWhy();
-   if(HSG_cur < 0) return HSG_Sym() + " is not in Liquidity Hunter symbols";
+   if(HSG_cur < 0) return "";   // symbol is not in the feed: Liquidity Hunter has no say about it (not filtered)
    return HSG_Reason(HSG_rows[HSG_cur], dir);
 }
 
 bool HSG_AllowTrade(const string symbol, const ENUM_ORDER_TYPE type)
 {
    if(!HSG_Active()) return true;
+   if(g_sideChart) HSG_CfgSync();   // side chart never runs HSG_OnTimer: read the feed link / interval here
 
    int dir = HSG_Dir(type);
    HSG_ApiPoll(true);
@@ -2766,7 +3079,7 @@ bool HSG_AllowTrade(const string symbol, const ENUM_ORDER_TYPE type)
    int r = HSG_FindRow(rows, symbol);
    string why;
    if(ArraySize(rows) == 0) why = HSG_NoFeedWhy();
-   else if(r < 0)           why = symbol + " is not in Liquidity Hunter symbols";
+   else if(r < 0)           why = "";   // symbol not in the feed: not filtered
    else                     why = HSG_Reason(rows[r], dir);
    if(why == "") return true;
 
@@ -2859,6 +3172,46 @@ int HSG_ChartState(const string fs, long &cid)
    return 0;
 }
 
+string  HSG_pendSym = "", HSG_pendLoc = "";      // chart open requested by a click (done later from the timer)
+ENUM_TIMEFRAMES HSG_pendTF = PERIOD_CURRENT;
+ulong   HSG_pendAt = 0;
+long    HSG_newCid = -1;                          // chart we opened last (objects wait until it has loaded)
+ulong   HSG_newAt = 0;
+
+// OWN CHARTS: the received Liquidity Hunter objects (and the Steps legend) are drawn ONLY on charts this EA opened itself with the
+// panel's symbol button. Any other chart (the EA chart, charts the user opened by hand, other EAs' charts) never gets them.
+// The EA remembers its charts in HSG_ownId[] and also stamps each one with a hidden marker object, so they are still
+// recognised after the EA is reloaded / the terminal is restarted (chart objects are saved with the chart).
+#define HSG_OWN_MARK        "HSGM_Own"    // must NOT start with HSGO_ / HSGL_ (those are wiped by HSG_ObjClear)
+#define HSG_OBJ_ON_EA_CHART false         // true = the chart the EA itself runs on also gets the objects (old behaviour for that chart)
+long    HSG_ownId[];
+
+void HSG_OwnAdd(const long cid)
+{
+   for(int i = 0; i < ArraySize(HSG_ownId); i++) if(HSG_ownId[i] == cid) return;
+   int n = ArraySize(HSG_ownId);
+   ArrayResize(HSG_ownId, n + 1);
+   HSG_ownId[n] = cid;
+}
+
+bool HSG_IsOwn(const long cid)
+{
+   for(int i = 0; i < ArraySize(HSG_ownId); i++) if(HSG_ownId[i] == cid) return true;
+   if(ObjectFind(cid, HSG_OWN_MARK) >= 0) { HSG_OwnAdd(cid); return true; }   // opened by this EA before a reload
+   return false;
+}
+
+void HSG_OwnMark(const long cid)          // invisible stamp; recreated if a template wiped it
+{
+   if(ObjectFind(cid, HSG_OWN_MARK) >= 0) return;
+   if(!ObjectCreate(cid, HSG_OWN_MARK, OBJ_LABEL, 0, 0, 0)) return;
+   ObjectSetInteger(cid, HSG_OWN_MARK, OBJPROP_COLOR, clrNONE);
+   ObjectSetString (cid, HSG_OWN_MARK, OBJPROP_TEXT, " ");
+   ObjectSetInteger(cid, HSG_OWN_MARK, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(cid, HSG_OWN_MARK, OBJPROP_HIDDEN, true);
+   ObjectSetString (cid, HSG_OWN_MARK, OBJPROP_TOOLTIP, "\n");
+}
+
 void HSG_ToggleChart(const string fs)
 {
    long cid;
@@ -2871,6 +3224,10 @@ void HSG_ToggleChart(const string fs)
       return;
    }
    if(st == 2) return;                       // this chart: nothing to open/close
+#ifdef HS_PANEL_ONLY
+   if(st == 1) ChartSetInteger(cid, CHART_BRING_TO_TOP, true);   // Liquidity Hunter owns its side charts: just bring to front
+   return;
+#endif
    if(st == 1)
    {
       if(!ChartClose(cid)) Print("Liquidity Hunter: could not close the chart of ", fs, " (error ", GetLastError(), ")");
@@ -2878,14 +3235,66 @@ void HSG_ToggleChart(const string fs)
    }
    string s = HSG_LocalSymC(fs);
    SymbolSelect(s, true);
-   long id = ChartOpen(s, (ENUM_TIMEFRAMES)Period());
-   if(id > 0) ChartSetInteger(id, CHART_BRING_TO_TOP, true);
-   else Print("Liquidity Hunter: could not open the chart of ", s, " (error ", GetLastError(), ")");
+   ENUM_TIMEFRAMES otf = (ENUM_TIMEFRAMES)Period();          // fallback: current chart TF
+   for(int i = 0; i < ArraySize(HSG_rows); i++)
+      if(HSG_rows[i].sym == fs)
+      {
+         ENUM_TIMEFRAMES ft = (ENUM_TIMEFRAMES)HSG_rows[i].tf[3];   // tf[3] = the "CISD <TF>" (execution) column, e.g. M3
+         if(StringFind(EnumToString(ft), "PERIOD_") == 0) otf = ft;
+         break;
+      }
+   // ChartOpen inside a click event (with the history not loaded yet) froze the whole EA: only queue it here
+   HSG_pendSym = fs; HSG_pendLoc = s; HSG_pendTF = otf; HSG_pendAt = GetTickCount64();
+}
+
+struct HSGObjSym            // per feed symbol: local-file + API object cache
+{
+   string sym;
+   string apiBody; int apiOff; ulong apiAt; ulong apiTry;
+   string locBody; int locOff; bool locOk; ulong locAt;
+   ulong reqAt; long rlOk;     // reqAt: last time this symbol was wanted from the Bridge, rlOk: time of the Bridge answer already taken
+};
+HSGObjSym HSG_osy[];
+long      HSG_ochId[];      // chart ids that currently carry LH objects (EA chart + side charts)
+string    HSG_ochSig[];     // last drawn signature per chart
+
+int HSG_ObjSymSlot(const string sym)
+{
+   int n = ArraySize(HSG_osy);
+   for(int i = 0; i < n; i++) if(HSG_osy[i].sym == sym) return i;
+   ArrayResize(HSG_osy, n + 1);
+   HSG_osy[n].sym = sym;
+   HSG_osy[n].apiBody = ""; HSG_osy[n].apiOff = 0; HSG_osy[n].apiAt = 0; HSG_osy[n].apiTry = 0;
+   HSG_osy[n].locBody = ""; HSG_osy[n].locOff = 0; HSG_osy[n].locOk = false; HSG_osy[n].locAt = 0;
+   HSG_osy[n].reqAt = 0; HSG_osy[n].rlOk = 0;
+   return n;
+}
+
+int HSG_ObjChartIdx(const long cid)
+{
+   int n = ArraySize(HSG_ochId);
+   for(int i = 0; i < n; i++) if(HSG_ochId[i] == cid) return i;
+   return -1;
+}
+
+void HSG_ObjChartDrop(const int i)
+{
+   int n = ArraySize(HSG_ochId);
+   if(i < 0 || i >= n) return;
+   for(int k = i; k < n - 1; k++) { HSG_ochId[k] = HSG_ochId[k + 1]; HSG_ochSig[k] = HSG_ochSig[k + 1]; }
+   ArrayResize(HSG_ochId, n - 1);
+   ArrayResize(HSG_ochSig, n - 1);
 }
 
 void HSG_ObjClear()
 {
-   ObjectsDeleteAll(0, HSG_OPFX);
+   for(long c = ChartFirst(); c >= 0; c = ChartNext(c))
+   {
+      int dn = ObjectsDeleteAll(c, HSG_OPFX) + ObjectsDeleteAll(c, HSG_LPFX);
+      if(dn > 0 && c != ChartID()) ChartRedraw(c);
+   }
+   ArrayResize(HSG_ochId, 0);
+   ArrayResize(HSG_ochSig, 0);
    HSG_objSig = "";
 }
 
@@ -2901,18 +3310,19 @@ string HSG_ObjSection(const string body, const string sym, int &off)
       if(s == "") continue;
       if(StringFind(s, "#GMTOFF=") == 0) { off = (int)StringToInteger(StringSubstr(s, 8)); continue; }
       if(StringFind(s, "#S=") == 0) { inSec = (StringSubstr(s, 3) == sym); continue; }
-      if(inSec && StringFind(s, "O|") == 0) out += s + "\n";
+      if(inSec && (StringFind(s, "O|") == 0 || StringFind(s, "L|") == 0)) out += s + "\n";
    }
    return out;
 }
 
-void HSG_ObjReadLocal(const string sym)
+void HSG_ObjReadLocal(const int k)
 {
    ulong now = GetTickCount64();
-   if(HSG_objLocalAt != 0 && now - HSG_objLocalAt < HSG_OBJ_LOCAL_MS && sym == HSG_objSym) return;
-   HSG_objLocalAt = now;
-   HSG_objLocalOk = false;
-   HSG_objLocalBody = "";
+   if(HSG_osy[k].locAt != 0 && now - HSG_osy[k].locAt < HSG_OBJ_LOCAL_MS) return;
+   string sym = HSG_osy[k].sym;
+   HSG_osy[k].locAt = now;
+   HSG_osy[k].locOk = false;
+   HSG_osy[k].locBody = "";
    long bestTs = 0;
    string fn;
    long hf = FileFindFirst(HSG_DIR + "\\objs_*.txt", fn, FILE_COMMON);
@@ -2936,64 +3346,396 @@ void HSG_ObjReadLocal(const string sym)
       if(sec == "" && StringFind(body, "#S=" + sym + "\n") < 0) continue;
       if(HSG_ApiURL() != "" && (sec == "" || (long)TimeLocal() - ts > HSG_OBJ_LOCAL_FRESH)) continue;
       bestTs = ts;
-      HSG_objLocalBody = sec;
-      HSG_objLocalOff  = off;
-      HSG_objLocalOk   = true;
+      HSG_osy[k].locBody = sec;
+      HSG_osy[k].locOff  = off;
+      HSG_osy[k].locOk   = true;
    }
    while(FileFindNext(hf, fn));
    FileFindClose(hf);
 }
 
-void HSG_ObjPollApi(const string sym)
+void HSG_RlWriteReq(const bool force)
+{
+   if(g_sideChart) return;   // side chart: only the main EA writes the request file (a second writer would drop its symbols)
+   string url = HSG_ApiURL();
+   string path = HSG_RlReqPath();
+   if(url == "")
+   {
+      if(HSG_rlHadReq) { FileDelete(path, FILE_COMMON); HSG_rlHadReq = false; HSG_rlSig = ""; }
+      return;
+   }
+   ulong now = GetTickCount64();
+   if(HSG_rlWriteAt != 0 && now - HSG_rlWriteAt < 1000) return;
+   string syms = "";
+   for(int i = 0; i < ArraySize(HSG_osy); i++)
+      if(HSG_osy[i].reqAt != 0 && now - HSG_osy[i].reqAt < 30000) syms += "SYM=" + HSG_osy[i].sym + "\n";
+   string sig = url + "|" + IntegerToString(HSG_PollMs()) + "|" + IntegerToString(HSG_rlUrgent) + "|" + syms;
+   if(!force && sig == HSG_rlSig && HSG_rlWriteAt != 0 && now - HSG_rlWriteAt < 5000) return;   // unchanged: only a heartbeat every 5 s
+   string txt = "STAMP=" + IntegerToString((long)TimeLocal()) + "\nURL=" + url + "\nLOGIN=" + HSG_RlLogin()
+              + "\nPOLLMS=" + IntegerToString(HSG_PollMs()) + "\nOBJMS=" + IntegerToString(HSG_OBJ_API_MS)
+              + "\nURGENT=" + IntegerToString(HSG_rlUrgent) + "\n" + syms;
+   FolderCreate(HSG_RL_DIR, FILE_COMMON);
+   string tmp = path + ".tmp";
+   int fh = FileOpen(tmp, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON);
+   if(fh == INVALID_HANDLE) return;
+   FileWriteString(fh, txt);
+   FileClose(fh);
+   if(FileMove(tmp, FILE_COMMON, path, FILE_COMMON | FILE_REWRITE)) { HSG_rlWriteAt = now; HSG_rlSig = sig; HSG_rlHadReq = true; }
+}
+
+// Objects of one symbol: the Bridge fetches them, we only read its answer file (never a WebRequest here).
+void HSG_ObjPollApi(const int k)
 {
    string url = HSG_ApiURL();
    if(url == "") return;
+   string sym = HSG_osy[k].sym;
    ulong now = GetTickCount64();
-   if(sym != HSG_objApiSym) { HSG_objApiSym = sym; HSG_objApiBody = ""; HSG_objApiAt = 0; HSG_objApiTry = 0; }
-   if(HSG_objApiTry != 0 && now - HSG_objApiTry < HSG_OBJ_API_MS) return;
-   HSG_objApiTry = now;
-   char data[], result[];
-   string rh;
-   ResetLastError();
-   int res = WebRequest("GET", url + "?l=" + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + "&o=" + HSG_UrlEnc(sym),
-                        "Accept: text/plain\r\nAccept-Encoding: identity\r\nCache-Control: no-cache\r\n",
-                        HSG_API_TIMEOUT, data, result, rh);
-   int err = GetLastError();
-   if(res != 200) { HSG_ObjLog("❌ LH objects: " + sym + " request failed, HTTP " + IntegerToString(res) + " (error " + IntegerToString(err) + ")"); return; }
-   string body = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+   HSG_osy[k].reqAt = now;
+   if(HSG_osy[k].apiTry != 0 && now - HSG_osy[k].apiTry < 1000) return;
+   HSG_osy[k].apiTry = now;
+
+   string body, err;
+   int code; long okAt, tryAt;
+   if(!HSG_RlRead(HSG_RlObjPath(sym), body, code, okAt, tryAt, err)) return;      // not delivered yet
+   if(code != 200) { HSG_ObjLog("❌ LH objects: " + sym + " - " + (err != "" ? err : "HTTP " + IntegerToString(code)) + " (reported by HeySolo_Bridge)"); return; }
+   if(okAt == HSG_osy[k].rlOk) return;                                             // nothing new since last time
+   HSG_osy[k].rlOk = okAt;
    if(StringFind(body, "HSFEED") < 0) { HSG_ObjLog("❌ LH objects: answer for " + sym + " is not from the feed server (Cloudflare/WAF?)"); return; }
    StringReplace(body, "\r", "");
    int off = 0;
    string tmp = HSG_ObjSection(body, sym, off);
    if(tmp == "" && StringFind(body, "#S=") < 0)
    {
-      // Backward-compatible with older API responses that returned one symbol
-      // without a #S= section.
       string ln[];
       int n0 = StringSplit(body, '\n', ln);
       for(int i = 0; i < n0; i++)
       {
          string s = HSG_Trim(ln[i]);
          if(StringFind(s, "#GMTOFF=") == 0) off = (int)StringToInteger(StringSubstr(s, 8));
-         else if(StringFind(s, "O|") == 0) tmp += s + "\n";
+         else if(StringFind(s, "O|") == 0 || StringFind(s, "L|") == 0) tmp += s + "\n";
       }
    }
    int cnt = 0;
    string outLines[];
    int outN = StringSplit(tmp, '\n', outLines);
    for(int i = 0; i < outN; i++) if(StringFind(HSG_Trim(outLines[i]), "O|") == 0) cnt++;
-   if(StringFind(body, "#S=") < 0)
-      HSG_ObjLog("⚠️ LH objects: the feed server has NO objects file for " + sym + " (objs_*.txt missing: old Liquidity Hunter/bot build on the server)");
-   else if(cnt == 0)
-      HSG_ObjLog("⚠️ LH objects: Liquidity Hunter exports 0 objects for " + sym + " (is its chart open on the LH server?)");
-   else
-      HSG_ObjLog("✅ LH objects: " + IntegerToString(cnt) + " objects for " + sym + " from API");
-   HSG_objApiBody = tmp;
-   HSG_objApiOff  = off;
-   HSG_objApiAt   = now;
+   long ageSec = (long)TimeLocal() - okAt;
+   if(ageSec < 0) ageSec = 0;
+   HSG_osy[k].apiBody = tmp;
+   HSG_osy[k].apiOff  = off;
+   HSG_osy[k].apiAt   = now - (ulong)ageSec * 1000;
 }
 
-void HSG_ObjApply(const string body, const int theirOff)
+string HSG_Dec(const string s)      // "~u" + 4 hex digits per UTF-16 unit  ->  real text (see LHPub_Enc)
+{
+   int n = StringLen(s);
+   if(n < 2 || StringSubstr(s, 0, 2) != "~u") return s;
+   string o = "";
+   for(int i = 2; i + 4 <= n; i += 4)
+   {
+      int v = 0;
+      for(int k = 0; k < 4; k++)
+      {
+         ushort c = StringGetCharacter(s, i + k);
+         int d = (c >= '0' && c <= '9') ? c - '0' : ((c >= 'A' && c <= 'F') ? c - 'A' + 10 : ((c >= 'a' && c <= 'f') ? c - 'a' + 10 : 0));
+         v = v * 16 + d;
+      }
+      o += ShortToString((ushort)v);
+   }
+   return o;
+}
+
+string HSG_TagOf(const string nm, const int pfxLen, string &tail)   // "<pfx><tag>_<tail>"
+{
+   string r = StringSubstr(nm, pfxLen);
+   int u = StringFind(r, "_");
+   if(u < 0) { tail = ""; return r; }
+   tail = StringSubstr(r, u + 1);
+   return StringSubstr(r, 0, u);
+}
+
+string HSG_TfOfName(const string nm, const int from)            // "... <TF> [SYMBOL]"
+{
+   string r = StringSubstr(nm, from);
+   int b = StringFind(r, " [");
+   return (b >= 0 ? StringSubstr(r, 0, b) : r);
+}
+
+// Hover text of a received object: WHAT it is (decoded from the Liquidity Hunter naming), its timeframe / level / zone, and the state.
+string HSG_ObjTip(const string nm, const ENUM_OBJECT t, const string txt, const string srcTip,
+                  const double pr0, const double pr1, const datetime t0, const int dg)
+{
+   string title = "", info = "";
+   string lvl = DoubleToString(pr0, dg);
+   string tail;
+
+   if(StringFind(nm, "StepF_") == 0 || StringFind(nm, "StepR_") == 0 || StringFind(nm, "StepB_") == 0)
+   {
+      ushort kind = StringGetCharacter(nm, 4);                 // F / R / B
+      string tag  = HSG_TagOf(nm, 6, tail);
+      if(StringFind(tail, "Box") == 0)
+      {
+         title = "Back Box " + StringSubstr(tail, 3) + "  ·  " + tag;
+         string stt = (StringFind(srcTip, "(touched)") >= 0 ? "Touched: ended at the first touch" : (StringFind(srcTip, "(open)") >= 0 ? "Open: price has not touched it yet" : ""));
+         info = "Zone " + DoubleToString(MathMin(pr0, pr1), dg) + " – " + DoubleToString(MathMax(pr0, pr1), dg) + (stt != "" ? "\n" + stt : "");
+      }
+      else if(tail == "Apex")
+      {
+         title = (kind == 'R' ? "2nd Apex" : "Apex") + "  ·  " + tag;
+         info  = (kind == 'R' ? "Swing high that restarts the step count" : "Swing high that starts the forward steps") + "\nHigh " + lvl;
+      }
+      else
+      {
+         string w = (kind == 'F' ? "Forward Step " : (kind == 'R' ? "Re-Step " : "Back Step "));
+         title = w + tail + "  ·  " + tag;
+         info  = (kind == 'F' ? "Step after the Apex" : (kind == 'R' ? "Step after the 2nd Apex" : "Step back from the Apex")) + "\nLow " + lvl;
+      }
+   }
+   else if(StringFind(nm, "UnmitUpper_") == 0)
+   { title = "Unmitigated BSL  ·  buy-side liquidity"; info = "Swing high not swept yet\nLevel " + lvl; }
+   else if(StringFind(nm, "UnmitLower_") == 0)
+   { title = "Unmitigated SSL  ·  sell-side liquidity"; info = "Swing low not swept yet\nLevel " + lvl; }
+   else if(StringFind(nm, "Bullish CISD ") == 0 || StringFind(nm, "Bearish CISD ") == 0)
+   { title = StringSubstr(nm, 0, 7) + " CISD  ·  " + HSG_TfOfName(nm, 13); info = "Change in state of delivery\nLevel " + lvl; }
+   else if(StringFind(nm, " Target2 ") > 0)
+   {
+      int a = StringFind(nm, " Target2 ");
+      string pf = StringSubstr(nm, 0, a);
+      title = "Target 2  ·  " + HSG_TfOfName(nm, a + 9) + (pf != "" ? "  (" + pf + ")" : "");
+      info  = "Projected target level\nLevel " + lvl;
+   }
+   else if(StringFind(nm, "CISDHigh_") == 0)  { title = "CISD High level";  info = "Level " + lvl; }
+   else if(StringFind(nm, "CISDLow_")  == 0)  { title = "CISD Low level";   info = "Level " + lvl; }
+   else if(StringFind(nm, "PH30_hit_") == 0)  { title = "Hunt High  ·  hit"; info = "Hunted high level\nLevel " + lvl; }
+   else if(StringFind(nm, "PL30_hit_") == 0)  { title = "Hunt Low  ·  hit";  info = "Hunted low level\nLevel " + lvl; }
+   else if(StringFind(nm, "AsiaSession_") == 0)
+   { title = "Asian session range"; info = "High " + DoubleToString(MathMax(pr0, pr1), dg) + "\nLow " + DoubleToString(MathMin(pr0, pr1), dg); }
+   else
+   {
+      if(srcTip != "") title = srcTip;
+      else
+      {
+         switch(t)
+         {
+            case OBJ_TREND:     title = "Line"; break;
+            case OBJ_HLINE:     title = "Horizontal line"; break;
+            case OBJ_VLINE:     title = "Vertical line"; break;
+            case OBJ_RECTANGLE: title = "Zone"; break;
+            case OBJ_TRIANGLE:  title = "Triangle"; break;
+            case OBJ_TEXT:      title = "Marker"; break;
+            default:            title = "Arrow"; break;
+         }
+      }
+      if(t == OBJ_RECTANGLE) info = "Zone " + DoubleToString(MathMin(pr0, pr1), dg) + " – " + DoubleToString(MathMax(pr0, pr1), dg);
+      else if(t != OBJ_VLINE) info = "Level " + lvl;
+   }
+   string tip = "◆ Liquidity Hunter  ·  " + title;
+   if(info != "") tip += "\n" + info;
+   if(t0 > 0 && t != OBJ_HLINE) tip += "\n" + TimeToString(t0, TIME_DATE | TIME_MINUTES);
+   return tip;
+}
+
+bool HSG_AllQ(const string s)       // text that is only "?" = a glyph the old publisher could not carry
+{
+   int n = StringLen(s);
+   if(n == 0) return false;
+   for(int i = 0; i < n; i++) if(StringGetCharacter(s, i) != '?') return false;
+   return true;
+}
+
+// Rebuilds the glyph of a Steps object from its NAME (same glyphs as Liquidity Hunter draws): works even with an old publisher.
+string HSG_GlyphFromName(const string nm, string &font)
+{
+   if(StringFind(nm, "StepF_") != 0 && StringFind(nm, "StepR_") != 0 && StringFind(nm, "StepB_") != 0) return "";
+   ushort kind = StringGetCharacter(nm, 4);
+   string tail;
+   HSG_TagOf(nm, 6, tail);
+   font = "Segoe UI Symbol";
+   if(tail == "Apex")
+   {
+      if(kind == 'R') { font = "Wingdings"; return "["; }
+      return ShortToString((ushort)0x2726);
+   }
+   int idx = (int)StringToInteger(tail) - 1;
+   if(idx < 0 || idx > 19) return "";
+   if(kind == 'B') return ShortToString((ushort)(idx < 10 ? 0x2776 + idx : 0x24EB + idx - 10));
+   return ShortToString((ushort)(0x2460 + idx));
+}
+
+//---- Steps legend card (same card Liquidity Hunter shows on its symbol charts), fed by the "L|" lines of the feed ----
+#define HSG_LEG_SC 1.4
+#define HSG_LEG_MX 12
+#define HSG_LEG_MY 28
+#define HSG_LEG_N  3        // max forward steps (ST_N in Liquidity Hunter)
+#define HSG_LEG_LEFT true   // true = card in the TOP-LEFT corner of the chart, false = top-right (old place)
+int HSG_legW = 0;           // card width, set in HSG_LegApply (needed to move the layout, which is built from the right edge, to the left edge)
+// the layout below is computed as "distance from the right edge"; for the left corner the same picture is shifted: x_left = 2*MX + W - x_right
+int HSG_LX(const int x) { return HSG_LEG_LEFT ? 2 * HSG_LEG_MX + HSG_legW - x : x; }
+
+struct HSGLegRow
+{
+   string tag; int tfSec; bool apex; int fwd, back, boxN, boxOpen, re;
+   color cA, cN, cB, cR;
+};
+
+int HSG_LegParse(const string body, HSGLegRow &rows[])
+{
+   ArrayResize(rows, 0);
+   string ln[];
+   int n = StringSplit(body, '\n', ln);
+   for(int i = 0; i < n; i++)
+   {
+      if(StringFind(ln[i], "L|") != 0) continue;
+      string p[];
+      if(StringSplit(ln[i], '|', p) < 14 || p[13] != "E") continue;
+      int q = ArraySize(rows);
+      ArrayResize(rows, q + 1);
+      rows[q].tag = p[1]; rows[q].tfSec = (int)StringToInteger(p[2]); rows[q].apex = (p[3] == "1");
+      rows[q].fwd = (int)StringToInteger(p[4]); rows[q].back = (int)StringToInteger(p[5]);
+      rows[q].boxN = (int)StringToInteger(p[6]); rows[q].boxOpen = (int)StringToInteger(p[7]); rows[q].re = (int)StringToInteger(p[8]);
+      rows[q].cA = (color)StringToInteger(p[9]); rows[q].cN = (color)StringToInteger(p[10]);
+      rows[q].cB = (color)StringToInteger(p[11]); rows[q].cR = (color)StringToInteger(p[12]);
+   }
+   n = ArraySize(rows);
+   for(int a = 0; a < n - 1; a++)                       // biggest timeframe first
+      for(int b = 0; b < n - 1 - a; b++)
+         if(rows[b].tfSec < rows[b + 1].tfSec) { HSGLegRow t = rows[b]; rows[b] = rows[b + 1]; rows[b + 1] = t; }
+   return n;
+}
+
+void HSG_LegRect(const long cid, const string nm, const int xd, const int yd, const int w, const int h, const color fill, const color border, const int z)
+{
+   ObjectCreate(cid, nm, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(cid, nm, OBJPROP_CORNER, HSG_LEG_LEFT ? CORNER_LEFT_UPPER : CORNER_RIGHT_UPPER);
+   ObjectSetInteger(cid, nm, OBJPROP_XDISTANCE, HSG_LX(xd));
+   ObjectSetInteger(cid, nm, OBJPROP_YDISTANCE, yd);
+   ObjectSetInteger(cid, nm, OBJPROP_XSIZE, w);
+   ObjectSetInteger(cid, nm, OBJPROP_YSIZE, h);
+   ObjectSetInteger(cid, nm, OBJPROP_BGCOLOR, fill);
+   ObjectSetInteger(cid, nm, OBJPROP_COLOR, border);
+   ObjectSetInteger(cid, nm, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(cid, nm, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(cid, nm, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(cid, nm, OBJPROP_ZORDER, z);
+   ObjectSetString (cid, nm, OBJPROP_TOOLTIP, "\n");
+}
+
+void HSG_LegLabel(const long cid, const string nm, const int x, const int y, const string txt, const color clr, const int fs, const string font, const string tip)
+{
+   ObjectCreate(cid, nm, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(cid, nm, OBJPROP_CORNER, HSG_LEG_LEFT ? CORNER_LEFT_UPPER : CORNER_RIGHT_UPPER);
+   ObjectSetInteger(cid, nm, OBJPROP_ANCHOR, ANCHOR_CENTER);
+   ObjectSetInteger(cid, nm, OBJPROP_XDISTANCE, HSG_LX(x));
+   ObjectSetInteger(cid, nm, OBJPROP_YDISTANCE, y);
+   ObjectSetString (cid, nm, OBJPROP_TEXT, txt);
+   ObjectSetString (cid, nm, OBJPROP_FONT, font);
+   ObjectSetInteger(cid, nm, OBJPROP_FONTSIZE, fs);
+   ObjectSetInteger(cid, nm, OBJPROP_COLOR, clr);
+   ObjectSetInteger(cid, nm, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(cid, nm, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(cid, nm, OBJPROP_ZORDER, 5);
+   ObjectSetString (cid, nm, OBJPROP_TOOLTIP, tip == "" ? "\n" : tip);
+}
+
+int HSG_LZ(const double v) { return (int)MathMax(1, MathRound(v * HSG_LEG_SC)); }
+
+void HSG_LegApply(const long cid, const string body)
+{
+   HSGLegRow rw[];
+   int n = HSG_LegParse(body, rw);
+   string bg = HSG_LPFX + "bg";
+   if(n == 0)
+   {
+      if(ObjectFind(cid, bg) >= 0) { ObjectsDeleteAll(cid, HSG_LPFX); ChartRedraw(cid); }
+      return;
+   }
+   ENUM_TIMEFRAMES cur = (ENUM_TIMEFRAMES)ChartPeriod(cid);
+   string sig = (HSG_LEG_LEFT ? "L" : "R") + IntegerToString((int)cur) + "#";   // L/R: a changed corner redraws the card
+   for(int i = 0; i < n; i++)
+      sig += rw[i].tag + ":" + IntegerToString((int)rw[i].apex) + "." + IntegerToString(rw[i].fwd) + "." + IntegerToString(rw[i].back) + "." + IntegerToString(rw[i].boxN)
+           + "." + IntegerToString(rw[i].boxOpen) + "." + IntegerToString(rw[i].re) + "." + IntegerToString((int)rw[i].cA) + ";";
+   if(ObjectFind(cid, bg) >= 0 && ObjectGetString(cid, bg, OBJPROP_TEXT) == sig) return;
+
+   ObjectsDeleteAll(cid, HSG_LPFX);
+   int P = HSG_LZ(8), RH = HSG_LZ(24), CW = HSG_LZ(36), TW = HSG_LZ(38);
+   int W = 2 * P + 5 * CW + TW, H = 2 * P + RH * (n + 1) + HSG_LZ(4);
+   int MX = HSG_LEG_MX, MY = HSG_LEG_MY;
+   HSG_legW = W;
+   int f7 = (int)MathMax(5, MathRound(7 * HSG_LEG_SC)), f8 = (int)MathMax(5, MathRound(8 * HSG_LEG_SC)), f12 = (int)MathMax(6, MathRound(12 * HSG_LEG_SC));
+   HSG_LegRect(cid, bg, MX + W, MY, W, H, C'24,26,32', C'70,76,92', 0);
+   ObjectSetString(cid, bg, OBJPROP_TEXT, sig);
+   int xr = MX + P, y0 = MY + P;
+   color mut = C'110,120,138', dim = C'70,76,92', lit = C'220,225,235';
+
+   string hd[5]  = {"Apex", "Step", "Box", "Open", "2nd"};
+   string hdt[5] = {"Apex star (lit = found)", "Forward steps found (1-3)", "Back boxes (filled = at least one still open)",
+                    "Open boxes / all boxes (not touched yet / total)", "2nd Apex (lit = exists, small number = steps after it)"};
+   for(int k = 0; k < 5; k++)
+      HSG_LegLabel(cid, HSG_LPFX + "h" + IntegerToString(k), xr + (4 - k) * CW + CW / 2, y0 + RH / 2, hd[k], mut, f7, "Segoe UI Semibold", "Liquidity Hunter Steps  ·  " + hdt[k]);
+   HSG_LegLabel(cid, HSG_LPFX + "hTF", xr + 5 * CW + TW / 2, y0 + RH / 2, "TF", mut, f7, "Segoe UI Semibold", "Timeframe");
+   HSG_LegRect(cid, HSG_LPFX + "line", MX + P + (W - 2 * P), y0 + RH + HSG_LZ(1), W - 2 * P, 1, C'58,63,78', C'58,63,78', 1);
+
+   int inset = HSG_LZ(3), bandW = W - 2 * inset;
+   for(int q = 0; q < n; q++)
+   {
+      int top = y0 + RH * (q + 1) + HSG_LZ(4), y = top + RH / 2;
+      string r = HSG_LPFX + IntegerToString(q) + "_";
+      string tg = rw[q].tag;
+      bool now = (rw[q].tfSec == PeriodSeconds(cur));
+      if(now)
+      {
+         HSG_LegRect(cid, r + "band", MX + inset + bandW, top, bandW, RH, C'43,48,62', C'43,48,62', 1);
+         HSG_LegRect(cid, r + "bar",  MX + inset + bandW, top, HSG_LZ(3), RH, rw[q].cA, rw[q].cA, 1);
+      }
+      string gS = "-", gX = "-";
+      if(rw[q].fwd > 0) gS = ShortToString((ushort)(0x2460 + MathMin(rw[q].fwd, HSG_LEG_N) - 1));
+      if(rw[q].boxN > 0) gX = ShortToString((ushort)(rw[q].boxOpen > 0 ? 0x25A0 : 0x25A1));
+      HSG_LegLabel(cid, r + "tf", xr + 5 * CW + TW / 2, y, tg, now ? clrWhite : C'139,150,166', f8, "Segoe UI Semibold", tg + " timeframe");
+      HSG_LegLabel(cid, r + "a",  xr + 4 * CW + CW / 2, y, ShortToString((ushort)0x2726), rw[q].apex ? rw[q].cA : dim, f12, "Segoe UI Symbol",
+                   tg + (rw[q].apex ? " Apex star found" : " no Apex yet (waiting for step 1)"));
+      HSG_LegLabel(cid, r + "n",  xr + 3 * CW + CW / 2, y, gS, rw[q].fwd > 0 ? rw[q].cN : dim, f12, "Segoe UI Symbol",
+                   tg + " forward steps: " + IntegerToString(rw[q].fwd) + " of " + IntegerToString(HSG_LEG_N));
+      HSG_LegLabel(cid, r + "b",  xr + 2 * CW + CW / 2, y, gX, rw[q].boxN > 0 ? rw[q].cB : dim, f12, "Segoe UI Symbol",
+                   tg + " boxes: " + IntegerToString(rw[q].boxN) + " (" + IntegerToString(rw[q].boxOpen) + " open, " + IntegerToString(rw[q].boxN - rw[q].boxOpen) + " touched)");
+      HSG_LegLabel(cid, r + "o",  xr + 1 * CW + CW / 2, y, rw[q].boxN > 0 ? IntegerToString(rw[q].boxOpen) + "/" + IntegerToString(rw[q].boxN) : "-",
+                   rw[q].boxOpen > 0 ? lit : dim, f8, "Segoe UI Semibold", tg + " open boxes " + IntegerToString(rw[q].boxOpen) + " of " + IntegerToString(rw[q].boxN));
+      HSG_LegLabel(cid, r + "r",  xr + CW / 2, y, "[", rw[q].re >= 0 ? rw[q].cR : dim, f12, "Wingdings",
+                   tg + (rw[q].re >= 0 ? " 2nd Apex, steps after it: " + IntegerToString(rw[q].re) : " no 2nd Apex"));
+      if(rw[q].re > 0)
+         HSG_LegLabel(cid, r + "rn", xr + CW / 2 - HSG_LZ(13), y, IntegerToString(rw[q].re), rw[q].cR, f7, "Segoe UI Semibold", tg + " steps after the 2nd Apex: " + IntegerToString(rw[q].re));
+   }
+   ChartRedraw(cid);
+}
+
+// Visibility of a published object per timeframe. The publisher sends the object's OBJPROP_TIMEFRAMES mask (field 24);
+// an older publisher does not, so the same rule is rebuilt from the name (Steps: up to their own TF, Asia box: M1..M12).
+long HSG_TFMaskUpToSec(const int upToSec)
+{
+   ENUM_TIMEFRAMES tf[] = {PERIOD_M1,PERIOD_M2,PERIOD_M3,PERIOD_M4,PERIOD_M5,PERIOD_M6,PERIOD_M10,PERIOD_M12,PERIOD_M15,PERIOD_M20,PERIOD_M30,PERIOD_H1,PERIOD_H2,PERIOD_H3,PERIOD_H4,PERIOD_H6,PERIOD_H8,PERIOD_H12,PERIOD_D1,PERIOD_W1,PERIOD_MN1};
+   long fl[] = {OBJ_PERIOD_M1,OBJ_PERIOD_M2,OBJ_PERIOD_M3,OBJ_PERIOD_M4,OBJ_PERIOD_M5,OBJ_PERIOD_M6,OBJ_PERIOD_M10,OBJ_PERIOD_M12,OBJ_PERIOD_M15,OBJ_PERIOD_M20,OBJ_PERIOD_M30,OBJ_PERIOD_H1,OBJ_PERIOD_H2,OBJ_PERIOD_H3,OBJ_PERIOD_H4,OBJ_PERIOD_H6,OBJ_PERIOD_H8,OBJ_PERIOD_H12,OBJ_PERIOD_D1,OBJ_PERIOD_W1,OBJ_PERIOD_MN1};
+   long mask = 0;
+   for(int i = 0; i < ArraySize(tf); i++) if(PeriodSeconds(tf[i]) <= upToSec) mask |= fl[i];
+   return mask;
+}
+
+long HSG_NameMask(const string nm)
+{
+   if(StringFind(nm, "AsiaSession_") == 0) return HSG_TFMaskUpToSec(PeriodSeconds(PERIOD_M12));
+   if(StringFind(nm, "StepF_") == 0 || StringFind(nm, "StepR_") == 0 || StringFind(nm, "StepB_") == 0)
+   {
+      int a = StringFind(nm, "_"), b = StringFind(nm, "_", a + 1);
+      if(a > 0 && b > a)
+      {
+         string tag = StringSubstr(nm, a + 1, b - a - 1);
+         ENUM_TIMEFRAMES all[] = {PERIOD_M1,PERIOD_M2,PERIOD_M3,PERIOD_M4,PERIOD_M5,PERIOD_M6,PERIOD_M10,PERIOD_M12,PERIOD_M15,PERIOD_M20,PERIOD_M30,PERIOD_H1,PERIOD_H2,PERIOD_H3,PERIOD_H4,PERIOD_H6,PERIOD_H8,PERIOD_H12,PERIOD_D1,PERIOD_W1,PERIOD_MN1};
+         for(int i = 0; i < ArraySize(all); i++)
+            if(StringSubstr(EnumToString(all[i]), 7) == tag) return HSG_TFMaskUpToSec(PeriodSeconds(all[i]));
+      }
+   }
+   return OBJ_ALL_PERIODS;
+}
+
+void HSG_ObjApply(const long cid, const string body, const int theirOff)
 {
    int myOff = (int)(TimeTradeServer() - TimeGMT());
    myOff = (int)MathRound(myOff / 900.0) * 900;
@@ -3001,6 +3743,7 @@ void HSG_ObjApply(const string body, const int theirOff)
    string ln[];
    int n = StringSplit(body, '\n', ln);
    string keep = "|";
+   int dg = (int)SymbolInfoInteger(ChartSymbol(cid), SYMBOL_DIGITS);
    int nOk = 0, nBad = 0, lastErr = 0;
    for(int i = 0; i < n; i++)
    {
@@ -3017,50 +3760,59 @@ void HSG_ObjApply(const string body, const int theirOff)
          tt[k] = (datetime)(raw > 0 ? raw + shift : 0);
          pp[k] = StringToDouble(p[5 + k * 2]);
       }
-      if(ObjectFind(0, nm) >= 0 && (ENUM_OBJECT)ObjectGetInteger(0, nm, OBJPROP_TYPE) != t) ObjectDelete(0, nm);
-      bool made = (ObjectFind(0, nm) >= 0);
+      if(ObjectFind(cid, nm) >= 0 && (ENUM_OBJECT)ObjectGetInteger(cid, nm, OBJPROP_TYPE) != t) ObjectDelete(cid, nm);
+      bool made = (ObjectFind(cid, nm) >= 0);
       if(!made)
       {
          ResetLastError();
-         if(np == 1)      made = ObjectCreate(0, nm, t, 0, tt[0], pp[0]);
-         else if(np == 2) made = ObjectCreate(0, nm, t, 0, tt[0], pp[0], tt[1], pp[1]);
-         else             made = ObjectCreate(0, nm, t, 0, tt[0], pp[0], tt[1], pp[1], tt[2], pp[2]);
+         if(np == 1)      made = ObjectCreate(cid, nm, t, 0, tt[0], pp[0]);
+         else if(np == 2) made = ObjectCreate(cid, nm, t, 0, tt[0], pp[0], tt[1], pp[1]);
+         else             made = ObjectCreate(cid, nm, t, 0, tt[0], pp[0], tt[1], pp[1], tt[2], pp[2]);
          if(!made) { nBad++; lastErr = GetLastError(); continue; }
       }
       nOk++;
       for(int k = 0; k < np; k++)
       {
-         ObjectSetInteger(0, nm, OBJPROP_TIME, k, tt[k]);
-         ObjectSetDouble (0, nm, OBJPROP_PRICE, k, pp[k]);
+         ObjectSetInteger(cid, nm, OBJPROP_TIME, k, tt[k]);
+         ObjectSetDouble (cid, nm, OBJPROP_PRICE, k, pp[k]);
       }
-      ObjectSetInteger(0, nm, OBJPROP_COLOR, (color)StringToInteger(p[10]));
-      ObjectSetInteger(0, nm, OBJPROP_STYLE, StringToInteger(p[11]));
-      ObjectSetInteger(0, nm, OBJPROP_WIDTH, StringToInteger(p[12]));
-      ObjectSetInteger(0, nm, OBJPROP_BACK, p[13] == "1");
+      ObjectSetInteger(cid, nm, OBJPROP_COLOR, (color)StringToInteger(p[10]));
+      ObjectSetInteger(cid, nm, OBJPROP_STYLE, StringToInteger(p[11]));
+      ObjectSetInteger(cid, nm, OBJPROP_WIDTH, StringToInteger(p[12]));
+      ObjectSetInteger(cid, nm, OBJPROP_BACK, p[13] == "1");
       if(t == OBJ_TREND)
       {
-         ObjectSetInteger(0, nm, OBJPROP_RAY_LEFT,  p[14] == "1");
-         ObjectSetInteger(0, nm, OBJPROP_RAY_RIGHT, p[15] == "1");
+         ObjectSetInteger(cid, nm, OBJPROP_RAY_LEFT,  p[14] == "1");
+         ObjectSetInteger(cid, nm, OBJPROP_RAY_RIGHT, p[15] == "1");
       }
-      if(t == OBJ_RECTANGLE || t == OBJ_TRIANGLE) ObjectSetInteger(0, nm, OBJPROP_FILL, p[16] == "1");
+      if(t == OBJ_RECTANGLE || t == OBJ_TRIANGLE) ObjectSetInteger(cid, nm, OBJPROP_FILL, p[16] == "1");
       if(t == OBJ_TEXT)
       {
-         ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, StringToInteger(p[17]));
-         ObjectSetInteger(0, nm, OBJPROP_ANCHOR, StringToInteger(p[18]));
-         if(p[20] != "") ObjectSetString(0, nm, OBJPROP_FONT, p[20]);
+         ObjectSetInteger(cid, nm, OBJPROP_FONTSIZE, StringToInteger(p[17]));
+         ObjectSetInteger(cid, nm, OBJPROP_ANCHOR, StringToInteger(p[18]));
+         if(p[20] != "") ObjectSetString(cid, nm, OBJPROP_FONT, p[20]);
       }
-      if(t == OBJ_ARROW) ObjectSetInteger(0, nm, OBJPROP_ARROWCODE, StringToInteger(p[19]));
-      ObjectSetString (0, nm, OBJPROP_TEXT, p[21]);
-      ObjectSetString (0, nm, OBJPROP_TOOLTIP, "Liquidity Hunter" + (p[21] != "" ? ": " + p[21] : ""));
-      ObjectSetInteger(0, nm, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, nm, OBJPROP_HIDDEN, true);
-      ObjectSetInteger(0, nm, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+      if(t == OBJ_ARROW) ObjectSetInteger(cid, nm, OBJPROP_ARROWCODE, StringToInteger(p[19]));
+      string txt    = HSG_Dec(p[21]);
+      if(t == OBJ_TEXT && HSG_AllQ(txt))   // old publisher turned the glyph into "?": rebuild it from the name
+      {
+         string gf; string g = HSG_GlyphFromName(p[1], gf);
+         if(g != "") { txt = g; ObjectSetString(cid, nm, OBJPROP_FONT, gf); }
+      }
+      string srcTip = (ArraySize(p) > 23 ? HSG_Dec(p[23]) : "");
+      ObjectSetString (cid, nm, OBJPROP_TEXT, txt);
+      ObjectSetString (cid, nm, OBJPROP_TOOLTIP, HSG_ObjTip(p[1], t, txt, srcTip, pp[0], (np > 1 ? pp[1] : pp[0]), tt[0], dg));
+      ObjectSetInteger(cid, nm, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(cid, nm, OBJPROP_HIDDEN, true);
+      long vis = HSG_NameMask(p[1]);                                              // old publisher: rebuilt from the name
+      if(ArraySize(p) > 24) { long m = StringToInteger(p[24]); if(m > 0) vis = m; }   // new publisher: the object's own mask
+      ObjectSetInteger(cid, nm, OBJPROP_TIMEFRAMES, vis);
       keep += nm + "|";
    }
-   for(int k = ObjectsTotal(0, 0, -1) - 1; k >= 0; k--)
+   for(int k = ObjectsTotal(cid, 0, -1) - 1; k >= 0; k--)
    {
-      string nm = ObjectName(0, k, 0, -1);
-      if(StringFind(nm, HSG_OPFX) == 0 && StringFind(keep, "|" + nm + "|") < 0) ObjectDelete(0, nm);
+      string nm = ObjectName(cid, k, 0, -1);
+      if(StringFind(nm, HSG_OPFX) == 0 && StringFind(keep, "|" + nm + "|") < 0) ObjectDelete(cid, nm);
    }
    static string lastFail = "";
    string fk = IntegerToString(nBad) + "/" + IntegerToString(lastErr);
@@ -3078,26 +3830,158 @@ string HSG_ObjFirstName(const string body)
 
 void HSG_ObjTick()
 {
-   if(!LHObjects || !HSG_Active()) { if(HSG_objSig != "" || HSG_objSym != "") { HSG_ObjClear(); HSG_objSym = ""; ChartRedraw(0); } return; }
-   int r = HSG_FindRow(HSG_rows, _Symbol);
-   string sym = (r >= 0 ? HSG_rows[r].sym : "");
-   if(sym == "") { if(HSG_objSig != "") { HSG_ObjClear(); ChartRedraw(0); } HSG_objSym = ""; return; }
-   if(sym != HSG_objSym) { HSG_ObjClear(); HSG_objLocalAt = 0; }
-   HSG_ObjReadLocal(sym);
-   HSG_objSym = sym;
-   string body; int off;
-   if(HSG_objLocalOk) { body = HSG_objLocalBody; off = HSG_objLocalOff; HSG_ObjLog("LH objects: " + sym + " from the LOCAL Liquidity Hunter file"); }
-   else
+   if(!LHObjects || !HSG_Active())
    {
-      HSG_ObjPollApi(sym);
-      if(HSG_objApiAt == 0 || GetTickCount64() - HSG_objApiAt > (ulong)HSG_KeepSec() * 1000 + HSG_OBJ_API_MS * 3) { if(HSG_objSig != "") { HSG_ObjClear(); ChartRedraw(0); } return; }
-      body = HSG_objApiBody; off = HSG_objApiOff;
+      if(HSG_objSig != "" || HSG_objSym != "") { HSG_ObjClear(); HSG_objSym = ""; ChartRedraw(0); }
+      return;
    }
-   string sig = sym + "#" + IntegerToString(off) + "#" + body;
-   if(sig == HSG_objSig && (body == "" || ObjectFind(0, HSG_OPFX + StringSubstr(HSG_ObjFirstName(body), 0, 58)) >= 0)) return;
-   HSG_objSig = sig;
-   HSG_ObjApply(body, off);
-   ChartRedraw(0);
+
+   long   me      = ChartID();
+   string seen    = "|";
+   bool   statSet = false;
+
+   // ONLY the charts this EA opened from the panel button get the objects (see HSG_IsOwn). The EA chart itself is read
+   // for the panel status text but nothing is drawn on it (unless HSG_OBJ_ON_EA_CHART), every other chart is left alone.
+   for(long c = ChartFirst(); c >= 0; c = ChartNext(c))
+   {
+      bool isMe = (c == me);
+      bool draw = (HSG_IsOwn(c) || (isMe && HSG_OBJ_ON_EA_CHART));
+      if(!draw && !isMe) continue;       // not ours: no objects, no legend
+      int r = HSG_FindRow(HSG_rows, ChartSymbol(c));
+      if(r < 0) continue;
+      string sym = HSG_rows[r].sym;
+      if(c != me)    // side chart still loading (just opened / history not synchronized): touching it from here blocks the EA
+      {
+         if(c == HSG_newCid && GetTickCount64() - HSG_newAt < 3000) continue;
+         if(!(bool)SeriesInfoInteger(ChartSymbol(c), (ENUM_TIMEFRAMES)ChartPeriod(c), SERIES_SYNCHRONIZED)) continue;
+      }
+      int    k   = HSG_ObjSymSlot(sym);
+
+      HSG_ObjReadLocal(k);
+      string body = ""; int off = 0; bool have = false;
+      if(HSG_osy[k].locOk) { body = HSG_osy[k].locBody; off = HSG_osy[k].locOff; have = true; }
+      else
+      {
+         HSG_ObjPollApi(k);
+         if(HSG_osy[k].apiAt != 0 && GetTickCount64() - HSG_osy[k].apiAt <= (ulong)HSG_KeepSec() * 1000 + HSG_OBJ_API_MS * 3)
+         { body = HSG_osy[k].apiBody; off = HSG_osy[k].apiOff; have = true; }
+      }
+
+      if(c == me || !statSet)    // panel status text follows the chart the EA is on
+      {
+         HSG_objApiAt = HSG_osy[k].apiAt; HSG_objApiBody = HSG_osy[k].apiBody; HSG_objApiOff = HSG_osy[k].apiOff;
+         statSet = true;
+      }
+
+      if(!draw) continue;        // EA chart: status only, nothing is drawn here
+      if(!isMe) HSG_OwnMark(c);  // (re)stamp the chart as ours, now that it has loaded (even before the first objects arrive)
+      if(!have) continue;        // not seen -> cleaned below
+      HSG_LegApply(c, body);     // Steps legend card of this chart (redrawn only when something changed)
+
+      seen += IntegerToString(c) + "|";
+      string sig = sym + "#" + IntegerToString(off) + "#" + body;
+      int ci = HSG_ObjChartIdx(c);
+      if(ci >= 0 && HSG_ochSig[ci] == sig &&
+         (body == "" || ObjectFind(c, HSG_OPFX + StringSubstr(HSG_ObjFirstName(body), 0, 58)) >= 0)) continue;
+      if(ci < 0)
+      {
+         ci = ArraySize(HSG_ochId);
+         ArrayResize(HSG_ochId, ci + 1);
+         ArrayResize(HSG_ochSig, ci + 1);
+         HSG_ochId[ci] = c;
+      }
+      HSG_ochSig[ci] = sig;
+      HSG_ObjApply(c, body, off);
+      ChartRedraw(c);
+   }
+
+   // charts that are NOT ours must carry none of these objects (leftovers from an older version, a chart saved with them, ...)
+   static ulong sweepAt = 0;
+   if(GetTickCount64() - sweepAt >= 3000)
+   {
+      sweepAt = GetTickCount64();
+      for(long c = ChartFirst(); c >= 0; c = ChartNext(c))
+      {
+         if(HSG_IsOwn(c) || (c == me && HSG_OBJ_ON_EA_CHART)) continue;
+         int dn = ObjectsDeleteAll(c, HSG_OPFX) + ObjectsDeleteAll(c, HSG_LPFX);
+         if(dn > 0) ChartRedraw(c);
+      }
+   }
+
+   // charts that were drawn before but no longer qualify (closed, symbol changed, no data): remove their objects
+   for(int i = ArraySize(HSG_ochId) - 1; i >= 0; i--)
+      if(StringFind(seen, "|" + IntegerToString(HSG_ochId[i]) + "|") < 0)
+      {
+         long cc = HSG_ochId[i];
+         ObjectsDeleteAll(cc, HSG_OPFX);
+         ObjectsDeleteAll(cc, HSG_LPFX);
+         ChartRedraw(cc);
+         HSG_ObjChartDrop(i);
+      }
+
+   HSG_objSig = (ArraySize(HSG_ochId) > 0 ? "1" : "");
+   HSG_objSym = HSG_objSig;
+   HSG_RlWriteReq(false);          // keep the Bridge request file current (symbols wanted)
+}
+
+void HSG_TplScan()
+{
+   ArrayResize(HSG_tplList, 0);
+   string dirs[] = {HSG_TPL_DIR, "..\\Profiles\\Templates"};   // 2nd one is only a try: the terminal may refuse paths outside MQL5\Files
+   for(int d = 0; d < 2 && ArraySize(HSG_tplList) == 0; d++)
+   {
+      string fn;
+      long h = FileFindFirst(dirs[d] + "\\*.tpl", fn);
+      if(h == INVALID_HANDLE) continue;
+      do
+      {
+         int sl = StringFind(fn, "\\");
+         while(sl >= 0) { fn = StringSubstr(fn, sl + 1); sl = StringFind(fn, "\\"); }
+         int n = ArraySize(HSG_tplList);
+         if(StringLen(fn) > 4 && n < 200) { ArrayResize(HSG_tplList, n + 1); HSG_tplList[n] = fn; }
+      }
+      while(FileFindNext(h, fn));
+      FileFindClose(h);
+   }
+   // simple alphabetical sort
+   for(int i = 1; i < ArraySize(HSG_tplList); i++)
+   {
+      string v = HSG_tplList[i]; int j = i - 1;
+      while(j >= 0 && StringCompare(HSG_tplList[j], v, false) > 0) { HSG_tplList[j + 1] = HSG_tplList[j]; j--; }
+      HSG_tplList[j + 1] = v;
+   }
+   HSG_tplScanAt = GetTickCount64();
+}
+
+string HSG_TplShort(const string fn)
+{
+   int dot = StringFind(fn, ".tpl");
+   return (dot > 0 ? StringSubstr(fn, 0, dot) : fn);
+}
+
+long   HSG_tplCid = -1;      // chart waiting for its template
+ulong  HSG_tplAt  = 0;
+int    HSG_tplTry = 0;
+string HSG_tplFor = "";
+
+void HSG_TplApplyTick()      // called from the timer: applies the template a few times (history may still be loading)
+{
+   if(HSG_tplCid < 0) return;
+   ulong now = GetTickCount64();
+   if(now - HSG_tplAt < 700) return;
+   HSG_tplAt = now;
+   bool exists = false;
+   for(long c = ChartFirst(); c >= 0; c = ChartNext(c)) if(c == HSG_tplCid) { exists = true; break; }
+   if(!exists || HSG_tplFor == "") { HSG_tplCid = -1; return; }
+   ResetLastError();
+   string tf = HSG_tplFor;
+   if(HSG_tplTry >= 1 && StringFind(tf, "\\Files\\") == 0) tf = HS_SIDE_TPL_APPLY2;   // 2nd try: other path spelling
+   bool ok = ChartApplyTemplate(HSG_tplCid, tf);
+   if(ok || ++HSG_tplTry >= 3)
+   {
+      if(!ok) Print("Liquidity Hunter: could not apply the template \"", HSG_tplFor, "\" (error ", GetLastError(), ")");
+      HSG_tplCid = -1;
+   }
 }
 
 void HSG_Rect(const string id, const int x, const int y, const int w, const int h, const color bg, const color bd, const int z = 1)
@@ -3224,6 +4108,40 @@ void HSG_Draw()
    HSG_Pill("stat", W - 14 - 22 - 6 - 78, 14, 78, 20, st, sf, sb, 8);
    HSG_Pill("col",  W - 14 - 22, 14, 22, 20, HSG_collapsed ? "+" : "–", HSG_C_TEXT, HSG_C_ROW, 10, "Segoe UI Semibold", 15);
 
+   // template picker: the chart opened from a symbol row gets this template
+   ObjectsDeleteAll(0, HSG_PFX + "tpm_");
+   int tplW = 118, tplX = W - 14 - 22 - 6 - 78 - 6 - tplW;
+   string tplCap = "TPL: " + HSG_Cut(HSG_tplName == "" ? "Default" : HSG_TplShort(HSG_tplName), 11) + "  " + ShortToString((ushort)(HSG_tplOpen ? 0x25B4 : 0x25BE));
+   HSG_Pill("tpl", tplX, 14, tplW, 20, tplCap, HSG_tplOpen ? HSG_C_ACCENT : HSG_C_TEXT, HSG_C_ROW, 8, "Segoe UI Semibold", 15);
+   ObjectSetString(0, HSG_PFX + "tpl_b", OBJPROP_TOOLTIP, "Template used when a chart is opened from this panel");
+   ObjectSetString(0, HSG_PFX + "tpl_t", OBJPROP_TOOLTIP, "Template used when a chart is opened from this panel");
+   if(HSG_tplOpen)
+   {
+      int nT = ArraySize(HSG_tplList), nItems = nT + 1;                    // item 0 = "Default (no template)"
+      int vis = MathMin(nItems, HSG_TPL_VIS);
+      if(HSG_tplOff > nItems - vis) HSG_tplOff = MathMax(0, nItems - vis);
+      int rh = 20, mw = MathMax(tplW, 170), mx0 = tplX + tplW - mw, my0 = 14 + 20 + 3;
+      int extra = (nItems > vis ? 2 : 0) + (nT == 0 ? 1 : 0);
+      HSG_Rect("tpm_bg", mx0 - 2, my0 - 2, mw + 4, (vis + extra) * rh + 4, HSG_C_CARD, HSG_C_ACCENT, 40);
+      int yy = my0;
+      if(nItems > vis) { HSG_Pill("tpm_up", mx0, yy, mw, rh - 2, "▲", HSG_tplOff > 0 ? HSG_C_TEXT : HSG_C_GREY, HSG_C_ROW, 8, "Segoe UI Symbol", 41); yy += rh; }
+      for(int k = 0; k < vis; k++)
+      {
+         int idx = HSG_tplOff + k;
+         string nm = (idx == 0 ? "" : HSG_tplList[idx - 1]);
+         bool sel = (nm == HSG_tplName);
+         HSG_Pill("tpm_i" + IntegerToString(idx), mx0, yy, mw, rh - 2, (sel ? "●  " : "    ") + (idx == 0 ? "Default (no template)" : HSG_Cut(HSG_TplShort(nm), 24)),
+                  sel ? HSG_C_ACCENT : HSG_C_TEXT, sel ? C'14,52,74' : HSG_C_GREYBG, 8, "Segoe UI Semibold", 41);
+         yy += rh;
+      }
+      if(nItems > vis) { HSG_Pill("tpm_dn", mx0, yy, mw, rh - 2, "▼", HSG_tplOff < nItems - vis ? HSG_C_TEXT : HSG_C_GREY, HSG_C_ROW, 8, "Segoe UI Symbol", 41); yy += rh; }
+      if(nT == 0)
+      {
+         HSG_Pill("tpm_hint", mx0, yy, mw, rh - 2, "no templates found - see Hey Solo\\Templates", HSG_C_AMBER, HSG_C_AMBERBG, 7, "Segoe UI", 41);
+         ObjectSetString(0, HSG_PFX + "tpm_hint_b", OBJPROP_TOOLTIP, "Create a junction: mklink /J \"<data folder>\\MQL5\\Files\\Hey Solo\\Templates\" \"<data folder>\\MQL5\\Profiles\\Templates\"");
+      }
+   }
+
    if(!HSG_collapsed)
    {
       HSG_Rect("div1", 14, hdrH - 1, W - 28, 1, HSG_C_LINE, HSG_C_LINE, 1);
@@ -3303,16 +4221,18 @@ void HSG_Draw()
    int cw = (W - 28 - 8) / 2;
    string cs = HSG_Sym();
    bool bOkC = (HSG_whyB == ""), sOkC = (HSG_whyS == "");
+   bool notInFeed = (HSG_cur < 0 && ArraySize(HSG_rows) > 0);
    HSG_Rect("div2", 14, footY - 4, W - 28, 1, HSG_C_LINE, HSG_C_LINE, 1);
-   HSG_Pill("fb", 14, footY, cw, 26, "▲  BUY " + cs + (bOkC ? "  ALLOWED" : "  BLOCKED"),
-            bOkC ? HSG_C_GREEN : HSG_C_RED, HSG_C_CARD, 9);
-   HSG_Pill("fs", 14 + cw + 8, footY, cw, 26, "▼  SELL " + cs + (sOkC ? "  ALLOWED" : "  BLOCKED"),
-            sOkC ? HSG_C_GREEN : HSG_C_RED, HSG_C_CARD, 9);
+   HSG_Pill("fb", 14, footY, cw, 26, "▲  BUY " + cs + (notInFeed ? "  NOT FILTERED" : (bOkC ? "  ALLOWED" : "  BLOCKED")),
+            notInFeed ? HSG_C_MUTED : (bOkC ? HSG_C_GREEN : HSG_C_RED), HSG_C_CARD, 9);
+   HSG_Pill("fs", 14 + cw + 8, footY, cw, 26, "▼  SELL " + cs + (notInFeed ? "  NOT FILTERED" : (sOkC ? "  ALLOWED" : "  BLOCKED")),
+            notInFeed ? HSG_C_MUTED : (sOkC ? HSG_C_GREEN : HSG_C_RED), HSG_C_CARD, 9);
 
    if(!HSG_collapsed)
    {
       string why;
-      if(req == 0 && bOkC && sOkC)              why = "No rules required in Liquidity Hunter: trades are not filtered.";
+      if(notInFeed)                             why = cs + " is not in Liquidity Hunter symbols: its trades are not filtered.";
+      else if(req == 0 && bOkC && sOkC)         why = "No rules required in Liquidity Hunter: trades are not filtered.";
       else if(bOkC && sOkC)                     why = "All required conditions are met.";
       else if(!bOkC && !sOkC && HSG_whyB == HSG_whyS) why = HSG_whyB;
       else if(!bOkC && !sOkC)                   why = "Buy ✕ " + HSG_whyB + "     Sell ✕ " + HSG_whyS;
@@ -3341,15 +4261,10 @@ void HSG_Report()
       string head = HSG_apiBody;
       StringReplace(head, "\r", " "); StringReplace(head, "\n", " ");
       if(StringFind(HSG_apiBody, "HSFEED") >= 0)
-         Print("⚠️ Bias Gate: connected to the feed server, but the feed is EMPTY - Liquidity Hunter is not running on the bot's server");
-      else
-         Print("❌ Bias Gate: connected, but the answer is not an Liquidity Hunter feed (", StringLen(HSG_apiBody), " chars): ", HSG_Cut(head, 120));
       return;
    }
    if(HSG_apiBadSig > 0)
       Print("❌ Bias Gate: signature invalid - HSG_SALT (HS_BiasGate.mqh) is not the same as LHPUB_SALT (LH_Publisher.mqh)");
-   if(HSG_cur < 0)
-      Print("⚠️ Bias Gate: ", HSG_Sym(), " is NOT in the Liquidity Hunter feed (feed has: ", has, ") - trades on ", HSG_Sym(), " stay blocked");
 }
 
 void HSG_Update(bool force)
@@ -3366,7 +4281,8 @@ void HSG_Update(bool force)
    for(int i = 0; i < n; i++) { long cid; HSG_open[i] = HSG_ChartState(HSG_rows[i].sym, cid); osig += IntegerToString(HSG_open[i]); }
    string sig = HSG_Sym() + "|" + IntegerToString(HSG_cur) + (HSG_collapsed ? "C" : "c") + "|" + osig
               + "|" + IntegerToString(HSG_x) + "," + IntegerToString(HSG_y) + "," + DoubleToString(HSG_user, 2) + "|" + IntegerToString(n)
-              + "|" + HSG_apiLastURL + "|" + HSG_apiErr + "|" + HSG_ObjStatus();
+              + "|" + HSG_apiLastURL + "|" + HSG_apiErr + "|" + HSG_ObjStatus()
+              + "|" + HSG_tplName + (HSG_tplOpen ? "O" : "o") + IntegerToString(HSG_tplOff);
    for(int i = 0; i < n; i++)
    {
       sig += "|" + HSG_rows[i].sym + IntegerToString(HSG_rows[i].state) + "o" + IntegerToString(HSG_rows[i].off) + (HSG_rows[i].boff ? "B" : "b") + (HSG_rows[i].manual ? "M" : "m");
@@ -3399,6 +4315,7 @@ void HSG_Load()
          else if(k == "Y") HSG_y = (int)StringToInteger(v);
          else if(k == "S") HSG_user = MathMax(HSG_USER_MIN, MathMin(HSG_USER_MAX, StringToDouble(v)));
          else if(k == "C") HSG_collapsed = (StringToInteger(v) != 0);
+         else if(k == "T") HSG_tplName = v;
       }
       FileClose(h);
    }
@@ -3417,6 +4334,7 @@ void HSG_Save()
    FileWriteString(h, "Y=" + IntegerToString(HSG_y) + "\r\n");
    FileWriteString(h, "S=" + DoubleToString(HSG_user, 2) + "\r\n");
    FileWriteString(h, "C=" + (HSG_collapsed ? "1" : "0") + "\r\n");
+   FileWriteString(h, "T=" + HSG_tplName + "\r\n");
    FileClose(h);
 }
 
@@ -3439,12 +4357,105 @@ void HSG_Deinit(const int reason)
    if(HSG_drag || HSG_resize) { ChartSetInteger(0, CHART_MOUSE_SCROLL, HSG_scrollWas); HSG_drag = false; HSG_resize = false; }
    HSG_Destroy();
    HSG_ObjClear();
+   FileDelete(HSG_RlReqPath(), FILE_COMMON);     // the Bridge stops fetching for this account
    HSG_objSym = "";
    HSG_inited = false;
 }
 
+#ifndef HS_PANEL_ONLY
+// Saves THIS chart (the one the EA runs on) as a template and strips its drawn objects.
+// The result (MQL5\Files\Hey Solo\HS_SideChart.tpl) puts Hey Solo on a new chart in "side chart" mode.
+// symbol / period inside the template are rewritten to the NEW chart's, so even if the terminal honoured them it could never switch the side chart to the main chart's symbol.
+bool HSG_BuildSideTpl(const string sym, const ENUM_TIMEFRAMES tf)
+{
+   FolderCreate("Hey Solo");
+   ResetLastError();
+   bool ok = ChartSaveTemplate(0, HS_SIDE_TPL_APPLY);
+   if(!ok) { ResetLastError(); ok = ChartSaveTemplate(0, HS_SIDE_TPL_APPLY2); }
+   if(!ok) { Print("Liquidity Hunter: could not save the chart template for the side chart (error ", GetLastError(), ")"); return false; }
+
+   int h = INVALID_HANDLE;
+   for(int t = 0; t < 8 && h == INVALID_HANDLE; t++)
+   {
+      h = FileOpen(HS_SIDE_TPL_FILE, FILE_READ | FILE_TXT | FILE_UNICODE | FILE_SHARE_READ | FILE_SHARE_WRITE);
+      if(h == INVALID_HANDLE) Sleep(40);
+   }
+   if(h == INVALID_HANDLE) { Print("Liquidity Hunter: the side-chart template was saved but could not be read (error ", GetLastError(), ")"); return false; }
+
+   string out = "";
+   bool inObj = false, inHead = true;
+   int  sec = PeriodSeconds(tf), pType = 0, pSize = 1;
+   if(sec >= 2592000)      { pType = 4; pSize = 1; }
+   else if(sec >= 604800)  { pType = 3; pSize = 1; }
+   else if(sec >= 86400)   { pType = 2; pSize = 1; }
+   else if(sec >= 3600)    { pType = 1; pSize = sec / 3600; }
+   else                    { pType = 0; pSize = MathMax(1, sec / 60); }
+   while(!FileIsEnding(h))
+   {
+      string ln = FileReadString(h);
+      string tr = ln;
+      StringTrimLeft(tr); StringTrimRight(tr);
+      if(inObj) { if(tr == "</object>") inObj = false; continue; }        // drop the master chart's drawn objects (prices of another symbol)
+      if(tr == "<object>") { inObj = true; continue; }
+      if(tr == "<window>") inHead = false;
+      if(inHead)   // chart-level header only (before the first <window>)
+      {
+         if(StringFind(tr, "symbol=") == 0)           ln = "symbol=" + sym;
+         else if(StringFind(tr, "period_type=") == 0) ln = "period_type=" + IntegerToString(pType);
+         else if(StringFind(tr, "period_size=") == 0) ln = "period_size=" + IntegerToString(pSize);
+      }
+      if(StringFind(tr, "objects=") == 0) ln = "objects=0";
+      out += ln + "\r\n";
+   }
+   FileClose(h);
+
+   h = FileOpen(HS_SIDE_TPL_FILE, FILE_WRITE | FILE_TXT | FILE_UNICODE);   // UTF-16 + BOM, like the terminal writes it
+   if(h == INVALID_HANDLE) { Print("Liquidity Hunter: could not write the side-chart template (error ", GetLastError(), ")"); return false; }
+   FileWriteString(h, out);
+   FileClose(h);
+   return true;
+}
+#endif
+
+
+void HSG_OpenPending()
+{
+   if(HSG_pendSym == "") return;
+   ulong now = GetTickCount64();
+   SymbolSelect(HSG_pendLoc, true);
+   bool ready = (bool)SeriesInfoInteger(HSG_pendLoc, HSG_pendTF, SERIES_SYNCHRONIZED);
+   if(!ready && now - HSG_pendAt < 8000)
+   {
+      static ulong probeAt = 0;
+      if(now - probeAt >= 500)            // ask the terminal to load the history, never wait for it
+      {
+         probeAt = now;
+         datetime t[];
+         CopyTime(HSG_pendLoc, HSG_pendTF, 0, 1, t);
+      }
+      return;
+   }
+   string s = HSG_pendLoc; ENUM_TIMEFRAMES tf = HSG_pendTF;
+   HSG_pendSym = ""; HSG_pendLoc = "";
+   ResetLastError();
+   long id = ChartOpen(s, tf);
+   if(id > 0)
+   {
+      HSG_OwnAdd(id);                     // opened by this EA from the panel button -> the only kind of chart that gets the objects
+      HSG_newCid = id; HSG_newAt = GetTickCount64(); ChartSetInteger(id, CHART_BRING_TO_TOP, true);
+      if(HSG_tplName != "") { HSG_tplCid = id; HSG_tplFor = HSG_tplName; HSG_tplTry = 0; HSG_tplAt = 0; HSG_TplApplyTick(); }
+#ifndef HS_PANEL_ONLY
+      else if(!g_sideChart && HSG_BuildSideTpl(s, tf))   // no template chosen: put Hey Solo (Trade / Run / Tools) on the new chart (only runs while LHSignals is ON)
+      { GlobalVariableTemp(HS_SideGV(id)); GlobalVariableSet(HS_SideGV(id), (double)TimeLocal()); HSG_tplCid = id; HSG_tplFor = HS_SIDE_TPL_APPLY; HSG_tplTry = 0; HSG_tplAt = 0; HSG_TplApplyTick(); }
+#endif
+   }
+   else Print("Liquidity Hunter: could not open the chart of ", s, " (error ", GetLastError(), ")");
+   HSG_Update(true);
+}
+
 void HSG_OnTimer()
 {
+   HSG_CfgSync();     // feed link / interval / objects switch come from HeySolo_Bridge
    if(!HSG_inited) HSG_Init();
    if(!HSG_Active())
    {
@@ -3453,6 +4464,8 @@ void HSG_OnTimer()
       return;
    }
    if(!HSG_built) ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
+   HSG_OpenPending();
+   HSG_TplApplyTick();
    ulong now = GetTickCount64();
    if(now - HSG_lastRefresh < HSG_REFRESH_MS) return;
    HSG_lastRefresh = now;
@@ -3478,6 +4491,33 @@ bool HSG_OnChartEvent(const int id, const long &lparam, const double &dparam, co
          int u = StringFind(rest, "_");
          int ri = (int)StringToInteger(StringSubstr(rest, 1, u - 1));
          if(u > 1 && ri >= 0 && ri < ArraySize(HSG_rows)) { HSG_ToggleChart(HSG_rows[ri].sym); HSG_Update(true); }
+         return true;
+      }
+      if(StringFind(rest, "tpl") == 0)
+      {
+         HSG_tplOpen = !HSG_tplOpen;
+         if(HSG_tplOpen) { HSG_TplScan(); HSG_tplOff = 0; }
+         HSG_Update(true);
+         return true;
+      }
+      if(StringFind(rest, "tpm_") == 0)
+      {
+         string it = StringSubstr(rest, 4);
+         int nItems = ArraySize(HSG_tplList) + 1;
+         if(StringFind(it, "up") == 0)       { HSG_tplOff = MathMax(0, HSG_tplOff - 3); HSG_Update(true); }
+         else if(StringFind(it, "dn") == 0)  { HSG_tplOff = MathMin(MathMax(0, nItems - HSG_TPL_VIS), HSG_tplOff + 3); HSG_Update(true); }
+         else if(StringGetCharacter(it, 0) == 'i')
+         {
+            int u = StringFind(it, "_");
+            int idx = (int)StringToInteger(StringSubstr(it, 1, (u > 0 ? u - 1 : -1)));
+            if(idx >= 0 && idx < nItems)
+            {
+               HSG_tplName = (idx == 0 ? "" : HSG_tplList[idx - 1]);
+               HSG_tplOpen = false;
+               HSG_Save();
+               HSG_Update(true);
+            }
+         }
          return true;
       }
       if(StringFind(sparam, HSG_PFX + "col") == 0)
