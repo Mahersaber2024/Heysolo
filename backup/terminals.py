@@ -580,6 +580,27 @@ def _as_mt5(cmd: list[str], timeout: int) -> None:
         pass
 
 
+def _wineserver_cmd() -> str:
+    """The wineserver binary. Ubuntu's own wine package has no `wineserver` on PATH
+    (only /usr/lib/wine/wineserver64), WineHQ keeps it in /opt/wine-*/bin."""
+    for c in ("/opt/wine-stable/bin/wineserver", "/opt/wine-staging/bin/wineserver",
+              "/opt/wine-devel/bin/wineserver", "/usr/local/bin/wineserver", "/usr/bin/wineserver",
+              "/usr/lib/x86_64-linux-gnu/wine/wineserver", "/usr/lib/wine/wineserver64",
+              "/usr/lib/wine/wineserver"):
+        if os.access(c, os.X_OK):
+            return c
+    for root in ("/usr/lib", "/usr/libexec", "/usr/lib64"):
+        for dirpath, dirs, files in os.walk(root):
+            if dirpath[len(root):].count("/") >= 4:
+                dirs[:] = []
+            if "i386" in dirpath:
+                continue
+            for n in ("wineserver64", "wineserver"):
+                if n in files and os.access(os.path.join(dirpath, n), os.X_OK):
+                    return os.path.join(dirpath, n)
+    return "wineserver"
+
+
 def settle_wine(terms: list[Terminal]) -> None:
     """Leave every touched wine prefix completely idle before files are put back / terminals start.
 
@@ -590,7 +611,7 @@ def settle_wine(terms: list[Terminal]) -> None:
     for t in terms:
         env = ["env", f"HOME={MT5_HOME}", f"WINEPREFIX={t.prefix}", "WINEDEBUG=-all"]
         _as_mt5(["screen", "-S", t.slug, "-X", "quit"], 10)
-        _as_mt5([*env, "wineserver", "-k"], 20)
+        _as_mt5([*env, _wineserver_cmd(), "-k"], 20)
     deadline = time.time() + 20
     pending = list(terms)
     while pending and time.time() < deadline:

@@ -1,0 +1,35 @@
+{
+  "bot_token": "",
+  "admin_ids": [],
+  "user_ids": [],
+  "chat_id": "",
+  "threads": {
+    "bias": 0,
+    "trade": 0,
+    "log": 0,
+    "result": 0,
+    "alert": 0
+  },
+  "outbox_poll_seconds": 3,
+  "common_files_dir": "",
+  "db_host": "127.0.0.1",
+  "db_port": 5432,
+  "db_name": "heysolo",
+  "db_user": "heysolo",
+  "db_password": "",
+  "installed_at": "",
+  "copier": {},
+  "biasfeed": {},
+  "backup": {
+    "auto_kind": "bot",
+    "last_kind": "terminals",
+    "auto_enabled": false,
+    "every_days": 3,
+    "last_auto": 0,
+    "last_ts": 1794385647,
+    "last_name": "heysolo_terminals_vm_20261111-032727.zip",
+    "last_size": 1193489,
+    "last_error": ""
+  },
+  "user_langs": {}
+}

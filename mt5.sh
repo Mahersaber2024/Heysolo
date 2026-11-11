@@ -215,7 +215,7 @@ _as_user_logged(){
 }
 
 as_mt5(){
-  _as_user "${AS_MT5_TIMEOUT:-120}" "export DISPLAY=:${DISPLAY_NUM}; $1"
+  _as_user "${AS_MT5_TIMEOUT:-120}" "$(wine_path_export)export DISPLAY=:${DISPLAY_NUM}; $1"
 }
 
 WINE_NO_MENU="WINEDLLOVERRIDES=winemenubuilder.exe,mscoree,mshtml=d WINEDEBUG=-all"
@@ -224,13 +224,13 @@ NONINTERACTIVE="${NONINTERACTIVE:-0}"
 
 as_wine(){
   _as_user "${AS_WINE_TIMEOUT:-1800}" \
-    "export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX='$1'; $2"
+    "$(wine_path_export)export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX='$1'; $2"
 }
 
 as_wine_logged(){
   local wineprefix="$1" cmd="$2" logfile="$3"
   _as_user_logged "${AS_WINE_TIMEOUT:-1800}" \
-    "export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX='${wineprefix}'; ${cmd}" "${logfile}"
+    "$(wine_path_export)export DISPLAY=:${DISPLAY_NUM} ${WINE_NO_MENU} WINEPREFIX='${wineprefix}'; ${cmd}" "${logfile}"
 }
 
 show_wine_log_tail(){
@@ -695,6 +695,7 @@ desktop_write_launcher(){
 export DISPLAY=":${DISPLAY_NUM}"
 export WINEPREFIX="${wineprefix}"
 
+export PATH="$(wine_bin_dir 2>/dev/null || true):/usr/local/bin:\$PATH"
 export WINEDLLOVERRIDES="winemenubuilder.exe=d"
 SLUG="${slug}"
 TERM_EXE="${termpath}"
@@ -1833,6 +1834,10 @@ EOF
 boot_recover(){
   require_root
   HEYSOLO_STAGE_WARNINGS=()
+  ensure_wine_on_path
+  if ! command -v wineserver >/dev/null 2>&1; then
+    warn "wine is missing on this server (no wineserver). Run 'sudo heysolo' -> P (prepare) to reinstall it."
+  fi
   guard "virtual display + desktop" start_display
   guard "EA screenshot support" ensure_screenshots_ready
   if [[ -s "${TERMINALS_FILE}" ]]; then
@@ -1989,6 +1994,56 @@ link_winehq_binaries(){
     return 0
   done
   return 0
+}
+
+# Wine from WineHQ lives in /opt/wine-*/bin and is only reachable through the links in
+# /usr/local/bin. After a reboot / apt upgrade those links can be gone ("wineserver: command not found").
+wine_bin_dir(){
+  local d
+  for d in /opt/wine-stable/bin /opt/wine-staging/bin /opt/wine-devel/bin; do
+    [[ -x "${d}/wineserver" && -x "${d}/wine" ]] && { echo "${d}"; return 0; }
+  done
+  return 1
+}
+
+# Text to put in front of a command run as the MT5 user: puts the real wine folder first on PATH,
+# so wine works even when the links are missing.
+wine_path_export(){
+  local d
+  d=$(wine_bin_dir 2>/dev/null) || return 0
+  printf "export PATH='%s':/usr/local/bin:\$PATH; " "${d}"
+}
+
+# Ubuntu/Debian's own wine package has no `wineserver` command on PATH: the binary is
+# /usr/lib/wine/wineserver64 (wine itself finds it, but our scripts call `wineserver -w` / `-k`).
+distro_wineserver_bin(){
+  local c
+  for c in /usr/lib/x86_64-linux-gnu/wine/wineserver /usr/lib/wine/wineserver64 /usr/lib/wine/wineserver; do
+    [[ -x "${c}" ]] && { echo "${c}"; return 0; }
+  done
+  # other layouts (multiarch, wine-development, ...): look for the real binary
+  c=$(find /usr/lib /usr/libexec /usr/lib64 /opt -maxdepth 5 -type f -perm -u+x \
+        \( -name 'wineserver' -o -name 'wineserver64' -o -name 'wineserver32' \) 2>/dev/null \
+        | grep -v -e i386 -e wineserver32 | sort | head -n1)
+  [[ -n "${c}" && -x "${c}" ]] && { echo "${c}"; return 0; }
+  return 1
+}
+
+ensure_wine_on_path(){
+  local d b ws
+  # never leave dangling wine links behind: /usr/local/bin comes first in PATH and would hide /usr/bin/wine
+  find /usr/local/bin -maxdepth 1 -xtype l -name 'wine*' -delete 2>/dev/null || true
+  if d=$(wine_bin_dir 2>/dev/null); then
+    for b in wine wine64 wineboot wineserver winecfg; do
+      [[ -x "${d}/${b}" ]] || continue
+      [[ "$(readlink -f "/usr/local/bin/${b}" 2>/dev/null)" == "$(readlink -f "${d}/${b}")" ]] && continue
+      ln -sf "${d}/${b}" "/usr/local/bin/${b}" 2>/dev/null || true
+    done
+    case ":${PATH}:" in *":${d}:"*) ;; *) export PATH="${d}:${PATH}" ;; esac
+  elif ! command -v wineserver >/dev/null 2>&1; then
+    ws=$(distro_wineserver_bin 2>/dev/null) && ln -sf "${ws}" /usr/local/bin/wineserver 2>/dev/null || true
+  fi
+  hash -r 2>/dev/null || true
 }
 
 verify_wine_works(){
@@ -3627,6 +3682,7 @@ main_menu(){
     esac
   done
 }
+if [[ "$(id -u)" == "0" ]]; then ensure_wine_on_path; fi
 case "${1:-menu}" in
   step1)  require_root; NONINTERACTIVE=1 step1_prepare_server; HEYSOLO_CLEAN_EXIT=1 ;;
   step2)  require_root; step2_install_terminals;               HEYSOLO_CLEAN_EXIT=1 ;;
