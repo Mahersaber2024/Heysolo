@@ -1947,6 +1947,10 @@ add_winehq_repo(){
   fi
   [[ -z "${codename}" ]] && { warn "Could not detect the distro codename - skipping the WineHQ repo."; return 1; }
 
+  if ! curl -fsI --max-time 20 "https://dl.winehq.org/wine-builds/${osid}/dists/${codename}/Release" >/dev/null 2>&1; then
+    warn "WineHQ has no repository for ${osid}/${codename} (yet) - skipping it."
+    return 1
+  fi
   info "Adding the WineHQ repository for ${osid}/${codename}..."
   mkdir -p /etc/apt/keyrings
   curl -fsSL https://dl.winehq.org/wine-builds/winehq.key \
@@ -1980,6 +1984,52 @@ install_wine_winehq(){
   link_winehq_binaries
   wine_is_recent_enough && return 0
   return 1
+}
+
+# Always run the NEWEST Wine: MetaQuotes keeps changing MT5's protection and older Wine builds
+# (including the distro's own wine 10.x) stop working with new MT5 builds.
+# Order: WineHQ devel (newest) -> prebuilt newest Wine (Kron4ek/Wine-Builds, kept in /opt/wine-devel)
+# -> the distro package as the very last resort.
+WINE_PREFER_LATEST="${WINE_PREFER_LATEST:-1}"
+
+install_wine_portable(){
+  local api="https://api.github.com/repos/Kron4ek/Wine-Builds/releases/latest" url tmp dest="/opt/wine-devel"
+  command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 || return 1
+  info "Looking for the newest prebuilt Wine (github.com/Kron4ek/Wine-Builds)..."
+  url=$(curl -fsSL --max-time 60 "${api}" 2>/dev/null | python3 -c '
+import sys, json
+try:
+    r = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+urls = [a.get("browser_download_url", "") for a in r.get("assets", [])]
+bad = ("staging", "proton", "tkg", "rc")
+def ok(u, suf):
+    n = u.rsplit("/", 1)[-1]
+    return n.endswith(suf) and not any(b in n for b in bad)
+pick = [u for u in urls if ok(u, "-amd64-wow64.tar.xz")] or [u for u in urls if ok(u, "-amd64.tar.xz")]
+print(pick[0] if pick else "")
+' 2>/dev/null)
+  [[ -z "${url}" ]] && { warn "Could not find a prebuilt Wine to download."; return 1; }
+  tmp=$(mktemp -d /tmp/heysolo-wine.XXXXXX) || return 1
+  info "Downloading ${url##*/} ..."
+  if ! curl -fL --max-time 900 -o "${tmp}/wine.tar.xz" "${url}"; then
+    warn "Download failed."; rm -rf "${tmp}"; return 1
+  fi
+  mkdir -p "${tmp}/x"
+  if ! tar -xJf "${tmp}/wine.tar.xz" -C "${tmp}/x" --strip-components=1; then
+    warn "Could not unpack the download."; rm -rf "${tmp}"; return 1
+  fi
+  if [[ ! -x "${tmp}/x/bin/wine" || ! -x "${tmp}/x/bin/wineserver" ]]; then
+    warn "The download has no usable wine."; rm -rf "${tmp}"; return 1
+  fi
+  rm -rf "${dest}.old"
+  [[ -d "${dest}" ]] && mv "${dest}" "${dest}.old"
+  mv "${tmp}/x" "${dest}"
+  rm -rf "${tmp}"
+  link_winehq_binaries
+  ok "Installed $("${dest}/bin/wine" --version 2>/dev/null || echo wine) in ${dest}."
+  return 0
 }
 
 link_winehq_binaries(){
@@ -2079,13 +2129,16 @@ install_wine(){
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
   link_winehq_binaries
 
-  if command -v wine >/dev/null 2>&1 && wine_is_recent_enough; then
+  if command -v wine >/dev/null 2>&1 && wine_is_recent_enough \
+     && { wine_bin_dir >/dev/null 2>&1 || [[ "${WINE_PREFER_LATEST}" != "1" ]]; }; then
     ok "wine is already installed and recent enough: $(wine --version 2>/dev/null || echo '?')"
     ensure_wine32
     return 0
   fi
 
-  if command -v wine >/dev/null 2>&1; then
+  if command -v wine >/dev/null 2>&1 && wine_is_recent_enough; then
+    info "wine $(wine --version 2>/dev/null || echo '?') is the distro build - switching to the newest Wine."
+  elif command -v wine >/dev/null 2>&1; then
     warn "wine $(wine --version 2>/dev/null || echo '?') is too old for MT5 (needs ${WINE_MIN_MAJOR}.0+)."
     warn "On this version the terminal opens but ACCOUNT LOGIN fails - upgrading via WineHQ."
   else
@@ -2094,6 +2147,10 @@ install_wine(){
 
   install_wine_winehq || true
   link_winehq_binaries
+  if [[ "${WINE_PREFER_LATEST}" == "1" ]] && ! wine_bin_dir >/dev/null 2>&1; then
+    install_wine_portable || true
+  fi
+  ensure_wine_on_path
 
   if ! command -v wine >/dev/null 2>&1 || ! wine_is_recent_enough; then
     warn "WineHQ did not provide wine ${WINE_MIN_MAJOR}+ - falling back to the distro package."
@@ -3688,6 +3745,9 @@ case "${1:-menu}" in
   step2)  require_root; step2_install_terminals;               HEYSOLO_CLEAN_EXIT=1 ;;
   guide)  require_root; show_final_guide;                      HEYSOLO_CLEAN_EXIT=1 ;;
   boot)   require_root; NONINTERACTIVE=1 boot_recover;          HEYSOLO_CLEAN_EXIT=1 ;;
+  wine-upgrade)
+          require_root; NONINTERACTIVE=1 WINE_PREFER_LATEST=1 install_wine; ensure_wine_on_path
+          echo "wine now: $(wine --version 2>/dev/null || echo '?')"; HEYSOLO_CLEAN_EXIT=1 ;;
   screenshots|fix-screenshots)
           require_root; repair_screenshots; HEYSOLO_CLEAN_EXIT=1 ;;
   mql5-fetch)
@@ -3729,6 +3789,6 @@ case "${1:-menu}" in
     HEYSOLO_CLEAN_EXIT=1 ;;
   menu|"") main_menu ;;
   *)      err "Unknown argument: $1"
-          echo "Usage: bash $0 [menu|step1|step2|guide|doctor|screenshots|boot|desktop|share-common]"
+          echo "Usage: bash $0 [menu|step1|step2|guide|doctor|screenshots|boot|wine-upgrade|desktop|share-common]"
           HEYSOLO_CLEAN_EXIT=1; exit 2 ;;
 esac
