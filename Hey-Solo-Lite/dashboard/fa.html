@@ -5484,10 +5484,13 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
     });
 
     // Refresh is manual only — click the "Refresh" button at the top of the page
-    function manualRefresh(){
-      const btn = document.getElementById('refreshBtn');
-      btn.classList.add('spin');
-      setTimeout(function(){ btn.classList.remove('spin'); }, 600);
+    function manualRefresh(auto){
+      // Timer-driven refreshes run silently: only a real click spins the icon
+      if(auto !== true){
+        const btn = document.getElementById('refreshBtn');
+        btn.classList.add('spin');
+        setTimeout(function(){ btn.classList.remove('spin'); }, 600);
+      }
       if(jrMode()==='online'){ jrLoadOnlineJournal(render); return; }
 
       const oldA = document.getElementById('acctsScript');
@@ -5520,7 +5523,7 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
         if(arSecondsLeft <= 0) arSecondsLeft = arIntervalSeconds();
         updateCountdownDisplay();
       }, 1000);
-      arTimer = setInterval(function(){ manualRefresh(); }, arIntervalSeconds() * 1000);
+      arTimer = setInterval(function(){ manualRefresh(true); }, arIntervalSeconds() * 1000);
       document.getElementById('arSwitch').classList.add('on');
       document.getElementById('arSwitch').setAttribute('aria-checked', 'true');
       document.getElementById('arInterval').disabled = true;
@@ -6695,9 +6698,16 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
   var T=fa?{live:'EA',delayed:'EA delayed',offline:'EA offline',lost:'connection lost',nodata:'EA no data',upd:'بروزرسانی',ago:'پیش',wait:'منتظر اکسپرت',last:'آخرین داده',s:'ث',m:'د',h:'س',d:'روز'}
           :{live:'EA',delayed:'DELAYED',offline:'EA OFFLINE',lost:'CONNECTION LOST',nodata:'NO DATA',upd:'updated',ago:'ago',wait:'waiting for EA',last:'last data',s:'s',m:'m',h:'h',d:'d'};
   function fmt(a){ if(a<60)return a+T.s; if(a<3600)return Math.floor(a/60)+T.m; if(a<86400)return Math.floor(a/3600)+T.h+' '+Math.floor(a%3600/60)+T.m; return Math.floor(a/86400)+T.d; }
+  var _ls={k:'',t:0};
+  function localStamp(){   /* local mode: when did the EA last write the data file? */
+    var m=window.PROP_DATA&&window.PROP_DATA.meta; if(!m) return 0;
+    var e=Number(m.updatedAt); if(e>0) return e;                                   /* the EA writes the real UTC time */
+    if(m.lastUpdate!==_ls.k){ _ls.k=m.lastUpdate; _ls.t=Math.floor(Date.now()/1000); }   /* older EA: time the new data arrived */
+    return _ls.t;
+  }
   function tick(){
     var el=document.getElementById('hsFresh'); if(!el)return;
-    var u=window.__hsUpdatedAt||0, st, em='';
+    var u=window.__hsUpdatedAt||localStamp(), st, em='';
     var age=u? Math.max(0,Math.floor(Date.now()/1000-u)) : -1;
     if(window.__jrOnlineErr){ st='lost'; em=u? T.last+' '+fmt(age)+' '+T.ago : ''; }
     else if(!window.PROP_DATA||!u){ st='nodata'; em=T.wait; }
@@ -6781,6 +6791,41 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
   else init();
 })();
 </script>
+<script id="hs-wkswipe">
+/* Swipe inside the Daily PnL week strip (previous / next week) and the month calendar overlay (previous / next month).
+   The week strip is excluded from the main tab-swipe (.wk-panel), so the two gestures never fight. Grids are always LTR: swipe left = next. */
+(function(){
+  function buzz(){ try{ var h=window.Telegram&&Telegram.WebApp&&Telegram.WebApp.HapticFeedback; if(h&&h.selectionChanged) h.selectionChanged(); }catch(e){} }
+  function bind(zone, animEl, step){
+    if(!zone || zone.__hsWk) return; zone.__hsWk = 1;
+    try{ zone.style.touchAction = 'pan-y'; }catch(e){}
+    var sx=0, sy=0, st=0, ok=false;
+    zone.addEventListener('touchstart', function(e){
+      ok = e.touches.length===1 && !(e.target.closest && e.target.closest('input,textarea,select,button,a'));
+      if(!ok) return;
+      var t=e.touches[0]; sx=t.clientX; sy=t.clientY; st=Date.now();
+    }, {passive:true});
+    zone.addEventListener('touchend', function(e){
+      if(!ok) return; ok=false;
+      var t=e.changedTouches[0], dx=t.clientX-sx, dy=t.clientY-sy;
+      if(Math.abs(dx)<45 || Math.abs(dx)<Math.abs(dy)*1.5 || Date.now()-st>800) return;
+      var next = dx<0;
+      try{ step(next); }catch(err){ return; }
+      buzz();
+      var el = animEl();
+      if(el && el.animate) el.animate([{opacity:.25, transform:'translateX('+(next?26:-26)+'px)'},{opacity:1, transform:'none'}],{duration:220,easing:'ease-out'});
+    }, {passive:true});
+    zone.addEventListener('touchcancel', function(){ ok=false; }, {passive:true});
+  }
+  function init(){
+    bind(document.querySelector('.wk-panel'), function(){ return document.getElementById('wkRow'); },
+      function(n){ if(typeof wkShift==='function') wkShift(n?7:-7); });
+    bind(document.querySelector('#calModal .cal-modal-box'), function(){ return document.getElementById('calGrid'); },
+      function(n){ if(n){ if(typeof calNextMonth==='function') calNextMonth(); } else if(typeof calPrevMonth==='function') calPrevMonth(); });
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init); else init();
+})();
+</script>
 <script id="hs-swipe">
 (function(){
   var sx,sy,st,bad;
@@ -6796,7 +6841,7 @@ body{ background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2F
     if(e.touches.length!==1){bad=true;return;}
     var t=e.touches[0];sx=t.clientX;sy=t.clientY;st=Date.now();
     var el=e.target;
-    bad=!!(el.closest&&el.closest('input,textarea,select,canvas,.cal-modal,.cal-modal-box,[role="dialog"],.settings-panel,.jr-menu,.record-dd-menu'))||hscroll(el);
+    bad=!!(el.closest&&el.closest('input,textarea,select,canvas,.cal-modal,.cal-modal-box,[role="dialog"],.settings-panel,.jr-menu,.record-dd-menu,.wk-panel'))||hscroll(el);
   },{passive:true});
   document.addEventListener('touchend',function(e){
     if(bad||!window.matchMedia('(max-width:900px)').matches)return;
