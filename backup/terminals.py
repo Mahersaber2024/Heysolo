@@ -1,3 +1,5 @@
+# NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
+# PATH: backup/terminals.py
 from __future__ import annotations
 
 import logging
@@ -315,13 +317,6 @@ def _ref_mtime(t: Terminal) -> float:
         return time.time()
 
 
-# ---------------------------------------------------------------- machine identity
-# MT5 encrypts the saved passwords (config/accounts.dat) with an id derived from the "machine".
-# Under Wine that id lives in the wine prefix, not in the MT5 data folder: the registry value
-# HKLM\\Software\\Microsoft\\Cryptography\\MachineGuid (system.reg) and the C: drive serial
-# (.windows-serial). A prefix created on another server has other values, so the copied
-# accounts.dat cannot be decrypted and MT5 asks for the login again. The backup therefore keeps
-# these two values and the restore puts them back, which makes the saved logins work as they did.
 _GUID_RE = re.compile(r'^"MachineGuid"="([0-9A-Fa-f-]{8,64})"\s*$')
 _GUID_SECTIONS = (
     "[software\\\\microsoft\\\\cryptography]",
@@ -334,7 +329,6 @@ def _sysreg(prefix: Path) -> Path:
 
 
 def read_identity(prefix: Path) -> dict:
-    """MachineGuid + C: serial of a wine prefix ('' when not found)."""
     out = {"machine_guid": "", "windows_serial": ""}
     try:
         section = False
@@ -358,8 +352,6 @@ def read_identity(prefix: Path) -> dict:
 
 
 def restore_identity(t: Terminal, bt: dict) -> dict:
-    """Put the backed-up MachineGuid / drive serial into this terminal's wine prefix.
-    Call only while that prefix's wineserver is stopped (it rewrites system.reg on exit)."""
     want = bt.get("identity") or {}
     res = {"guid": "", "serial": "", "changed": False, "error": ""}
     guid = (want.get("machine_guid") or "").strip()
@@ -489,8 +481,6 @@ def _add_tree(zf, base: Path, arc: str, skip: tuple[str, ...], limit: int) -> tu
 
 
 def backup_extras(zf: zipfile.ZipFile, assets_dir: Path | None) -> dict:
-    """Only terminal-related extras: the shared Common\\Files and the MQL5 assets folder.
-    The VNC password and desktop settings are deliberately NOT part of any backup."""
     info: dict = {"common": 0, "assets": 0}
     info["common"], _ = _add_tree(zf, COMMON_DIR, "common", COMMON_SKIP, MAX_EXTRA)
     if assets_dir:
@@ -619,8 +609,6 @@ def _restore_tree(zf, arc: str, base: Path, owner) -> int:
 
 
 def restore_extras(zf: zipfile.ZipFile, assets_dir: Path | None, slugs: set[str] | None = None) -> dict:
-    """Restores Common\\Files and the MQL5 assets. Older backups also carried the VNC password and
-    desktop settings - those are ignored on purpose, a restore never touches them."""
     owner = _owner()
     out = {"common": 0, "assets": 0}
     out["common"] = _restore_tree(zf, "common", COMMON_DIR, owner)
@@ -677,7 +665,6 @@ def stop_terminals(terms: list[Terminal], timeout: int = 90) -> list[str]:
 
 
 def _as_mt5(cmd: list[str], timeout: int) -> None:
-    """Run a command as the MT5 user (the terminals' owner), never failing the caller."""
     full = cmd if os.geteuid() != 0 else ["runuser", "-u", MT5_USER, "--", *cmd]
     try:
         subprocess.run(full, timeout=timeout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -686,8 +673,6 @@ def _as_mt5(cmd: list[str], timeout: int) -> None:
 
 
 def _wineserver_cmd() -> str:
-    """The wineserver binary. Ubuntu's own wine package has no `wineserver` on PATH
-    (only /usr/lib/wine/wineserver64), WineHQ keeps it in /opt/wine-*/bin."""
     for c in ("/opt/wine-stable/bin/wineserver", "/opt/wine-staging/bin/wineserver",
               "/opt/wine-devel/bin/wineserver", "/usr/local/bin/wineserver", "/usr/bin/wineserver",
               "/usr/lib/x86_64-linux-gnu/wine/wineserver", "/usr/lib/wine/wineserver64",
@@ -707,12 +692,6 @@ def _wineserver_cmd() -> str:
 
 
 def settle_wine(terms: list[Terminal]) -> None:
-    """Leave every touched wine prefix completely idle before files are put back / terminals start.
-
-    A terminal that was force-closed can leave its wineserver, a winedbg crash handler or its screen
-    session behind; the next start then attaches to that half-dead state and MT5 shows
-    "A debugger has been found running". Each prefix is shut down with its own wineserver only,
-    so terminals that are not part of the restore are not touched."""
     for t in terms:
         env = ["env", f"HOME={MT5_HOME}", f"WINEPREFIX={t.prefix}", "WINEDEBUG=-all"]
         _as_mt5(["screen", "-S", t.slug, "-X", "quit"], 10)

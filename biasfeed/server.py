@@ -1,22 +1,5 @@
-"""Liquidity Hunter feed server - HTTPS on your own domain (behind Cloudflare).
-
-How it works now (one direction only, nothing to set up in Liquidity Hunter):
-
-    Liquidity Hunter (MT5 on THIS server)  --writes-->  <Common>/Files/HeySolo_LiquidityHunter/feed_<login>.txt
-    bot (this module)               --reads--->  those files (all Common/Files roots the bot knows)
-    Hey Solo [ATM] (any server/PC)  --GET----->  https://<domain>/feed/<token>
-
-The bot only hands out feed links (one per customer, each can be paused,
-renewed or deleted). The feed text is exactly what LH_Publisher.mqh signed,
-so Hey Solo verifies it with the very same code and salt; the bot never signs
-or edits a line.
-
-HTTPS: the bot gets a Let's Encrypt certificate for the domain by itself
-(HTTP-01 through Cloudflare, or DNS-01 when a Cloudflare API token is set) and
-renews it. Until that works it serves a temporary self-signed certificate, which
-Cloudflare accepts in SSL mode "Full". Completely separate from the Copy Server
-(own switch, own port, settings key "biasfeed").
-"""
+# NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
+# PATH: biasfeed/server.py
 from __future__ import annotations
 
 import errno
@@ -44,18 +27,42 @@ import heysolo_settings as settings
 
 log = logging.getLogger("biasfeed")
 
-# ----------------------------------------------------------------- constants
 FEED_PREFIX = "/feed/"
 ACME_PREFIX = "/.well-known/acme-challenge/"
 HEALTH_PATH = "/health"
-MARK = "HSFEED"                      # every answer of this server starts with it (Hey Solo tells us apart from Cloudflare)
-FEED_DIR = "HeySolo_LiquidityHunter"   # <Common>/Files/HeySolo_LiquidityHunter/feed_<login>.txt (LH_Publisher.mqh)
-LEGACY_FEED_DIRS = ("HeySolo_ACHCM",)  # folder used before the rename (old EA builds still running are read too)
-FEED_FIELDS = 16                     # SYMBOL + 13 values + ts + signature
-DROP_SEC = 3600                      # ignore a feed file not touched for 1h (dead terminal)
-STALE_SEC = 120                      # same limit Hey Solo uses
-ONLINE_SEC = 30                      # a receiver polling within this = connected
-CF_HTTPS_PORTS = (443, 2053, 2083, 2087, 2096, 8443)   # ports Cloudflare proxies for HTTPS
+MARK = "HSFEED"
+MT5_USER = os.environ.get("HEYSOLO_MT5_USER", "mt5user")
+
+
+def _mt5_ids() -> tuple[int, int] | None:
+    try:
+        import pwd
+        pw = pwd.getpwnam(MT5_USER)
+        return pw.pw_uid, pw.pw_gid
+    except (ImportError, KeyError):
+        return None
+
+
+def give_to_mt5(path, mode: int | None = None) -> None:
+    ids = _mt5_ids()
+    if ids is None or not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return
+    try:
+        p = Path(path)
+        st = p.stat()
+        if st.st_uid != ids[0] or st.st_gid != ids[1]:
+            os.chown(p, ids[0], ids[1])
+        if mode is not None and (st.st_mode & 0o7777) != mode:
+            os.chmod(p, mode)
+    except OSError:
+        pass
+FEED_DIR = "HeySolo/HeySolo_LiquidityHunter"
+LEGACY_FEED_DIRS = ("HeySolo/HeySolo_ACHCM", "HeySolo_LiquidityHunter", "HeySolo_ACHCM")
+FEED_FIELDS = 16
+DROP_SEC = 3600
+STALE_SEC = 120
+ONLINE_SEC = 30
+CF_HTTPS_PORTS = (443, 2053, 2083, 2087, 2096, 8443)
 DEFAULT_PORT = 443
 RENEW_EVERY = 12 * 3600
 RETRY_FAILED = 6 * 3600
@@ -99,7 +106,6 @@ def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-# ----------------------------------------------------------------- config
 _cfg_lock = threading.RLock()
 _links_cache = {"at": 0.0, "links": []}
 
@@ -114,7 +120,7 @@ def get_config() -> dict:
         stored = settings.get_biasfeed_config() or {}
         cfg = _defaults()
         cfg.update(stored)
-        if stored.get("v") != 2:                       # old IP:8080 relay (tx/rx channels): drop it
+        if stored.get("v") != 2:
             for k in ("channels", "bind", "public_url"):
                 cfg.pop(k, None)
             cfg["v"] = 2
@@ -170,9 +176,8 @@ def allow_list_url(cfg: dict | None = None) -> str:
     return base_url(cfg)
 
 
-# ----------------------------------------------------------------- feed links
 def new_token() -> str:
-    return "".join(c for c in secrets.token_urlsafe(32) if c.isalnum())[:22]   # link stays < 63 chars (MT5 edit box limit)
+    return "".join(c for c in secrets.token_urlsafe(32) if c.isalnum())[:22]
 
 
 def create_link(name: str = "") -> dict:
@@ -226,7 +231,6 @@ def link_url(link: dict, cfg: dict | None = None) -> str:
 
 
 def mirror_base(cfg: dict | None = None) -> str:
-    """Iran mirror (index.php on an Iranian host that forwards /feed/<token> here), e.g. https://heysolo.ir"""
     cfg = cfg or get_config()
     return str(cfg.get("mirror") or "").rstrip("/")
 
@@ -250,7 +254,7 @@ def normalize_mirror(text: str) -> str:
 def _find_link(token: str) -> dict | None:
     if not token or not _TOKEN_RE.match(token):
         return None
-    if time.time() - _links_cache["at"] > 3:          # many customers poll every 2s: don't re-read settings each time
+    if time.time() - _links_cache["at"] > 3:
         _links_cache["links"] = list(get_config()["links"].values())
         _links_cache["at"] = time.time()
     for link in _links_cache["links"]:
@@ -259,9 +263,8 @@ def _find_link(token: str) -> dict | None:
     return None
 
 
-# ----------------------------------------------------------------- receivers (who is connected)
 _clients_lock = threading.Lock()
-_clients: dict[str, dict[str, dict]] = {}       # link id -> login|ip -> {"login","ip","at","hits"}
+_clients: dict[str, dict[str, dict]] = {}
 
 
 def _seen(lid: str, login: str, ip: str, via: str = "") -> None:
@@ -288,7 +291,6 @@ def online_count(lid: str) -> int:
     return sum(1 for c in clients(lid) if c["age"] <= ONLINE_SEC)
 
 
-# ----------------------------------------------------------------- local Liquidity Hunter feed files
 _roots_fn: Callable[[], Iterable] | None = None
 _GLOBS = (
     "/home/*/*/*/drive_c/users/*/AppData/Roaming/MetaQuotes/Terminal/Common/Files",
@@ -351,7 +353,6 @@ _src_lock = threading.Lock()
 
 
 def sources(max_age: int = DROP_SEC) -> list[dict]:
-    """Every Liquidity Hunter feed file on this server: [{"login","lines","age","path"}], newest per login."""
     with _src_lock:
         if time.time() - _src_cache["at"] < 0.5:
             return [dict(r) for r in _src_cache["rows"] if r["age"] <= max_age]
@@ -379,7 +380,7 @@ def sources(max_age: int = DROP_SEC) -> list[dict]:
                 if not lines:
                     continue
                 if login not in best or age < best[login]["age"]:
-                    best[login] = {"login": login, "lines": lines, "age": age, "path": str(f)}
+                    best[login] = {"login": login, "lines": lines, "age": age, "path": str(f), "root": str(root)}
         rows = sorted(best.values(), key=lambda r: r["login"])
         _src_cache.update(at=time.time(), rows=rows)
         return [dict(r) for r in rows if r["age"] <= max_age]
@@ -446,7 +447,7 @@ def objects_for(symbol: str, cfg: dict | None = None) -> tuple[int, list[str]] |
                     hit = _obj_cache.get(key)
                     if not hit or hit[0] != mtime:
                         hit = (mtime, _parse_objects(f))
-                        if len(_obj_cache) >= 256:      # bounded: drop the oldest entries
+                        if len(_obj_cache) >= 256:
                             for k in sorted(_obj_cache, key=lambda x: _obj_cache[x][0])[:64]:
                                 _obj_cache.pop(k, None)
                         _obj_cache[key] = hit
@@ -475,9 +476,7 @@ def render_feed(link: dict) -> str:
     return "\r\n".join(out) + "\r\n"
 
 
-# ----------------------------------------------------------------- HTTP
 def acme_challenge(path: str) -> bytes | None:
-    """Content of a pending ACME HTTP-01 challenge, or None. Also used by the Copy Server on port 80."""
     p = urlsplit(path or "").path
     if not p.startswith(ACME_PREFIX):
         return None
@@ -491,12 +490,71 @@ def acme_challenge(path: str) -> bytes | None:
         return None
 
 
+_TF_RE = re.compile(r"^[A-Z0-9]{2,4}$")
+_pub_last: dict[str, float] = {}
+_pub_lock = threading.Lock()
+PUBLIC_COOLDOWN = 5
+
+
+def request_public(link: dict, login: str, symbol: str, tf: str) -> tuple[int, str]:
+    if not _SYM_RE.match(symbol) or not _TF_RE.match(tf):
+        return 400, f"{MARK} ERR bad symbol or timeframe\n"
+    rows = [r for r in active_sources() if r["age"] <= STALE_SEC]
+    if not rows:
+        return 503, f"{MARK} ERR Liquidity Hunter is offline\n"
+    mine = [r for r in rows if r["login"] == login]
+    src = min(mine or rows, key=lambda r: r["age"])
+    with _pub_lock:
+        if time.time() - _pub_last.get(link["id"], 0.0) < PUBLIC_COOLDOWN:
+            return 429, f"{MARK} ERR wait a few seconds\n"
+        _pub_last[link["id"]] = time.time()
+    folder = Path(src["root"]) / "HeySolo" / "TelegramBridge" / "Commands"
+    name = f"public_{src['login']}_{int(time.time())}"
+    at = int(time.time() + time.localtime().tm_gmtoff)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        give_to_mt5(folder.parent, 0o2775)
+        give_to_mt5(folder, 0o2775)
+        tmp = folder / f"{name}.tmp"
+        tmp.write_text(f"CMD=SEND_PUBLIC\nID={name}\nACCOUNT={src['login']}\nSYMBOL={symbol}\nTF={tf}\nAT={at}\n", encoding="utf-8")
+        give_to_mt5(tmp, 0o664)
+        os.replace(tmp, folder / f"{name}.req")
+        for old in folder.iterdir():
+            try:
+                age = time.time() - old.stat().st_mtime
+                if (old.suffix == ".res" and age > 3600) or (old.suffix == ".cmd" and age > 60):
+                    old.unlink(missing_ok=True)
+                elif old.suffix in (".req", ".res"):
+                    give_to_mt5(old, 0o664)
+            except OSError:
+                continue
+    except OSError as e:
+        log.warning("biasfeed: public command not written: %s", e)
+        return 500, f"{MARK} ERR cannot reach Liquidity Hunter\n"
+    return 200, f"{MARK} OK queued {symbol} {tf} -> account {src['login']}\n"
+
+
+def handle_public(token: str, qs: dict, client_ip: str, via: str) -> tuple[int, str]:
+    link = _find_link(token)
+    if not link:
+        return 403, f"{MARK} invalid or revoked feed link\n"
+    if not link.get("enabled", True):
+        return 403, f"{MARK} feed link paused\n"
+    login = (qs.get("l") or [""])[0]
+    _seen(link["id"], login if _LOGIN_RE.match(login) else "", client_ip, via)
+    return request_public(link, login, (qs.get("s") or [""])[0], (qs.get("t") or [""])[0].upper())
+
+
 def handle_request(method: str, raw_path: str, client_ip: str, via: str = "") -> tuple[int, str]:
     parts = urlsplit(raw_path or "/")
     path = parts.path
     if path.startswith(ACME_PREFIX):
         body = acme_challenge(path)
         return (200, body.decode("ascii", "ignore")) if body is not None else (404, "not found\n")
+    if method == "POST" and path.startswith(FEED_PREFIX):
+        segs = path[len(FEED_PREFIX):].strip("/").split("/")
+        if len(segs) == 2 and segs[1] == "public":
+            return handle_public(segs[0], parse_qs(parts.query), client_ip, via)
     if method not in ("GET", "HEAD"):
         return 405, f"{MARK} read only\n"
     if path in ("/", HEALTH_PATH):
@@ -530,7 +588,6 @@ class _Handler(BaseHTTPRequestHandler):
         return peer
 
     def _via(self) -> tuple[str, str]:
-        # request forwarded by the Iran mirror (index.php): show the customer's IP, marked as "mirror"
         if (self.headers.get("X-HS-Via") or "").lower() == "mirror":
             real = re.sub(r"[^0-9a-fA-F:.]", "", self.headers.get("X-HS-Client-IP") or "")[:45]
             return (real or self._ip()), "mirror"
@@ -543,7 +600,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store, no-transform, max-age=0")   # no-transform: Cloudflare must not gzip/brotli it
+        self.send_header("Cache-Control", "no-store, no-transform, max-age=0")
         self.send_header("CDN-Cache-Control", "no-store")
         self.send_header("X-Robots-Tag", "noindex")
         self.send_header("Connection", "close")
@@ -581,11 +638,9 @@ class _Server(ThreadingHTTPServer):
         sock, addr = self.socket.accept()
         if self.ctx is None:
             return sock, addr
-        # handshake runs later in the handler thread, so one slow client never blocks accept()
         return self.ctx.wrap_socket(sock, server_side=True, do_handshake_on_connect=False), addr
 
     def shutdown_request(self, request):
-        # proper TLS close_notify: MT5 (WinINet/Schannel) reports a failed request without it
         if isinstance(request, ssl.SSLSocket):
             try:
                 request.settimeout(2)
@@ -598,7 +653,6 @@ class _Server(ThreadingHTTPServer):
         log.debug("feed: connection from %s dropped", client_address, exc_info=True)
 
 
-# ----------------------------------------------------------------- certificates
 def _run(cmd: list[str], timeout: int = 60, env: dict | None = None) -> tuple[int, str]:
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
@@ -610,7 +664,7 @@ def _run(cmd: list[str], timeout: int = 60, env: dict | None = None) -> tuple[in
 
 
 def cert_name(domain: str) -> str:
-    return "heysolo-rsa-" + domain        # RSA: chains to ISRG Root X1, trusted by every MT5 / Windows / Wine
+    return "heysolo-rsa-" + domain
 
 
 def _le_paths(domain: str, legacy: bool = False) -> tuple[Path, Path]:
@@ -624,10 +678,9 @@ def _ss_paths() -> tuple[Path, Path]:
 
 
 def cert_info(path: Path) -> dict:
-    """{"names": [...], "not_after": datetime|None} of a PEM certificate."""
     info = {"names": [], "not_after": None}
     try:
-        d = ssl._ssl._test_decode_cert(str(path))   # noqa: SLF001 - stdlib, no extra package needed
+        d = ssl._ssl._test_decode_cert(str(path))
         info["names"] = [v for k, v in d.get("subjectAltName", ()) if k == "DNS"]
         na = d.get("notAfter")
         if na:
@@ -679,8 +732,7 @@ def make_selfsigned(domain: str) -> tuple[Path, Path] | None:
 
 
 def current_cert(domain: str) -> tuple[Path, Path, str] | None:
-    """(cert, key, kind) - Let's Encrypt when it is valid for the domain, else the temporary one."""
-    for legacy in (False, True):          # old ECDSA one only until the RSA one is issued
+    for legacy in (False, True):
         crt, key = _le_paths(domain, legacy)
         if _valid_for(crt, domain) and key.exists():
             return crt, key, "letsencrypt"
@@ -697,7 +749,6 @@ def _ssl_context(crt: Path, key: Path) -> ssl.SSLContext:
     return ctx
 
 
-# ----------------------------------------------------------------- the HTTPS server
 class FeedServer:
     def __init__(self):
         self.lock = threading.RLock()
@@ -748,8 +799,6 @@ class FeedServer:
             self.thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.5},
                                            name="biasfeed-https", daemon=True)
             self.thread.start()
-            log.warning("Liquidity Hunter feed: https://%s%s is up (%s certificate)", domain,
-                        "" if port == 443 else f":{port}", kind)
             return True, open_firewall(port)
 
     def _stop_locked(self) -> None:
@@ -802,7 +851,6 @@ def open_firewall(port: int) -> str:
     return f"ufw: {port}/tcp allowed" if r.returncode == 0 else ""
 
 
-# ----------------------------------------------------------------- Let's Encrypt
 _acme_lock = threading.Lock()
 _acme_state = {"busy": False}
 
@@ -837,7 +885,6 @@ def _ensure_certbot(dns: bool) -> tuple[list[str] | None, str]:
 
 
 class _Port80:
-    """Answers ACME challenges on port 80 for a moment, only if nothing else (Copy Server) uses it."""
 
     def __init__(self):
         self.httpd = None
@@ -847,7 +894,7 @@ class _Port80:
             self.httpd = _Server(("0.0.0.0", 80), _Handler, None)
             threading.Thread(target=self.httpd.serve_forever, daemon=True, name="biasfeed-acme80").start()
         except OSError:
-            self.httpd = None          # port 80 busy: the Copy Server answers the challenge itself
+            self.httpd = None
         return self
 
     def __exit__(self, *exc):
@@ -890,7 +937,6 @@ def _fetch(url: str, timeout: int = 10, verify: bool = True) -> tuple[int, str]:
 
 
 def _http_preflight(domain: str) -> tuple[bool, str]:
-    """Can Let's Encrypt reach our challenge folder through Cloudflare? Same path it will use."""
     probe_dir = WEBROOT / ".well-known" / "acme-challenge"
     probe_dir.mkdir(parents=True, exist_ok=True)
     name = "hsprobe" + secrets.token_hex(8)
@@ -914,20 +960,22 @@ def _summ(out: str) -> str:
     return (" · ".join(keep[-3:]) or out.strip()[-300:])[:400]
 
 
-def issue_certificate(force: bool = False) -> tuple[bool, str]:
-    """Get / renew the Let's Encrypt certificate for the domain. Blocking (up to a few minutes)."""
+def issue_certificate(force: bool = False, domain: str = "") -> tuple[bool, str]:
     if not _acme_lock.acquire(blocking=False):
         return False, "already running"
     _acme_state["busy"] = True
+    result = _cert_result
     try:
         cfg = get_config()
-        domain = cfg.get("domain") or ""
+        own = not domain or domain == cfg.get("domain")
+        domain = domain or cfg.get("domain") or ""
         if not domain:
             return False, "set the domain first"
+        result = _cert_result if own else (lambda ok, msg: (ok, msg))
         dns = bool(cfg.get("cf_token"))
         cmd, err = _ensure_certbot(dns)
         if not cmd:
-            return _cert_result(False, err)
+            return result(False, err)
         for d in (LE_DIR, WEBROOT, DATA_DIR / "le-work", DATA_DIR / "le-logs"):
             d.mkdir(parents=True, exist_ok=True)
         args = cmd + ["certonly", "--non-interactive", "--agree-tos", "--cert-name", cert_name(domain),
@@ -948,17 +996,17 @@ def issue_certificate(force: bool = False) -> tuple[bool, str]:
             with _Port80():
                 ok, why = _http_preflight(domain)
                 if not ok:
-                    return _cert_result(False, f"pre-check failed: {why}")
+                    return result(False, f"pre-check failed: {why}")
                 rc, out = _run(args, 600)
         if rc != 0:
-            return _cert_result(False, _summ(out))
+            return result(False, _summ(out))
         if not _valid_for(_le_paths(domain)[0], domain):
-            return _cert_result(False, "certbot finished but no certificate for the domain was found")
+            return result(False, "certbot finished but no certificate for the domain was found")
         SERVER.reload_if_cert_changed()
-        return _cert_result(True, "certificate is valid")
+        return result(True, "certificate is valid")
     except Exception as e:
         log.exception("biasfeed: certificate request failed")
-        return _cert_result(False, str(e))
+        return result(False, str(e))
     finally:
         _acme_state["busy"] = False
         _acme_lock.release()
@@ -1021,7 +1069,6 @@ def start_from_settings() -> None:
         threading.Thread(target=_maintain, daemon=True, name="biasfeed-renew").start()
 
 
-# ----------------------------------------------------------------- diagnostics
 _dns_cache: dict[str, tuple[float, dict]] = {}
 
 
@@ -1085,9 +1132,7 @@ def self_test() -> list[str]:
     return out
 
 
-# ----------------------------------------------------------------- one-shot helpers for the panel
 def set_domain(domain: str) -> tuple[bool, str]:
-    """Save the domain, switch the server on (temporary cert at once) and ask Let's Encrypt in the background."""
     with _cfg_lock:
         cfg = get_config()
         if cfg.get("domain") != domain:
@@ -1104,7 +1149,6 @@ def set_domain(domain: str) -> tuple[bool, str]:
 
 
 def cleanup_old_relay_files(control_dirs: Iterable[Path]) -> int:
-    """The old relay wrote TX_URL/RX_URL into TelegramBridge/Control/BiasFeed_<login>.txt - remove them."""
     n = 0
     for d in control_dirs:
         try:

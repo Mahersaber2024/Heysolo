@@ -1,4 +1,5 @@
 # NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
+# PATH: db/database.py
 import logging
 import threading
 import time
@@ -114,6 +115,18 @@ CREATE TABLE IF NOT EXISTS user_prop_alerts (
     daily_threshold   REAL NOT NULL DEFAULT 80,
     overall_threshold REAL NOT NULL DEFAULT 80
 );
+
+CREATE TABLE IF NOT EXISTS price_alerts (
+    id     BIGSERIAL PRIMARY KEY,
+    login  TEXT NOT NULL,
+    t      BIGINT NOT NULL,
+    sym    TEXT,
+    dir    TEXT,
+    level  TEXT,
+    price  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS price_alerts_login_idx ON price_alerts (login, id);
 
 CREATE INDEX IF NOT EXISTS user_accounts_login_idx ON user_accounts (login);
 """
@@ -707,6 +720,44 @@ class PgDatabase:
             (int(user_id), current["enabled"], current["daily_threshold"], current["overall_threshold"]),
         )
         return current
+
+    def save_price_alert(self, login: str, sym: str, direction: str, level: str, price: str,
+                         keep: int = 50, dedupe_seconds: int = 300) -> Optional[Dict[str, Any]]:
+        now = int(time.time())
+        row = self._run(
+            """
+            INSERT INTO price_alerts (login, t, sym, dir, level, price)
+            SELECT %s, %s, %s, %s, %s, %s
+            WHERE NOT EXISTS (
+                SELECT 1 FROM price_alerts
+                WHERE login = %s AND sym = %s AND dir = %s AND level = %s AND t > %s
+            )
+            RETURNING id, t, sym, dir, level, price
+            """,
+            (str(login), now, sym, direction, level, price,
+             str(login), sym, direction, level, now - int(dedupe_seconds)),
+            fetch="one")
+        if not row:
+            return None
+        self._run(
+            """
+            DELETE FROM price_alerts
+            WHERE login = %s AND id NOT IN (
+                SELECT id FROM price_alerts WHERE login = %s ORDER BY id DESC LIMIT %s
+            )
+            """,
+            (str(login), str(login), int(keep)))
+        return {"id": int(row["id"]), "t": int(row["t"]), "sym": row["sym"], "dir": row["dir"],
+                "level": row["level"], "price": row["price"]}
+
+    def list_price_alerts(self, login: str, limit: int = 30) -> List[Dict[str, Any]]:
+        rows = self._run(
+            "SELECT id, t, sym, dir, level, price FROM price_alerts WHERE login = %s ORDER BY id DESC LIMIT %s",
+            (str(login), int(limit)), fetch="all") or []
+        return [{"id": int(r["id"]), "t": int(r["t"]), "sym": r["sym"], "dir": r["dir"],
+                 "level": r["level"], "price": r["price"]} for r in reversed(rows)]
+
+
 class DatabaseUnavailable(RuntimeError):
     pass
 
@@ -922,6 +973,22 @@ def get_control_change(login: str) -> Optional[Dict[str, Any]]:
     except Exception as exc:
         logger.warning("Could not read the last control change on %s: %s", login, exc)
         return None
+
+
+def save_price_alert(login: str, sym: str, direction: str, level: str, price: str) -> Optional[Dict[str, Any]]:
+    try:
+        return get_db().save_price_alert(login, sym, direction, level, price)
+    except Exception as exc:
+        logger.warning("Could not save price alert for %s: %s", login, exc)
+        return None
+
+
+def list_price_alerts(login: str) -> List[Dict[str, Any]]:
+    try:
+        return get_db().list_price_alerts(login)
+    except Exception as exc:
+        logger.warning("Could not read price alerts for %s: %s", login, exc)
+        return []
 
 
 def get_prop_alert_state(login: str) -> Dict[str, Any]:

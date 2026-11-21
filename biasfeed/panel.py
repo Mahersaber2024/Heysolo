@@ -1,14 +1,5 @@
-"""Telegram admin panel: Admin -> 🧭 Liquidity Hunter Feed.
-
-The bot only makes feed links. Liquidity Hunter runs on this server and writes its
-signed file; every link serves that feed over HTTPS on your domain. Give a link
-to any customer: they paste it into Hey Solo [ATM] and that's it.
-
-Same contract as copier/panel.py:
-    handle_callback(data, uid, pending) -> {"answer", "alert", "send", "view"}
-    handle_text(action, text, uid, pending) -> {"answer", "alert", "send", "view"}
-Callback prefix: ADM_BF      pending prefix: bf_
-"""
+# NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
+# PATH: biasfeed/panel.py
 from __future__ import annotations
 
 import asyncio
@@ -29,15 +20,13 @@ CANCEL_CB = "CANCEL_PENDING"
 
 def setup(accounts_fn: Callable | None = None, control_dir_fn: Callable | None = None,
           roots_fn: Callable[[], Iterable] | None = None) -> None:
-    """roots_fn -> the bot's Common/Files roots (Root objects or paths). The other args are kept for compatibility."""
     bf.set_roots_fn(roots_fn)
     try:
-        bf.cleanup_old_relay_files(Path(r) / "TelegramBridge" / "Control" for r in bf.common_roots())
+        bf.cleanup_old_relay_files(Path(r) / "HeySolo" / "TelegramBridge" / "Control" for r in bf.common_roots())
     except Exception:
         log.exception("biasfeed: cleanup of old link files failed")
 
 
-# ----------------------------------------------------------------- helpers
 def _B(text: str, cb: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text, callback_data=cb)
 
@@ -68,10 +57,10 @@ def _server_line(cfg: dict) -> str:
     if bf.SERVER.running:
         return f"✔ online · port <code>{bf.SERVER.port}</code>"
     if not cfg.get("domain"):
-        return "■ off - set the domain first"
+        return "off - set the domain first"
     if bf.SERVER.error:
         return f"✖ not running: {_e(bf.SERVER.error)}"
-    return "■ off"
+    return "off"
 
 
 def _cert_line() -> str:
@@ -100,7 +89,6 @@ def _cancel_rows(back: str) -> list[list[InlineKeyboardButton]]:
     return [[_B("✖ Cancel", CANCEL_CB)], [_B("← Back", back)]]
 
 
-# ----------------------------------------------------------------- views
 def main_view() -> dict:
     cfg = bf.get_config()
     links = list(cfg["links"].values())
@@ -123,7 +111,7 @@ def main_view() -> dict:
     ]
     if dom:
         lines.append(f"\n<i>Customers add <code>{_e(bf.allow_list_url(cfg))}</code> to Allow WebRequest.</i>")
-    toggle = _B("■ Turn off", "ADM_BF_OFF") if cfg.get("enabled") else _B("▶ Turn on", "ADM_BF_ON")
+    toggle = _B("Turn off", "ADM_BF_OFF") if cfg.get("enabled") else _B("▶ Turn on", "ADM_BF_ON")
     rows = [[toggle, _B("🔁 Restart", "ADM_BF_RESTART")],
             [_B("🌐 Domain", "ADM_BF_DOM"), _B("🔒 HTTPS", "ADM_BF_TLS"), _B(f"🔌 {cfg['port']}", "ADM_BF_PORT")],
             [_B("📍 Iran mirror", "ADM_BF_MIR")]]
@@ -299,7 +287,6 @@ def _customer_msgs(link: dict) -> list[str]:
     ]
 
 
-# ----------------------------------------------------------------- callbacks
 async def handle_callback(data: str, uid: int, pending: dict) -> dict:
     return await asyncio.to_thread(_handle_callback, data, uid, pending)
 
@@ -417,7 +404,6 @@ def _handle_callback(data: str, uid: int, pending: dict) -> dict:
     return _res(main_view())
 
 
-# ----------------------------------------------------------------- text input
 async def handle_text(action: str, text: str, uid: int, pending: dict) -> dict:
     return await asyncio.to_thread(_handle_text, action, text, uid, pending)
 

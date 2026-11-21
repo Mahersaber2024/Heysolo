@@ -1,3 +1,5 @@
+# NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
+# PATH: copier/panel.py
 import asyncio
 import html
 import time
@@ -50,7 +52,7 @@ def _status_line(cfg: dict) -> str:
         return f"{OK} running on port <code>{cfg.get('port')}</code>"
     if cp.SERVER.error:
         return f"{BAD} not running: {_e(cp.SERVER.error)}"
-    return "■ off"
+    return "off"
 
 
 def main_view() -> dict:
@@ -71,7 +73,7 @@ def main_view() -> dict:
         lines.append(f"<i>{BAD} MT5 WebRequest only connects on port 80 (http) or 443 (https). "
                      "Use port 80, or put a proxy in front and set the Address.</i>")
     lines.append("<i>Open a channel to get the ready links for the EA.</i>")
-    toggle = _btn("■ Turn off", "ADM_CP_OFF") if cfg.get("enabled") else _btn("▶ Turn on", "ADM_CP_ON")
+    toggle = _btn("Turn off", "ADM_CP_OFF") if cfg.get("enabled") else _btn("▶ Turn on", "ADM_CP_ON")
     rows = [
         [toggle, _btn("🔁 Restart", "ADM_CP_RESTART")],
         [_btn(f"📡 Channels ({len(chans)})", "ADM_CP_CHS")],
@@ -326,7 +328,7 @@ async def handle_text(action: str, text: str, uid: int, pending: dict) -> dict:
                             "parse_mode": ParseMode.HTML})
         ch = await t(cp.add_channel, text)
         cfg = cp.get_config()
-        extra = "" if cfg.get("enabled") else "\n■ The copy server is off - turn it on in 📡 Copy Server."
+        extra = "" if cfg.get("enabled") else "\nThe copy server is off - turn it on in 📡 Copy Server."
         return _result(await t(channel_view, ch["id"]), send=[f"{OK} Channel created: {ch['name']}{extra}"])
     if action.startswith("cp_ren:"):
         cid = action.split(":", 1)[1]

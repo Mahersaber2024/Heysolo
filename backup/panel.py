@@ -1,12 +1,5 @@
-"""Telegram admin panel: Admin -> 💾 Backup & Restore (bot backup + full server backup).
-
-Same contract as copier/panel.py, plus two extra keys:
-    handle_callback(data, uid, pending) -> {"answer", "alert", "send", "view", "docs", "restart"}
-    handle_text(action, text, uid, pending) -> same
-"docs" = list of backup results to send to the admin's private chat,
-"restart" = True after a restore (the bot restarts itself to load it).
-Callback prefix: ADM_BK      pending prefix: bk_
-"""
+# NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
+# PATH: backup/panel.py
 from __future__ import annotations
 
 import asyncio
@@ -91,7 +84,6 @@ def _days(n: int) -> str:
     return "every day" if n == 1 else f"every {n} days"
 
 
-# ------------------------------------------------------------------ views
 def _kind_label(kind: str) -> str:
     return {"terminals": "🖥 Terminals", "full": "🧳 Bot + terminals (old)",
             "both": "📦 Bot + Terminals (2 files)"}.get(kind, "🤖 Bot")
@@ -111,7 +103,7 @@ def main_view() -> dict:
         auto = (f"{OK} on · {_days(cfg['every_days'])} · {_kind_label(cfg['auto_kind'])} · "
                 f"next <code>{_e(_when(nxt))}</code> ({_ago(nxt)})")
     else:
-        auto = "■ off"
+        auto = "off"
     lines = [
         "💾 <b>Backup &amp; Restore</b>",
         "🤖 <b>Bot backup</b> - database (users, accounts, access, topics, alerts), bot settings, "
@@ -319,7 +311,6 @@ def _done_lines(res: dict) -> list[str]:
     return lines[:60]
 
 
-# ------------------------------------------------------------------ handlers
 async def handle_callback(data: str, uid: int, pending: dict) -> dict:
     t = asyncio.to_thread
     if data == "ADM_BK":
@@ -430,7 +421,6 @@ async def receive_document(bot, uid: int, pending: dict, document) -> dict:
     return await asyncio.to_thread(stage, uid, path, True)
 
 
-# ------------------------------------------------------------------ sending / auto / restart
 def caption(res: dict, auto: bool = False) -> str:
     m = res.get("manifest") or {}
     db = m.get("db") or {}
@@ -468,7 +458,6 @@ def main_admin(fallback: int = 0) -> int:
 
 
 async def send_doc(bot, chat_id: int, res: dict, auto: bool = False) -> bool:
-    """Send a backup to the main admin, then delete it from this server - always, even if sending failed."""
     try:
         if res["size"] > SEND_LIMIT:
             try:

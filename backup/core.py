@@ -1,3 +1,5 @@
+# NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
+# PATH: backup/core.py
 import csv
 import io
 import json
@@ -23,8 +25,6 @@ VERSION = 3
 INSTALL_DIR = Path(settings.SETTINGS_FILE).resolve().parent
 ASSETS_DIR = INSTALL_DIR / "MT5"
 def _work_root() -> Path:
-    """Big temporary files (backup zips, uploads) must NOT live in /tmp: on many VPS images
-    that is a small RAM-backed tmpfs, so every MB written there is a MB of RAM."""
     for base in ("/var/tmp", str(INSTALL_DIR)):
         try:
             p = Path(base) / "heysolo-work"
@@ -46,7 +46,7 @@ SYSTEM_FILES = ("/etc/mt5-share.credentials",)
 LOCAL_KEYS = ("bot_token", "db_host", "db_port", "db_name", "db_user", "db_password")
 NAME_PREFIX = "heysolo_backup_"
 TERM_PREFIX = "heysolo_terminals_"
-FULL_PREFIX = "heysolo_full_"  # old combined backups: still accepted for restore
+FULL_PREFIX = "heysolo_full_"
 ALL_PREFIXES = (NAME_PREFIX, TERM_PREFIX, FULL_PREFIX)
 KINDS = ("bot", "terminals")
 AUTO_KINDS = ("bot", "terminals", "both")
@@ -116,7 +116,6 @@ def _host() -> str:
     return (h or "server")[:24]
 
 
-# ------------------------------------------------------------------ database
 def _connect():
     import psycopg2
     from db.database import db_params
@@ -187,7 +186,6 @@ def dump_db(zf: zipfile.ZipFile) -> dict:
                 cols = [c for c, _ in _columns(cur, table)]
                 if not cols:
                     continue
-                # stream to a disk file, never hold a whole table (twice) in RAM
                 with tempfile.NamedTemporaryFile("w+", encoding="utf-8", newline="",
                                                  dir=str(WORK_ROOT), suffix=".csv") as buf:
                     cur.copy_expert(
@@ -247,7 +245,7 @@ def restore_db(zf: zipfile.ZipFile, manifest: dict) -> dict:
                 tmp = f"_hs_restore_{done}"
                 cur.execute(f"CREATE TEMP TABLE {_q(tmp)} ("
                             + ", ".join(f"{_q(c)} text" for c in header) + ") ON COMMIT DROP")
-                with zf.open(name) as raw:   # streamed, not read() into memory
+                with zf.open(name) as raw:
                     cur.copy_expert(f"COPY {_q(tmp)} ({', '.join(_q(c) for c in header)}) "
                                     f"FROM STDIN WITH (FORMAT csv, HEADER true)",
                                     io.TextIOWrapper(raw, encoding="utf-8", newline=""))
@@ -281,7 +279,6 @@ def restore_db(zf: zipfile.ZipFile, manifest: dict) -> dict:
     return {"ok": True, "skipped": False, "rows": total, "tables": done, "missing": missing}
 
 
-# ------------------------------------------------------------------ files
 def _data_files() -> list[Path]:
     out: list[Path] = []
     for p in sorted(INSTALL_DIR.glob("*.json")):
@@ -347,10 +344,7 @@ def _merged_settings(backup_bytes: bytes) -> bytes:
     return json.dumps(restored, ensure_ascii=False, indent=2).encode("utf-8")
 
 
-# ------------------------------------------------------------------ create
 def create_backup(reason: str = "manual", kind: str = "bot") -> dict:
-    """Build ONE backup (bot or terminals) in a private temp folder.
-    The caller sends it and then calls discard()."""
     kind = "terminals" if kind in ("terminals", "full") else "bot"
     prefix = TERM_PREFIX if kind == "terminals" else NAME_PREFIX
     with _lock:
@@ -363,7 +357,6 @@ def create_backup(reason: str = "manual", kind: str = "bot") -> dict:
 
 
 def create_backups(reason: str = "manual", kind: str = "bot") -> list[dict]:
-    """kind: bot | terminals | both. 'both' makes two separate files."""
     kinds = list(KINDS) if kind in ("both", "full") else [kind]
     out: list[dict] = []
     try:
@@ -430,7 +423,6 @@ def _build_backup(out_dir: Path, reason: str, prefix: str, kind: str) -> dict:
     return {"path": path, "name": name, "size": size, "manifest": manifest}
 
 
-# ------------------------------------------------------------------ inspect / restore
 class BadBackup(ValueError):
     pass
 
@@ -485,8 +477,6 @@ def preview(info: dict) -> list[dict]:
 
 
 def restore(path: Path, scope: str = "all") -> dict:
-    """scope: all (everything in the file) | bot (skip the terminals of an old combined file)
-    | nocharts (everything, but leave the saved chart layouts out)."""
     info = inspect(path)
     m = info["manifest"]
     do_bot = info["has_bot"]
@@ -537,8 +527,6 @@ def restore(path: Path, scope: str = "all") -> dict:
         if full:
             plan_slugs = {p["target"].slug for p in plan if p["target"]}
             plan_prefixes = {str(p["target"].prefix) for p in plan if p["target"]}
-            # a wine prefix that also hosts a terminal outside this restore keeps its machine id,
-            # otherwise that other terminal's saved logins would stop working
             shared = set()
             for other in term.read_registry():
                 if other.slug not in plan_slugs and str(other.prefix) in plan_prefixes:
@@ -596,7 +584,6 @@ def incoming_path(token: str) -> Path:
 
 
 def discard(res: dict) -> None:
-    """Delete a freshly made backup (and its temp folder) from this server."""
     try:
         f = Path(res["path"])
         f.unlink(missing_ok=True)
