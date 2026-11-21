@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
+# PATH: mt5.sh
 
 set -uo pipefail
 set -E
@@ -118,7 +119,6 @@ vm.vfs_cache_pressure=50
 vm.page-cluster=0
 EOF
   sysctl --system >/dev/null 2>&1 || true
-  # journald keeps its runtime journal in /run (RAM) and can otherwise grow to 10% of it
   mkdir -p /etc/systemd/journald.conf.d 2>/dev/null || true
   cat > /etc/systemd/journald.conf.d/99-heysolo.conf <<'JEOF'
 [Journal]
@@ -276,8 +276,8 @@ link_shared_common(){
   mkdir -p "${mq_dir}"
   mkdir -p "${SHARED_MT5_COMMON_DIR}/Files"
   local sub
-  for sub in TelegramBridge TelegramBridge/Outbox TelegramBridge/Photos \
-             TelegramBridge/Control AccountStatus PropDashboard; do
+  for sub in HeySolo HeySolo/TelegramBridge HeySolo/TelegramBridge/Outbox HeySolo/TelegramBridge/Photos \
+             HeySolo/TelegramBridge/Control HeySolo/AccountStatus HeySolo/PropDashboard; do
     mkdir -p "${SHARED_MT5_COMMON_DIR}/Files/${sub}"
   done
 
@@ -1486,10 +1486,6 @@ raise_panel(){
 }
 
 strip_fullscreen(){
-  # Wine terminals often grab fullscreen and bury the taskbar.
-  # Whichever window is actually focused right now is left alone and
-  # kept in front; anything else that grabbed fullscreen gets pushed
-  # back down instead of being allowed to win the stacking race.
   local active=""
   command -v xdotool >/dev/null 2>&1 && active=$(xdotool getactivewindow 2>/dev/null)
   local id cls low
@@ -1961,8 +1957,6 @@ add_winehq_repo(){
   fi
   info "Adding the WineHQ repository for ${osid}/${codename}..."
   mkdir -p /etc/apt/keyrings
-  # apt only accepts keyring files ending in .asc (armored) or .gpg (binary); a ".key" file is ignored
-  # ("unsupported filetype") and the repo then fails with NO_PUBKEY.
   rm -f /etc/apt/keyrings/winehq-archive.key
   curl -fsSL https://dl.winehq.org/wine-builds/winehq.key \
     -o /etc/apt/keyrings/winehq-archive.asc || return 1
@@ -1980,7 +1974,6 @@ add_winehq_repo(){
   return 0
 }
 
-# Remove the WineHQ apt source + key (used when it is broken or not needed).
 remove_winehq_repo(){
   rm -f /etc/apt/sources.list.d/winehq.list /etc/apt/sources.list.d/winehq*.sources \
         /etc/apt/keyrings/winehq-archive.key /etc/apt/keyrings/winehq-archive.asc 2>/dev/null || true
@@ -2011,10 +2004,6 @@ install_wine_winehq(){
   return 1
 }
 
-# Always run the NEWEST Wine: MetaQuotes keeps changing MT5's protection and older Wine builds
-# (including the distro's own wine 10.x) stop working with new MT5 builds.
-# Order: WineHQ devel (newest) -> prebuilt newest Wine (Kron4ek/Wine-Builds, kept in /opt/wine-devel)
-# -> the distro package as the very last resort.
 WINE_PREFER_LATEST="${WINE_PREFER_LATEST:-1}"
 
 install_wine_portable(){
@@ -2036,9 +2025,6 @@ pick = [u for u in urls if ok(u, "-amd64-wow64.tar.xz")] or [u for u in urls if 
 print(pick[0] if pick else "")
 ' 2>/dev/null)
   [[ -z "${url}" ]] && { warn "Could not find a prebuilt Wine to download."; return 1; }
-  # NOT /tmp: on many VPS images /tmp is a small RAM-backed tmpfs, and the Wine tarball
-  # (~0.5 GB) unpacks to well over 1 GB -> "No space left on device". /opt is on the real
-  # disk and on the same filesystem as ${dest}, so the final mv is instant too.
   mkdir -p /opt
   tmp=$(mktemp -d /opt/.heysolo-wine.XXXXXX) || return 1
   info "Downloading ${url##*/} ..."
@@ -2075,8 +2061,6 @@ link_winehq_binaries(){
   return 0
 }
 
-# Wine from WineHQ lives in /opt/wine-*/bin and is only reachable through the links in
-# /usr/local/bin. After a reboot / apt upgrade those links can be gone ("wineserver: command not found").
 wine_bin_dir(){
   local d
   for d in /opt/wine-stable/bin /opt/wine-staging/bin /opt/wine-devel/bin; do
@@ -2085,22 +2069,17 @@ wine_bin_dir(){
   return 1
 }
 
-# Text to put in front of a command run as the MT5 user: puts the real wine folder first on PATH,
-# so wine works even when the links are missing.
 wine_path_export(){
   local d
   d=$(wine_bin_dir 2>/dev/null) || return 0
   printf "export PATH='%s':/usr/local/bin:\$PATH; " "${d}"
 }
 
-# Ubuntu/Debian's own wine package has no `wineserver` command on PATH: the binary is
-# /usr/lib/wine/wineserver64 (wine itself finds it, but our scripts call `wineserver -w` / `-k`).
 distro_wineserver_bin(){
   local c
   for c in /usr/lib/x86_64-linux-gnu/wine/wineserver /usr/lib/wine/wineserver64 /usr/lib/wine/wineserver; do
     [[ -x "${c}" ]] && { echo "${c}"; return 0; }
   done
-  # other layouts (multiarch, wine-development, ...): look for the real binary
   c=$(find /usr/lib /usr/libexec /usr/lib64 /opt -maxdepth 5 -type f -perm -u+x \
         \( -name 'wineserver' -o -name 'wineserver64' -o -name 'wineserver32' \) 2>/dev/null \
         | grep -v -e i386 -e wineserver32 | sort | head -n1)
@@ -2110,7 +2089,6 @@ distro_wineserver_bin(){
 
 ensure_wine_on_path(){
   local d b ws
-  # never leave dangling wine links behind: /usr/local/bin comes first in PATH and would hide /usr/bin/wine
   find /usr/local/bin -maxdepth 1 -xtype l -name 'wine*' -delete 2>/dev/null || true
   if d=$(wine_bin_dir 2>/dev/null); then
     for b in wine wine64 wineboot wineserver winecfg; do
@@ -2179,7 +2157,6 @@ install_wine(){
   if [[ "${WINE_PREFER_LATEST}" == "1" ]] && ! wine_bin_dir >/dev/null 2>&1; then
     install_wine_portable || true
   fi
-  # If no winehq-* package got installed, the WineHQ apt source is useless - don't leave it behind.
   if [[ -f /etc/apt/sources.list.d/winehq.list ]] \
      && ! dpkg -l 'winehq-*' 2>/dev/null | grep -q '^ii'; then
     remove_winehq_repo
@@ -2981,8 +2958,6 @@ declare -a AVAILABLE_EXES=()
 declare -a SELECTED_EXES=()
 declare -A REINSTALL_OK=()
 
-# Prints the terminal64.exe of an installed terminal (registered path first, then its own prefix).
-# Empty output = not installed.
 installed_termpath(){
   local slug="$1" line rec_path p
   line=$(grep -m1 "^${slug}|" "${TERMINALS_FILE}" 2>/dev/null || true)
@@ -3165,29 +3140,19 @@ slugify(){
   echo "$base" | tr '[:upper:] ' '[:lower:]_' | tr -cd 'a-z0-9_-'
 }
 
-# ---------------------------------------------------------------------------
-# Low-RAM protection for terminal installs (added): the installer used to leave
-# orphaned wine services behind and had no memory / concurrency checks.
-# ---------------------------------------------------------------------------
 INSTALL_LOCK_FILE="${INSTALL_LOCK_FILE:-/run/heysolo-install.pid}"
 INSTALL_MIN_AVAIL_MB="${INSTALL_MIN_AVAIL_MB:-450}"
 
 wine_prefix_of_pid(){
-  # prints the WINEPREFIX a process was started with (empty if none / unreadable)
   tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | sed -n 's/^WINEPREFIX=//p' | head -n1
 }
 
 reap_orphan_wine(){
-  # Kills wine processes of ${MT5_USER} that do NOT belong to a running terminal64.exe.
-  # Orphaned services.exe / plugplay.exe / svchost.exe / rpcss.exe (parent = PID 1)
-  # are what silently ate the RAM after interrupted installs.
   local pid pfx killed=0 keep=" "
-  # 1) prefixes of terminals that are really running right now -> keep untouched
   for pid in $(pgrep -u "${MT5_USER}" -f 'terminal(64)?\.exe' 2>/dev/null); do
     pfx="$(wine_prefix_of_pid "${pid}")"
     [[ -n "${pfx}" ]] && keep+="${pfx} "
   done
-  # 2) every other wine process (WINEPREFIX in env, or a Windows-style command line)
   for pid in $(pgrep -u "${MT5_USER}" 2>/dev/null); do
     [[ "${pid}" == "$$" ]] && continue
     local args
@@ -3214,7 +3179,6 @@ mem_available_mb(){
 }
 
 ensure_install_memory(){
-  # returns 0 = go ahead, 1 = user/low-memory says skip this terminal
   local avail running
   avail="$(mem_available_mb)"
   if (( avail >= INSTALL_MIN_AVAIL_MB )); then
@@ -3333,8 +3297,6 @@ install_selected(){
     fi
     rm -f "${marker}"
 
-    # the installer may leave its own wine processes running: close this prefix now
-    # (the terminal is started properly later, in its own screen session)
     as_wine "${wineprefix}" "wineserver -k" >/dev/null 2>&1 || true
 
     purge_wine_shortcuts
@@ -3382,8 +3344,6 @@ show_terminal_window(){
 }
 
 fit_new_window_to_workarea(){
-  # One-time only on first open: size to the work area so the taskbar stays visible.
-  # Do NOT loop this — repeated geometry under Wine shrinks the window.
   local slug="$1" termpath="${2:-}" tries=0 pid wid
   local sw sh wh
   sw="${SCREEN_RES_WH%x*}"

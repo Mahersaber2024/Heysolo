@@ -1,4 +1,5 @@
 # NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
+# PATH: heysolo_settings.py
 import json
 import logging
 import os
@@ -14,9 +15,9 @@ _OBSOLETE_KEYS = ("symbols", "notify", "notify_window")
 
 DEFAULT_BOT_TOKEN = ""
 DEFAULT_CHAT_ID = ""
-DEFAULT_THREADS = {"bias": 0, "trade": 0, "log": 0, "result": 0, "alert": 0}
+DEFAULT_THREADS = {"bias": 0, "trade": 0, "log": 0, "result": 0, "alert": 0, "public": 0}
 
-TOPIC_NAMES = {"bias": "Bias", "trade": "Trades", "log": "Logs", "result": "Results", "alert": "Alerts"}
+TOPIC_NAMES = {"bias": "Bias", "trade": "Trades", "log": "Logs", "result": "Results", "alert": "Alerts", "public": "Public"}
 
 DEFAULT_DB_HOST = "127.0.0.1"
 DEFAULT_DB_PORT = 5432
@@ -208,7 +209,7 @@ def get_threads() -> Dict[str, int]:
     return _load().get("threads", dict(DEFAULT_THREADS))
 
 def set_threads(bias: int = None, trade: int = None, log: int = None, result: int = None,
-                alert: int = None):
+                alert: int = None, public: int = None):
     data = _load()
     t = data.setdefault("threads", dict(DEFAULT_THREADS))
     if bias is not None:
@@ -221,6 +222,8 @@ def set_threads(bias: int = None, trade: int = None, log: int = None, result: in
         t["result"] = int(result)
     if alert is not None:
         t["alert"] = int(alert)
+    if public is not None:
+        t["public"] = int(public)
     _save(data)
 
 def clear_threads():

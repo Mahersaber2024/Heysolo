@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
+# PATH: install.sh
 
 set -euo pipefail
 
@@ -11,7 +12,7 @@ STATE_FILE="/etc/${SERVICE_NAME}.install_dir"
 SETTINGS_FILE="heysolo_settings.json"
 MT5_USER="mt5user"
 SHARED_COMMON_FILES="/home/${MT5_USER}/.heysolo-common/Files"
-BRIDGE_DIRS=(TelegramBridge TelegramBridge/Outbox TelegramBridge/Photos TelegramBridge/Control AccountStatus PropDashboard)
+BRIDGE_DIRS=(HeySolo HeySolo/TelegramBridge HeySolo/TelegramBridge/Outbox HeySolo/TelegramBridge/Photos HeySolo/TelegramBridge/Control HeySolo/AccountStatus HeySolo/PropDashboard)
 
 if [[ -t 1 ]]; then
 RED='\033[0;31m'

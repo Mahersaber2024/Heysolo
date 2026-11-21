@@ -1,4 +1,5 @@
 # NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
+# PATH: ea_settings.py
 import asyncio
 import hashlib
 import html
@@ -10,7 +11,7 @@ import re
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from telegram import InlineKeyboardButton as Btn, InlineKeyboardMarkup as Kb, Update
@@ -43,6 +44,7 @@ _drafts: dict = {}
 _req_lock = threading.RLock()
 _async_lock: asyncio.Lock | None = None
 _scan_cache: dict = {"at": 0.0, "charts": []}
+_req_view: dict = {}
 
 
 def setup(roots_fn, visible_fn, edit_fn, label_fn=None) -> None:
@@ -379,8 +381,11 @@ def write_apply_file(req: dict) -> bool:
     lines = [f"id={req['id']}"] + [f"{name}={ch['new']}" for name, ch in req["changes"].items()]
     tmp = folder / f".Apply_{req['key']}@{req['id']}.tmp"
     try:
+        from biasfeed import server as _bf
         folder.mkdir(parents=True, exist_ok=True)
+        _bf.give_to_mt5(folder, 0o2775)
         tmp.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
+        _bf.give_to_mt5(tmp, 0o664)
         tmp.replace(path)
         return True
     except OSError as e:
@@ -424,6 +429,266 @@ def entry_view(uid: int, login: str | None = None) -> dict:
     return home_view(uid, login)
 
 
+_MASTER = {
+    1: ("Limitations",),
+    2: ("TLimitation",),
+    3: ("EnableBreakeven",),
+    4: ("EnablePartialExit",),
+    5: ("Trailing",),
+    6: ("EnableCopying",),
+    7: ("EnableNewsCheck",),
+    8: ("AllowNY", "AllowLN"),
+    11: ("ReverseOnSL",),
+    12: ("FactScalp",),
+    13: ("PropAccountMode",),
+}
+_LIMIT_PARTS = (
+    ("MaxDailyLossValue", "eas_d_dl", None),
+    ("MaxWeeklyLossValue", "eas_d_wl", None),
+    ("MaxDailyProfitValue", "eas_d_dp", None),
+)
+_TRADE_PARTS = (
+    ("MaxDailySLCount", "eas_d_sl_day", ""),
+    ("Consecutivelosing", "eas_d_streak", ""),
+    ("MaxOpenTrades", "eas_d_open", ""),
+    ("MaxOpenTradesPerSymbol", "eas_d_open_sym", ""),
+    ("MaxDailyTrades", "eas_d_day", ""),
+    ("MaxTradesPerSymbol", "eas_d_day_sym", ""),
+    ("CooldownMinutes", "eas_d_cd", "m"),
+)
+_COPY_KEYS = (
+    (("proportion", "factor", "multipl"), "ProportionalFactor", "x", ""),
+    (("percent", "risk", "%"), "RiskPercent", "", "%"),
+    (("fixed",), "FixedLotSize", "", " lot"),
+)
+_COPY_NAMES = {"EnableCopying", "ServerCopying", "AccountMode", "UseLastPositionLot", "LotSizeType",
+               "FixedLotSize", "RiskPercent", "ProportionalFactor"}
+_FEATURES = (
+    ("EnableBreakeven", "eas_d_be"),
+    ("EnablePartialExit", "eas_d_pe"),
+    ("Trailing", "eas_d_tr"),
+    ("EnableCopying", "eas_d_cp"),
+    ("EnableNewsCheck", "eas_d_nf"),
+    ("ReverseOnSL", "eas_d_rv"),
+    ("FactScalp", "eas_d_fs"),
+    ("PropAccountMode", "eas_d_pr"),
+    ("AllowNY", "eas_d_ny"),
+    ("AllowLN", "eas_d_ln"),
+)
+
+
+def _on(raw) -> bool:
+    if raw is None:
+        return False
+    try:
+        return float(str(raw).translate(_DIGITS)) > 0
+    except ValueError:
+        return _truth(raw)
+
+
+def _fnum(raw) -> str:
+    try:
+        return fmt_num(float(str(raw).translate(_DIGITS)))
+    except (TypeError, ValueError):
+        return "?"
+
+
+def _sec_dot(chart: Chart, sec: int) -> str:
+    fs = [chart.field(n) for n in _MASTER.get(sec, ())]
+    fs = [f for f in fs if f is not None]
+    if not fs:
+        return ""
+    return " ●" if any(_on(f.raw) for f in fs) else " ○"
+
+
+class _Board:
+    def __init__(self, chart: Chart, lang: str, edited: set):
+        self.chart = chart
+        self.lang = lang
+        self.edited = edited
+
+    def has(self, name: str) -> bool:
+        return self.chart.field(name) is not None
+
+    def raw(self, name: str):
+        f = self.chart.field(name)
+        return None if f is None else f.raw
+
+    def on(self, name: str) -> bool:
+        return _on(self.raw(name))
+
+    def num(self, name: str) -> float:
+        try:
+            return float(str(self.raw(name)).translate(_DIGITS))
+        except ValueError:
+            return 0.0
+
+    def t(self, key: str) -> str:
+        return html.escape(L.t(self.lang, key))
+
+    def val(self, text: str) -> str:
+        t = html.escape(text)
+        return f"<b>{L.ltr(t) if self.lang == 'fa' else t}</b>"
+
+    def mark(self, names) -> str:
+        return " ✎" if self.edited.intersection(names) else ""
+
+    def head(self, key: str) -> str:
+        return f"▸ {self.t(key)}: "
+
+    def parts(self, table, pre: str = "", dsuf: str = "") -> list:
+        out = []
+        for name, key, suf in table:
+            if self.num(name) > 0:
+                tail = suf if suf is not None else dsuf
+                out.append(f"{self.t(key)} {self.val(pre + _fnum(self.raw(name)) + tail)}")
+        return out
+
+    def off_line(self, key: str, names) -> str:
+        return f"{self.head(key)}○ <b>{self.t('eas_off')}</b>{self.mark(names)}"
+
+    def enum_text(self, name: str, lang: str = "en") -> str:
+        f = self.chart.field(name)
+        return "" if f is None else show(self.chart, f, f.raw, lang)
+
+    def copier_on(self) -> bool:
+        return self.on("EnableCopying") or self.on("ServerCopying")
+
+    def copier_receiver(self) -> bool:
+        f = self.chart.field("AccountMode")
+        if f is None or not self.copier_on():
+            return False
+        label = self.enum_text("AccountMode").lower()
+        if "receiv" in label:
+            return True
+        if "transmit" in label:
+            return False
+        return _on(f.raw)
+
+    def copy_entry(self) -> str | None:
+        parts = []
+        label = self.enum_text("LotSizeType")
+        key = label.lower()
+        if label:
+            parts.append(html.escape(label))
+        target = None
+        for words, name, pre, suf in _COPY_KEYS:
+            if self.has(name) and any(w in key for w in words):
+                target = (name, pre, suf)
+                break
+        if target is not None:
+            name, pre, suf = target
+            parts.append(self.val(pre + _fnum(self.raw(name)) + suf))
+        else:
+            for words, name, pre, suf in _COPY_KEYS:
+                if self.num(name) > 0:
+                    f = self.chart.field(name)
+                    parts.append(f"{html.escape(_short(f.label, 22))} {self.val(pre + _fnum(f.raw) + suf)}")
+        if self.on("UseLastPositionLot"):
+            parts.append(self.t("eas_d_lastlot"))
+        if not parts:
+            return None
+        return self.head("eas_d_copy_in") + " · ".join(parts) + self.mark(_COPY_NAMES)
+
+    def risk(self) -> str | None:
+        if self.copier_receiver():
+            line = self.copy_entry()
+            if line:
+                return line
+        if not (self.has("riskType") or self.has("RiskAmount")):
+            return None
+        kind = int(self.num("riskType"))
+        parts = []
+        if kind == 0:
+            parts.append(self.val("$" + _fnum(self.raw("RiskAmount"))))
+        elif kind == 1:
+            base = self.t("eas_d_eq") if self.num("riskBase") >= 1 else self.t("eas_d_bal")
+            parts.append(f"{self.val(_fnum(self.raw('PercentRisk')) + '%')} {base}")
+        else:
+            parts.append(f"{self.val(_fnum(self.raw('FiedLot')))} {self.t('eas_d_lot')}")
+        if self.on("useRiskToRewardForTP"):
+            parts.append(f"RR {self.val('1:' + _fnum(self.raw('riskToRewardRatio')))}")
+        if self.num("MaxFloatingRisk") > 0:
+            parts.append(f"{self.t('eas_d_float')} {self.val(_fnum(self.raw('MaxFloatingRisk')))}")
+        names = {"riskType", "riskBase", "RiskAmount", "PercentRisk", "FiedLot",
+                 "useRiskToRewardForTP", "riskToRewardRatio", "MaxFloatingRisk"}
+        return self.head("eas_d_risk") + " · ".join(parts) + self.mark(names)
+
+    def limits(self) -> str | None:
+        if not self.has("Limitations"):
+            return None
+        names = {"Limitations", "LimitationType", "AutoCloseOnLimit"} | {n for n, _, _ in _LIMIT_PARTS}
+        if not self.on("Limitations"):
+            return self.off_line("eas_d_limits", names)
+        dollar = self.num("LimitationType") < 1
+        parts = self.parts(_LIMIT_PARTS, "$" if dollar else "", "" if dollar else "%")
+        if self.on("AutoCloseOnLimit"):
+            parts.append(self.t("eas_d_close"))
+        return self.head("eas_d_limits") + (" · ".join(parts) if parts else "—") + self.mark(names)
+
+    def trades(self) -> str | None:
+        if not self.has("TLimitation"):
+            return None
+        names = {"TLimitation", "DisableHedge"} | {n for n, _, _ in _TRADE_PARTS}
+        if not self.on("TLimitation"):
+            return self.off_line("eas_d_trades", names)
+        parts = self.parts(_TRADE_PARTS)
+        if self.on("DisableHedge"):
+            parts.append(self.t("eas_d_nohedge"))
+        return self.head("eas_d_trades") + (" · ".join(parts) if parts else "—") + self.mark(names)
+
+    def extra(self, name: str) -> str:
+        if name == "EnableBreakeven" and self.num("BreakevenTarget") > 0:
+            return " " + self.val("@" + _fnum(self.raw("BreakevenTarget")))
+        if name == "EnableCopying":
+            label = self.enum_text("AccountMode")
+            low = label.lower()
+            key = "eas_d_rx" if "receiv" in low else ("eas_d_tx" if "transmit" in low else "")
+            label = L.t(self.lang, key) if key else label
+            return (" " + self.val(label)) if label else ""
+        if name == "EnableNewsCheck" and self.num("WindowTimeNews") > 0:
+            return " " + self.val(_fnum(self.raw("WindowTimeNews")) + "m")
+        if name == "EnablePartialExit":
+            lv = [f"{_fnum(self.raw(f'PartialExitLevel{i}'))}→{_fnum(self.raw(f'PartialExitPercent{i}'))}%"
+                  for i in (1, 2, 3)
+                  if self.num(f"PartialExitLevel{i}") > 0 and self.num(f"PartialExitPercent{i}") > 0]
+            return (" " + self.val("@" + " / ".join(lv))) if lv else ""
+        if name == "Trailing":
+            lv = [f"{_fnum(self.raw(f'TrailingLevel{i}'))}→{_fnum(self.raw(f'TrailingPut{i}'))}"
+                  for i in (1, 2, 3)
+                  if self.num(f"TrailingLevel{i}") > 0 and self.num(f"TrailingPut{i}") > 0]
+            return (" " + self.val("@" + " / ".join(lv))) if lv else ""
+        return ""
+
+    def features(self) -> list:
+        on_items, off_items = [], []
+        for name, key in _FEATURES:
+            if not self.has(name):
+                continue
+            label = self.t(key) + ("✎" if name in self.edited else "")
+            if self.on(name) or (name == "EnableCopying" and self.on("ServerCopying")):
+                on_items.append(label + self.extra(name))
+            else:
+                off_items.append(label)
+        out = []
+        if on_items:
+            out.append(f"● <b>{self.t('eas_on')}</b>: " + " · ".join(on_items))
+        if off_items:
+            out.append(f"○ <b>{self.t('eas_off')}</b>: " + " · ".join(off_items))
+        return out
+
+
+def dashboard_lines(chart: Chart, lang: str, edited: set) -> list:
+    b = _Board(chart, lang, edited)
+    top = [ln for ln in (b.risk(), b.limits(), b.trades()) if ln]
+    feats = b.features()
+    out = list(top)
+    if top and feats:
+        out.append("")
+    out.extend(feats)
+    return out
+
+
 def chart_view(uid: int, chart: Chart) -> dict:
     lang = L.get_lang(uid)
     d = clean_draft(uid, chart)
@@ -432,6 +697,10 @@ def chart_view(uid: int, chart: Chart) -> dict:
     waiting = pending_count(chart)
     if waiting:
         lines.append(L.t(lang, "eas_waiting_n", n=waiting))
+    board = dashboard_lines(chart, lang, set(d))
+    if board:
+        lines.append("")
+        lines.extend(board)
     lines.append("")
     lines.append(L.t(lang, "eas_pick_section"))
     rows, row = [], []
@@ -440,7 +709,7 @@ def chart_view(uid: int, chart: Chart) -> dict:
         if not fs:
             continue
         n = sum(1 for f in fs if f.name in d)
-        label = chart.section_title(sec, lang) + (f" ✎{n}" if n else "")
+        label = chart.section_title(sec, lang) + _sec_dot(chart, sec) + (f" ✎{n}" if n else "")
         row.append(Btn(label, callback_data=f"EAS_S_{chart.kid}_{sec}_0"))
         if len(row) == 2:
             rows.append(row)
@@ -677,8 +946,73 @@ def user_text(req: dict, lang: str) -> str:
     return _cap("\n".join(lines))
 
 
+def _forget_view(q) -> None:
+    m = getattr(q, "message", None)
+    if m is not None:
+        _req_view.pop((m.chat_id, m.message_id), None)
+
+
 async def _edit(q, v: dict) -> None:
+    _forget_view(q)
     await _hooks["edit"](q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+
+
+def _find_chart(key: str) -> "Chart | None":
+    for c in scan_charts(force=True):
+        if c.key == key:
+            return c
+    return None
+
+
+def _norm_applied(f: Field, v: str) -> str:
+    if f.kind == "d":
+        try:
+            return fmt_num(float(v))
+        except ValueError:
+            return v
+    return v
+
+
+def _with_applied(chart: Chart, values: dict) -> Chart:
+    fields = [replace(f, raw=_norm_applied(f, str(values[f.name]))) if f.name in values else f
+              for f in chart.fields]
+    return replace(chart, fields=fields)
+
+
+def _origin(req: dict):
+    secs = {int(c.get("sec", 0)) for c in req.get("changes", {}).values()}
+    return next(iter(secs)) if len(secs) == 1 else None
+
+
+def _nav_kb(req: dict, lang: str):
+    kid = kid_of(req["key"])
+    row = []
+    sec = _origin(req)
+    if sec is not None:
+        key = f"eas_sec_{sec}"
+        title = L.t(lang, key)
+        if title == key:
+            title = next(iter(req["changes"].values())).get("section", str(sec))
+        row.append(Btn("← " + _short(title, 28), callback_data=f"EAS_S_{kid}_{sec}_0"))
+    row.append(Btn(L.t(lang, "eas_btn_sections"), callback_data=f"EAS_C_{kid}"))
+    return Kb([row])
+
+
+def _return_view(req: dict, lang: str) -> "dict | None":
+    chart = _find_chart(req["key"])
+    if chart is None:
+        return None
+    uid = int(req["uid"])
+    chart = _with_applied(chart, req.get("result") or {})
+    sec = _origin(req)
+    if sec is not None and chart.section_fields(sec):
+        first = next((chart.field(n) for n in req["changes"] if chart.field(n) is not None), None)
+        v = section_view(uid, chart, sec, _page_of(chart, first) if first is not None else 0)
+    else:
+        v = chart_view(uid, chart)
+    banner = _status_line(req, lang) + f"\n<code>#{req['id']}</code>"
+    return {"text": banner + "\n" + "─" * 27 + "\n" + v["text"], "reply_markup": v["reply_markup"],
+            "parse_mode": ParseMode.HTML}
 
 
 async def _sync_admin_msgs(bot, req: dict) -> None:
@@ -695,21 +1029,33 @@ async def _sync_admin_msgs(bot, req: dict) -> None:
 
 
 async def _notify_user(bot, req: dict, send_new: bool = True) -> None:
-    lang = L.get_lang(req["uid"])
-    text = user_text(req, lang)
+    uid = int(req["uid"])
+    lang = L.get_lang(uid)
     um = req.get("user_msg")
-    if um:
+    mkey = (um["chat"], um["msg"]) if um else None
+    viewing = mkey is not None and _req_view.get(mkey) == req["id"]
+    final = req.get("status") in ("applied", "failed", "rejected")
+    edited = False
+    if viewing:
+        view = await asyncio.to_thread(_return_view, req, lang) if final else None
+        if view is None:
+            view = {"text": user_text(req, lang), "reply_markup": _nav_kb(req, lang), "parse_mode": ParseMode.HTML}
         try:
-            await bot.edit_message_text(chat_id=um["chat"], message_id=um["msg"], text=text,
-                                        parse_mode=ParseMode.HTML)
-        except TelegramError:
-            pass
+            await bot.edit_message_text(chat_id=um["chat"], message_id=um["msg"], text=view["text"],
+                                        reply_markup=view["reply_markup"], parse_mode=view["parse_mode"])
+            edited = True
+            if final:
+                _req_view.pop(mkey, None)
+        except TelegramError as e:
+            log.debug("EA settings: could not update request message: %s", e)
     if not send_new:
+        return
+    if edited and final and int(req.get("decided_by") or 0) == uid:
         return
     try:
         await bot.send_message(chat_id=req.get("chat") or req["uid"], text=_status_line(req, lang)
                                + f"\n<code>#{req['id']}</code> · {html.escape(req['symbol'])}",
-                               parse_mode=ParseMode.HTML)
+                               reply_markup=_nav_kb(req, lang), parse_mode=ParseMode.HTML)
     except TelegramError as e:
         log.debug("EA settings: could not notify user %s: %s", req["uid"], e)
 
@@ -745,8 +1091,9 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: int, c
         await asyncio.to_thread(_save_reqs, data)
     _drafts.pop((uid, chart.key), None)
     await q.answer(L.t(lang, "eas_sent_toast_admin" if is_admin else "eas_sent_toast"))
-    await _hooks["edit"](q, user_text(req, lang), parse_mode=ParseMode.HTML,
-                         reply_markup=Kb([[Btn(L.t(lang, "eas_btn_sections"), callback_data=f"EAS_C_{chart.kid}")]]))
+    if q.message:
+        _req_view[(q.message.chat_id, q.message.message_id)] = req["id"]
+    await _hooks["edit"](q, user_text(req, lang), parse_mode=ParseMode.HTML, reply_markup=_nav_kb(req, lang))
     if is_admin:
         return
     admins = [a for a in heysolo_db.get_admin_ids() if int(a) != int(uid)]
@@ -953,6 +1300,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, da
 
     if data == "EAS_CLOSE":
         await q.answer()
+        _forget_view(q)
         await _hooks["edit"](q, L.t(lang, "eas_closed"), parse_mode=ParseMode.HTML)
         return
 

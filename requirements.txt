@@ -1,2 +1,5 @@
 python-telegram-bot[rate-limiter]
 psycopg2-binary
+telethon
+httpx
+Pillow

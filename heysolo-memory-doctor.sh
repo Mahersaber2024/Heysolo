@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
+# PATH: heysolo-memory-doctor.sh
 set -Eeuo pipefail
 
 echo "HeySolo memory and terminal diagnostic"

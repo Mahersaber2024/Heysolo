@@ -76,6 +76,18 @@ Then connect [RealVNC Viewer](https://www.realvnc.com/en/connect/download/viewer
 
 MQL5 assets are kept during routine updates and only overwritten when you force a sync.
 
+## Updating Python requirements
+
+If `requirements.txt` changed (for example after copying new bot files over an existing install), you don't need to reinstall everything. Just update the packages inside the existing virtualenv and restart the service:
+
+```bash
+cd /opt/heysolo/bot
+source venv/bin/activate
+pip install -r requirements.txt
+deactivate
+systemctl restart heysolo-bot
+```
+
 ## Backup and moving to a new server
 
 In Telegram: **Admin → 💾 Backup**.
@@ -92,6 +104,16 @@ Moving to a new server:
 3. Check the list it shows, press **Restore now**. For the terminals file the terminals are closed, their wine sessions are cleaned, their data is put back and they start again one by one (the bot is not restarted). If a terminal misbehaves after a restore, use **Same, but without saved charts**. Terminals that are not installed yet are skipped - install them and restore again.
 
 Restore replaces the current state and no safety copy is kept. Telegram bots can only download files up to 20 MB: for a bigger backup copy it to the server and run `cd /opt/heysolo/bot && venv/bin/python -m backup.cli restore <file>`.
+
+## Dashboard (Telegram Mini App)
+
+The dashboard runs inside the bot and opens only from Telegram. No nginx, Caddy or tunnel is needed: the HTTPS server and the Let's Encrypt certificate are the same ones the bot already uses for the Liquidity Hunter feed.
+
+1. Point the domain's A record (for example `dash.example.com`) to the server IP (Cloudflare proxy on is fine).
+2. In Telegram open **Admin → ◌ Dashboard → ✎ Domain** and send the domain.
+3. The bot starts on port 8443, opens it in ufw, requests the certificate and renews it. When HTTPS shows "Let's Encrypt", tap **◌ Open Dashboard**.
+
+With the Cloudflare proxy, set SSL/TLS mode to Full. Each user sees only their own accounts. Push notifications and price alert chimes (worker) are not part of this version.
 
 ## Security
 

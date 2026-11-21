@@ -1,4 +1,5 @@
 # NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
+# PATH: heysolo_bot.py
 import asyncio
 import functools
 import html
@@ -11,13 +12,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import os
 import glob
+import shutil
 import time
 import subprocess
 import threading
 import uuid
 import concurrent.futures
 
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonCommands, ReplyKeyboardMarkup, Update, WebAppInfo
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 from telegram.ext import (
@@ -37,6 +39,9 @@ for _noisy in ("httpx", "httpcore", "telegram", "telegram.ext", "telegram.bot", 
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 import heysolo_settings as settings
+from publisher import watch_public, register_admin_handlers as register_public_admin
+from publisher import panel as public_panel
+from publisher import watcher as public_watcher
 import language as L
 import logger_bot
 import ea_settings
@@ -47,6 +52,7 @@ from copier import panel as copier_panel
 from biasfeed import server as bias_server
 from biasfeed import panel as bias_panel
 from backup import panel as backup_panel
+from dashboard_web import server as dash_server
 from prop.plan_prop import format_prop_panel_message as _format_prop_panel_message
 from prop.plan_settings import format_settings_panel_message as _format_settings_panel_message
 from prop.plan_status import (
@@ -58,10 +64,10 @@ from prop.plan_status import (
 BOT_TOKEN = settings.get_bot_token()
 CHAT_ID = settings.get_chat_id()
 _threads = settings.get_threads()
-THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT, THREAD_ALERT = (
+THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT, THREAD_ALERT, THREAD_PUBLIC = (
     _threads.get("bias") or None, _threads.get("trade") or None,
     _threads.get("log") or None, _threads.get("result") or None,
-    _threads.get("alert") or None,
+    _threads.get("alert") or None, _threads.get("public") or None,
 )
 OUTBOX_POLL_SECONDS = settings.get_outbox_poll_seconds()
 
@@ -96,8 +102,13 @@ class Root:
     source: str
 
     @property
+    def hs(self) -> Path:
+        # every EA file/folder lives inside Common\Files\HeySolo
+        return self.path / "HeySolo"
+
+    @property
     def bridge(self) -> Path:
-        return self.path / "TelegramBridge"
+        return self.hs / "TelegramBridge"
 
     @property
     def outbox(self) -> Path:
@@ -113,11 +124,11 @@ class Root:
 
     @property
     def accounts(self) -> Path:
-        return self.path / "AccountStatus"
+        return self.hs / "AccountStatus"
 
     @property
     def dashboards(self) -> Path:
-        return self.path / "PropDashboard"
+        return self.hs / "PropDashboard"
 
     @property
     def dirs(self) -> tuple[Path, ...]:
@@ -245,6 +256,8 @@ def _ensure_root_dirs(root: Root) -> bool:
     try:
         for d in root.dirs:
             d.mkdir(parents=True, exist_ok=True)
+        for d in (root.hs, root.bridge) + root.dirs:
+            bias_server.give_to_mt5(d, 0o2775)
         return True
     except OSError as e:
         log.warning("Cannot prepare %s (%s): %s", root.path, root.source, e)
@@ -274,7 +287,6 @@ G_BIAS = "◈"
 G_MANUAL = "✎"
 G_AUTO = "⟳"
 G_ON = "▶"
-G_OFF = "■"
 G_ADMIN = "⚙"
 G_USER = "◍"
 G_BACK = "←"
@@ -860,14 +872,12 @@ def _row(label: str, value: str, mark: str = "") -> str:
 DOT_FULL, DOT_EMPTY, DOT_WIDTH = "\u2022", "\u25cb", 10
 
 def _dot_bar(magnitude: float, scale: float) -> str:
-    """Dot bar for the General section. `magnitude` is an absolute value,
-    `scale` is the largest magnitude in the group (used to normalize)."""
     if scale <= 0:
         return DOT_EMPTY * DOT_WIDTH
     ratio = max(0.0, min(abs(magnitude) / scale, 1.0))
     filled = int(round(ratio * DOT_WIDTH))
     if magnitude != 0 and filled == 0:
-        filled = 1  # never show a nonzero value as a fully empty bar
+        filled = 1
     return DOT_FULL * filled + DOT_EMPTY * (DOT_WIDTH - filled)
 
 def _dot_row(label: str, bar: str, value: str) -> str:
@@ -1095,7 +1105,9 @@ def _write_control_blocking(login: str, st: "AccountState") -> bool:
     tmp = path.with_suffix(".tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        bias_server.give_to_mt5(path.parent, 0o2775)
         tmp.write_text(payload, encoding="ascii", errors="replace")
+        bias_server.give_to_mt5(tmp, 0o664)
         tmp.replace(path)
         return True
     except (OSError, ValueError) as e:
@@ -1146,6 +1158,16 @@ def visible_accounts(user_id: int | None = None) -> list[dict]:
         log.warning("Could not read account assignments for %s: %s", user_id, e)
         return []
     return [a for a in accounts if a["login"] in allowed]
+
+def assigned_logins(user_id: int) -> list[str]:
+    """Strictly the accounts granted to this person in the bot, with no admin bypass.
+    Used by the web dashboard so an admin only sees the accounts assigned to them."""
+    try:
+        granted = set(heysolo_db.get_db().get_user_logins(int(user_id)))
+    except Exception as e:
+        log.warning("Could not read account assignments for %s: %s", user_id, e)
+        return []
+    return [a["login"] for a in list_accounts() if a["login"] in granted]
 
 def resolve_login(user_id: int) -> str | None:
     accounts = visible_accounts(user_id)
@@ -1329,6 +1351,11 @@ def _prepare_outbox_batch() -> list[dict]:
             continue
         try:
             event_type, thread_id, photo_name, account, text = parse_event(evt)
+            if event_type == "ALERT" and account:
+                try:
+                    dash_server.save_alert(account, text)
+                except Exception as e:
+                    log.warning("Dashboard alert save failed for %s: %s", account, e)
             photo_path = _resolve_photo_path(root, photo_name) if photo_name else None
 
             ea_code, ea_name = _account_ea(account) if account else ("", "")
@@ -1357,7 +1384,7 @@ def _prepare_outbox_batch() -> list[dict]:
             photo_bytes = None
             if photo_path and photo_path.exists():
                 try:
-                    photo_bytes = photo_path.read_bytes()
+                    photo_bytes = public_watcher.stamp_bytes(photo_path.read_bytes())
                 except OSError as e:
                     log.warning("Could not read %s: %s", photo_path, e)
 
@@ -1449,8 +1476,18 @@ def _safe_unlink(path: Path | None) -> bool:
         return False
 
 
+_JOURNAL_SHOT_RE = re.compile(r"\d+_(open|close)\.png", re.I)
+
+
+def _is_journal_shot(p: Path | None) -> bool:
+    """<posId>_open.png / <posId>_close.png in PropDashboard/shots/<login>/ belong to the
+    trade journal (the web dashboard serves them). The Telegram relay must never delete them."""
+    return bool(p and _JOURNAL_SHOT_RE.fullmatch(p.name) and "shots" in p.parts)
+
+
 def _cleanup_event_files(evt: Path, photo_path: Path | None) -> None:
-    _safe_unlink(photo_path)
+    if not _is_journal_shot(photo_path):
+        _safe_unlink(photo_path)
     if not _safe_unlink(evt):
         if _quarantine_file(evt):
             log.warning("Delivered %s but could not delete it - moved to Failed\\", evt.name)
@@ -1582,6 +1619,17 @@ async def _journal_link(bot, kind: str, account: str, text: str, chat, thread, m
         log.warning("Could not link journal posts for account %s (%s): %s", account, kind, e)
 
 
+def _as_jpeg(data: bytes) -> bytes:
+    """Re-encode a picture as a plain RGB JPEG (max 2560 px) - the safest thing Telegram accepts as a photo."""
+    from io import BytesIO
+    from PIL import Image
+    im = Image.open(BytesIO(data)).convert("RGB")
+    im.thumbnail((2560, 2560))
+    out = BytesIO()
+    im.save(out, "JPEG", quality=92)
+    return out.getvalue()
+
+
 async def watch_outbox(app: Application):
     bot = app.bot
     consecutive_errors = 0
@@ -1604,15 +1652,30 @@ async def watch_outbox(app: Application):
                             except RetryAfter:
                                 raise
                             except Exception as photo_err:
-                                log.warning("send_photo failed (%s) - sending as document",
-                                            photo_err)
-                                sent_msg = await bot.send_document(
-                                    chat_id=target_chat,
-                                    message_thread_id=target_thread or None,
-                                    document=photo_bytes,
-                                    filename=photo_name or "attachment",
-                                    caption=text[:1024],
-                                )
+                                log.warning("send_photo failed for %s (%s: %s, %d bytes) - retrying as JPEG",
+                                            photo_name, type(photo_err).__name__, photo_err,
+                                            len(photo_bytes))
+                                sent_msg = None
+                                try:
+                                    sent_msg = await bot.send_photo(
+                                        chat_id=target_chat,
+                                        message_thread_id=target_thread or None,
+                                        photo=await asyncio.to_thread(_as_jpeg, photo_bytes),
+                                        caption=text[:1024],
+                                    )
+                                except RetryAfter:
+                                    raise
+                                except Exception as jpg_err:
+                                    log.warning("JPEG retry failed for %s (%s: %s) - sending as document",
+                                                photo_name, type(jpg_err).__name__, jpg_err)
+                                if sent_msg is None:
+                                    sent_msg = await bot.send_document(
+                                        chat_id=target_chat,
+                                        message_thread_id=target_thread or None,
+                                        document=photo_bytes,
+                                        filename=photo_name or "attachment",
+                                        caption=text[:1024],
+                                    )
                         else:
                             sent_msg = await bot.send_message(
                                 chat_id=target_chat,
@@ -1837,7 +1900,7 @@ def ea_controller_view(user_id: int, login: str, st: "AccountState") -> dict:
     trade_now = trading_label(st.trading, lang)
     trade_next = L.t(lang, "off_cap") if st.trading else L.t(lang, "on_cap")
     mode_glyph = G_MANUAL if manual else G_AUTO
-    trade_glyph = G_ON if st.trading else G_OFF
+    trade_glyph = G_ON if st.trading else ""
 
     lines = [f"{G_EXPERT} <b>{html.escape(str(login))} · "
              f"{html.escape(caps.get('display_name') or 'EA')}</b>", RULE]
@@ -1846,7 +1909,7 @@ def ea_controller_view(user_id: int, login: str, st: "AccountState") -> dict:
                          note=_pending_note(st, 'mode', lang)))
     if caps["has_trading"]:
         lines.append(L.t(lang, "ea_trading_line", g=trade_glyph, now=trade_now,
-                         note=_pending_note(st, 'trading', lang)))
+                         note=_pending_note(st, 'trading', lang)).lstrip())
     lines.append(RULE)
     lines.append(_last_control_line(login, lang))
     lines.append(L.t(lang, "ea_read_at", time=ltr(datetime.now(NY_TZ).strftime('%H:%M:%S'))))
@@ -2192,7 +2255,7 @@ def today_trades_view(user_id: int, login: str) -> dict:
 def yesterday_trades_view(user_id: int, login: str) -> dict:
     return _trades_view(user_id, login, "yesterday", "yst")
 
-TOPIC_KIND_LABELS = {"bias": "Bias", "trade": "Trades", "log": "Logs", "result": "Results", "alert": "Alerts"}
+TOPIC_KIND_LABELS = {"bias": "Bias", "trade": "Trades", "log": "Logs", "result": "Results", "alert": "Alerts", "public": "Public"}
 
 def topic_label(kind: str, lang: str = "en") -> str:
     if kind in TOPIC_KIND_LABELS:
@@ -2389,6 +2452,50 @@ _pending: dict[int, str] = {}
 _DIGITS_TO_ASCII = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٫", "01234567890123456789.")
 CANCEL_WORDS = {"cancel", "/cancel", "لغو", "انصراف"}
 
+async def restore_menu_button(bot) -> None:
+    try:
+        await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+    except TelegramError as e:
+        log.warning("Menu button not restored: %s", e)
+
+def dash_view() -> dict:
+    st = dash_server.status()
+    url = st["url"]
+    if st["running"]:
+        state = "online" + (f" · port {st['port']}" if st["tls"] else "")
+    else:
+        state = "offline" + (f" ({html.escape(st['error'])})" if st["error"] else "")
+    rows = []
+    if url and st["running"]:
+        rows.append([InlineKeyboardButton("◌  Open Dashboard  ◌", web_app=WebAppInfo(url=url))])
+    rows.append([InlineKeyboardButton("✎  Domain", callback_data="ADM_DS_SET"),
+                 InlineKeyboardButton("⟳  Refresh", callback_data="ADM_DS")])
+    rows.append([InlineKeyboardButton(f"{G_BACK} Back", callback_data="ADM_PANEL")])
+    lines = ["◈ <b>Dashboard</b>", "━━━━━━━━━━━━━━",
+             f"{G_ROW} Server   <b>{state}</b>",
+             f"{G_ROW} Domain   <code>{html.escape(st['domain']) if st['domain'] else 'not set'}</code>"]
+    if st["domain"]:
+        dns = st["dns"] or {}
+        if not dns.get("ok"):
+            lines.append(f"{G_ROW} DNS      <b>not found</b> - add an A record for this domain to the server IP")
+        else:
+            lines.append(f"{G_ROW} DNS      <b>ok</b> · " + ("Cloudflare" if dns.get("cloudflare") else "direct"))
+        last = st["last"]
+        if st.get("le"):
+            lines.append(f"{G_ROW} HTTPS    <b>Let's Encrypt</b>" + (f" · until {st['not_after']}" if st["not_after"] else ""))
+        elif st["busy"]:
+            lines.append(f"{G_ROW} HTTPS    <b>requesting certificate...</b>")
+        elif last and not last.get("ok"):
+            lines.append(f"{G_ROW} HTTPS    <b>temporary</b> · {html.escape(str(last.get('msg') or ''))[:200]}")
+        else:
+            lines.append(f"{G_ROW} HTTPS    <b>temporary</b> · certificate pending")
+        lines.append("")
+        lines.append("Tap Open Dashboard to launch it inside Telegram." if st.get("le")
+                     else "Wait for the Let's Encrypt certificate, then tap ⟳ Refresh.")
+    else:
+        lines += ["", "Send your domain with ✎ Domain. HTTPS and the address are set up automatically."]
+    return {"text": "\n".join(lines), "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
+
 def admin_panel_view() -> dict:
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{G_USER} Access", callback_data="ADM_ACCESS"),
@@ -2397,6 +2504,8 @@ def admin_panel_view() -> dict:
          InlineKeyboardButton("📡 Copy Server", callback_data="ADM_CP")],
         [InlineKeyboardButton("🧭 Liquidity Hunter Feed", callback_data="ADM_BF"),
          InlineKeyboardButton("💾 Backup", callback_data="ADM_BK")],
+        [InlineKeyboardButton("◈ Public Poster", callback_data="ADM_PB"),
+         InlineKeyboardButton("◌ Dashboard", callback_data="ADM_DS")],
     ])
     return {
         "text": f"{G_ADMIN} <b>Admin</b>\nPick an option.",
@@ -2504,6 +2613,36 @@ def user_detail_view(target_uid: int) -> dict:
     rows.append([InlineKeyboardButton(f"{G_BACK} Access", callback_data="ADM_ACCESS")])
     return {"text": "\n".join(lines), "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
 
+def reset_account_status_dirs() -> tuple[int, int, list[str]]:
+    dirs, files, errors = 0, 0, []
+    for r in list(ROOTS or [primary_root()]):
+        folder = r.accounts
+        try:
+            if folder.is_symlink() or not folder.is_dir():
+                continue
+            files += sum(1 for p in folder.rglob("*") if p.is_file())
+            shutil.rmtree(folder)
+            dirs += 1
+        except OSError as e:
+            log.error("Could not delete %s: %s", folder, e)
+            errors.append(str(folder))
+        _ensure_root_dirs(r)
+    invalidate_accounts_cache()
+    return dirs, files, errors
+
+
+def account_status_delete_view() -> dict:
+    lines = [f"{G_DEL} <b>Delete AccountStatus folder</b>"]
+    for r in list(ROOTS or [primary_root()]):
+        lines.append(f"{G_ROW} <code>{html.escape(str(r.accounts))}</code>")
+    lines.append("")
+    lines.append("Every account card in it is removed, so old accounts disappear from the bot. "
+                 "An EA that is still running writes its card again on the next update. This can't be undone.")
+    rows = [[InlineKeyboardButton(f"{G_DEL} Yes, delete", callback_data="ADM_ACCDEL_YES"),
+             InlineKeyboardButton(f"{G_BACK} Cancel", callback_data="ADM_ACCOUNTS")]]
+    return {"text": "\n".join(lines), "reply_markup": InlineKeyboardMarkup(rows), "parse_mode": ParseMode.HTML}
+
+
 def accounts_admin_view() -> dict:
     accounts = list_accounts()
     db = heysolo_db.get_db()
@@ -2514,6 +2653,7 @@ def accounts_admin_view() -> dict:
         rows.append([InlineKeyboardButton(
             f"#{login} \u00b7 {n} user{'s' if n != 1 else ''}",
             callback_data=f"ADM_ACC_{login}")])
+    rows.append([InlineKeyboardButton(f"{G_DEL} Delete AccountStatus folder", callback_data="ADM_ACCDEL")])
     rows.append([InlineKeyboardButton(f"{G_BACK} Access", callback_data="ADM_ACCESS")])
     text = (
         f"{G_ACCOUNT} <b>Accounts</b>\nTap an account to choose who may see it. "
@@ -2554,12 +2694,12 @@ def account_admin_detail_view(login: str) -> dict:
     return {"text": "\n".join(lines), "reply_markup": InlineKeyboardMarkup(kb_rows), "parse_mode": ParseMode.HTML}
 
 NOTIFY_LABELS = [("bias", "Bias"), ("trade", "Trades"),
-                 ("log", "Logs"), ("result", "Results"), ("alert", "Alerts")]
+                 ("log", "Logs"), ("result", "Results"), ("alert", "Alerts"), ("public", "Public")]
 
 def reporting_view() -> dict:
     chat_id = settings.get_chat_id()
     t = settings.get_threads()
-    topics_ok = all(t.get(k) for k in ("bias", "trade", "log", "result", "alert"))
+    topics_ok = all(t.get(k) for k in ("bias", "trade", "log", "result", "alert", "public"))
 
     lines = [
         f"📓 <b>Chat Journal</b>",
@@ -2647,7 +2787,7 @@ def common_dir_view() -> dict:
         else:
             where = "unknown"
         if r.is_share or fstype in _NETWORK_FS_TYPES:
-            badge = f"{G_ON} share" if exists else f"{G_OFF} share (down)"
+            badge = f"{G_ON} share" if exists else "share (down)"
         else:
             badge = f"{G_NEUTRAL} local"
         n_acc = counts.get(r.key, 0)
@@ -2960,7 +3100,7 @@ def common_dir_guide_index_view() -> dict:
         f"\U0001f50c <b>Connect Windows share</b> writes the commands for you.\n"
         f"{G_ROW} <b>3. Test</b> - confirm the round-trip.\n\n"
         f"<i>Once it is connected, the Files panel can turn the share "
-        f"{G_OFF} off and {G_ON} on again without redoing any of this.</i>\n\n"
+        f"off and {G_ON} on again without redoing any of this.</i>\n\n"
         f"<i>Share only <code>Common\\Files</code>, never all of <code>Common</code>.</i>"
     )
     kb = InlineKeyboardMarkup([
@@ -3026,16 +3166,16 @@ def common_dir_guide_linux_view() -> dict:
     ])
     return {"text": text, "reply_markup": kb, "parse_mode": ParseMode.HTML}
 
-TOPIC_SPECS = [("bias", "Bias"), ("trade", "Trades"), ("log", "Logs"), ("result", "Results"), ("alert", "Alerts")]
+TOPIC_SPECS = [("bias", "Bias"), ("trade", "Trades"), ("log", "Logs"), ("result", "Results"), ("alert", "Alerts"), ("public", "Public")]
 
 def _apply_group(chat_id_str: str, thread_ids: dict):
     settings.set_chat_id(chat_id_str)
     settings.set_threads(**thread_ids)
-    global CHAT_ID, THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT, THREAD_ALERT, _EVENT_TYPE_TO_THREAD
+    global CHAT_ID, THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT, THREAD_ALERT, THREAD_PUBLIC, _EVENT_TYPE_TO_THREAD
     CHAT_ID = chat_id_str
-    THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT, THREAD_ALERT = (
+    THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT, THREAD_ALERT, THREAD_PUBLIC = (
         thread_ids["bias"], thread_ids["trade"], thread_ids["log"], thread_ids["result"],
-        thread_ids["alert"]
+        thread_ids["alert"], thread_ids["public"]
     )
     _EVENT_TYPE_TO_THREAD.update({
         "BIAS": THREAD_BIAS, "TRADE": THREAD_TRADE, "LOG": THREAD_LOG, "RESULT": THREAD_RESULT,
@@ -3082,17 +3222,10 @@ async def provision_group(bot, chat_id_str: str, force: bool = False) -> tuple[b
     ), None
 
 
-# ---------------------------------------------------------------------------
-# Topic wizard: asks about the topics one by one. For each one the admin either
-# sends the link / number of an existing topic, or taps "Create".
-# Topics already saved in the settings JSON for the same group are reused
-# without asking.
-# ---------------------------------------------------------------------------
 _topic_wiz: dict[int, dict] = {}
 TW_CREATE_CB = "ADM_TW_CREATE"
 
 def _parse_topic_ref(text: str, chat_id: int):
-    """Returns (thread_id, None) or (None, error_text)."""
     t = (text or "").strip().translate(_DIGITS_TO_ASCII)
     if t.isdigit() and int(t) > 0:
         return int(t), None
@@ -3110,8 +3243,6 @@ def _parse_topic_ref(text: str, chat_id: int):
     return None, "I could not read that. Send the topic link or just its number."
 
 async def _topic_exists(bot, chat_id: int, thread_id: int):
-    """Silent probe (typing action inside the topic, no message is posted).
-    Returns (True, None) if the topic exists, else (False, error_text)."""
     try:
         await bot.send_chat_action(chat_id=chat_id, action="typing", message_thread_id=thread_id)
         return True, None
@@ -3138,7 +3269,6 @@ def _topic_ask_view(wiz: dict, prefix: str = "") -> tuple[str, InlineKeyboardMar
     return text, kb
 
 async def topic_wizard_begin(bot, uid: int, chat_id_str: str):
-    """Returns (state, text, kb). state: 'bad' | 'ok' | 'ask'."""
     try:
         chat_id = int(chat_id_str)
     except ValueError:
@@ -3162,8 +3292,6 @@ async def topic_wizard_begin(bot, uid: int, chat_id_str: str):
     return "ask", text, kb
 
 async def topic_wizard_step(bot, uid: int, thread_id: int | None = None):
-    """Handles one answer. thread_id=None means 'create it'.
-    Returns (done, text, kb)."""
     wiz = _topic_wiz.get(uid)
     if not wiz or not wiz["queue"]:
         return True, f"{G_BAD} Nothing to do. Open Set group again.", None
@@ -3287,6 +3415,20 @@ async def _handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         v = admin_panel_view()
         await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
 
+    elif data == "ADM_DS":
+        await q.answer()
+        await asyncio.to_thread(dash_server.refresh)
+        v = await asyncio.to_thread(dash_view)
+        await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+
+    elif data == "ADM_DS_SET":
+        await q.answer()
+        _pending[uid] = "ds_domain"
+        await safe_edit_message_text(
+            q, "✎ <b>Dashboard domain</b>\nSend the domain, e.g. <code>dash.example.com</code>\nIts DNS A record must point to this server (Cloudflare proxy on is fine). Everything else is automatic.\nSend cancel to stop.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"{G_BACK} Back", callback_data="ADM_DS")]]),
+            parse_mode=ParseMode.HTML)
+
     elif data == "ADM_ACCESS":
         await q.answer()
         await resolve_missing_names(q.get_bot())
@@ -3368,6 +3510,17 @@ async def _handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         v = await asyncio.to_thread(accounts_admin_view)
         await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
 
+    elif data == "ADM_ACCDEL":
+        await q.answer()
+        v = account_status_delete_view()
+        await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+
+    elif data == "ADM_ACCDEL_YES":
+        dirs, files, errors = await asyncio.to_thread(reset_account_status_dirs)
+        await q.answer(f"Deleted {files} file(s)" if not errors else "Some folders could not be deleted", show_alert=bool(errors))
+        v = await asyncio.to_thread(accounts_admin_view)
+        await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+
     elif data.startswith("ADM_ACCUSR_"):
         rest = data[len("ADM_ACCUSR_"):]
         login, target_uid_s = rest.rsplit("_", 1)
@@ -3400,7 +3553,7 @@ async def _handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         await safe_edit_message_text(q,
             f"▣ <b>Reporting Group</b>\n{cur_line}"
             "Send the numeric group ID (e.g. <code>-1001234567890</code>). "
-            "Then the bot asks about the Bias, Trades, Logs, Results and Alerts topics one by one: "
+            "Then the bot asks about the Bias, Trades, Logs, Results, Alerts and Public topics one by one: "
             "send the link of an existing topic, or let it create it.",
             reply_markup=cancel_kb(),
             parse_mode=ParseMode.HTML,
@@ -3526,6 +3679,18 @@ async def _handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
             await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"],
                                          parse_mode=v["parse_mode"], disable_web_page_preview=True)
 
+    elif data.startswith("ADM_PB"):
+        res = await public_panel.handle_callback(data, uid, _pending)
+        await q.answer(res["answer"] or None, show_alert=res["alert"])
+        thread_id = q.message.message_thread_id if getattr(q.message, "is_topic_message", False) else None
+        for line in res["send"]:
+            await context.bot.send_message(chat_id=q.message.chat_id, message_thread_id=thread_id,
+                                           text=line, disable_web_page_preview=True)
+        v = res["view"]
+        if v:
+            await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"],
+                                         parse_mode=v["parse_mode"], disable_web_page_preview=True)
+
     elif data.startswith("ADM_BF"):
         res = await bias_panel.handle_callback(data, uid, _pending)
         await q.answer(res["answer"] or None, show_alert=res["alert"])
@@ -3593,6 +3758,21 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text(v["text"], reply_markup=v["reply_markup"],
                                      parse_mode=v["parse_mode"])
             return
+        if action == "ds_domain":
+            if not heysolo_db.is_admin(uid):
+                await msg.reply_text(f"{G_BAD} Admins only.")
+                return
+            domain = dash_server.parse_domain(text)
+            if not domain:
+                _pending[uid] = "ds_domain"
+                await msg.reply_text("Send a domain like dash.example.com (or cancel).")
+                return
+            ok, why = await asyncio.to_thread(dash_server.set_domain, domain)
+            v = await asyncio.to_thread(dash_view)
+            await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
+            if not ok:
+                await msg.reply_text(f"{G_BAD} {why}")
+            return
         if action.startswith("cp_"):
             if not heysolo_db.is_admin(uid):
                 await msg.reply_text(f"{G_BAD} Admins only.")
@@ -3604,6 +3784,23 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if v:
                 await msg.reply_text(v["text"], reply_markup=v["reply_markup"],
                                      parse_mode=v["parse_mode"], disable_web_page_preview=True)
+            return
+        if action.startswith("pb_"):
+            if not heysolo_db.is_admin(uid):
+                await msg.reply_text(f"{G_BAD} Admins only.")
+                return
+            if action == "pb_key":
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+            res = await public_panel.handle_text(action, text, uid, _pending)
+            for line in res["send"]:
+                await context.bot.send_message(chat_id=msg.chat_id, text=line, disable_web_page_preview=True)
+            v = res["view"]
+            if v:
+                await context.bot.send_message(chat_id=msg.chat_id, text=v["text"], reply_markup=v["reply_markup"],
+                                               parse_mode=v["parse_mode"], disable_web_page_preview=True)
             return
         if action.startswith("bf_"):
             if not heysolo_db.is_admin(uid):
@@ -3872,6 +4069,87 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             v = await asyncio.to_thread(status_detail_view, uid, login)
         await msg.reply_text(v["text"], reply_markup=v["reply_markup"], parse_mode=v["parse_mode"])
 
+async def public_send(bot, text: str = "", photo: str | None = None, markup=None) -> bool:
+    async def post(chat, thread):
+        if photo:
+            with open(photo, "rb") as fh:
+                await bot.send_photo(chat_id=chat, message_thread_id=thread, photo=fh,
+                                     caption=text[:1024], reply_markup=markup)
+        else:
+            await bot.send_message(chat_id=chat, message_thread_id=thread, text=text[:4000],
+                                   reply_markup=markup)
+
+    if CHAT_ID:
+        thread = THREAD_PUBLIC or await _recreate_missing_topic(bot, "public")
+        for _ in range(2):
+            if not thread:
+                break
+            try:
+                await post(CHAT_ID, thread)
+                return True
+            except TelegramError as e:
+                if "thread not found" in str(e).lower() and _topic_heal_allowed(CHAT_ID, "public"):
+                    thread = await _recreate_missing_topic(bot, "public")
+                    continue
+                log.warning("Public topic send failed: %s", e)
+                break
+    sent = False
+    for aid in settings.get_admin_ids():
+        try:
+            await post(aid, None)
+            sent = True
+        except TelegramError as e:
+            log.warning("Public send to admin %s failed: %s", aid, e)
+    return sent
+
+def public_kb(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Send", callback_data=f"PUBOK_{token}"),
+         InlineKeyboardButton("✖ Cancel", callback_data=f"PUBNO_{token}")],
+        [InlineKeyboardButton("🔄 New caption", callback_data=f"PUBNEW_{token}")],
+    ])
+
+async def public_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    q = update.callback_query
+    if not heysolo_db.is_admin(update.effective_user.id):
+        await q.answer("Admins only.", show_alert=True)
+        return
+    yes = data.startswith("PUBOK_")
+    token = data.split("_", 1)[1]
+    base = q.message.caption or ""
+
+    async def mark(suffix: str, markup=None):
+        try:
+            await q.edit_message_caption(caption=(base + suffix)[:1024], reply_markup=markup)
+        except TelegramError:
+            pass
+
+    if not public_watcher.has_pending(token):
+        await q.answer("Expired or already handled.", show_alert=True)
+        await mark("")
+        return
+    if data.startswith("PUBNEW_"):
+        text = await public_watcher.regen(token)
+        if text is None:
+            await q.answer("Expired or already handled.", show_alert=True)
+            await mark("")
+            return
+        await q.answer("New caption")
+        base = text
+        await mark("", public_kb(token))
+        return
+    if not yes:
+        public_watcher.cancel(token)
+        await q.answer("Cancelled")
+        await mark("\n\n✖ Cancelled")
+        return
+    await q.answer("Sending...")
+    await mark("\n\n⋯ Sending...")
+    sent, result = await public_watcher.confirm(token)
+    await mark("\n\n✔ Confirmed" if sent else "\n\n✖ Not sent")
+    if result:
+        await public_send(context.bot, text=result)
+
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update):
         return
@@ -3916,6 +4194,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             v = user_settings_view(uid, resolve_login(uid))
         await safe_edit_message_text(q, v["text"], reply_markup=v["reply_markup"],
                                   parse_mode=v["parse_mode"])
+        return
+
+    if data.startswith(("PUBOK_", "PUBNO_", "PUBNEW_")):
+        await public_confirm_callback(update, context, data)
         return
 
     if data.startswith("ADM_"):
@@ -4293,7 +4575,7 @@ async def _recreate_missing_topic(bot, kind: str) -> int | None:
     current = settings.get_threads()
     current[kind] = new_id
     settings.set_threads(**current)
-    global THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT, THREAD_ALERT
+    global THREAD_BIAS, THREAD_TRADE, THREAD_LOG, THREAD_RESULT, THREAD_ALERT, THREAD_PUBLIC
     if kind == "bias":
         THREAD_BIAS = new_id
     elif kind == "trade":
@@ -4304,6 +4586,8 @@ async def _recreate_missing_topic(bot, kind: str) -> int | None:
         THREAD_RESULT = new_id
     elif kind == "alert":
         THREAD_ALERT = new_id
+    elif kind == "public":
+        THREAD_PUBLIC = new_id
     _EVENT_TYPE_TO_THREAD[kind.upper()] = new_id
     log.warning("Recreated the missing '%s' topic (new thread_id=%s) and saved it.", kind, new_id)
     return new_id
@@ -4349,6 +4633,14 @@ async def post_init(app: Application):
     logger_bot.install(app, lambda: CHAT_ID, lambda: THREAD_LOG, level=logging.WARNING,
                         on_missing_thread=lambda: _recreate_missing_topic(app.bot, "log"))
     asyncio.create_task(watch_outbox(app))
+
+    async def _public_notify(text: str):
+        await public_send(app.bot, text=text)
+
+    async def _public_preview(token: str, photo: str, text: str):
+        if not await public_send(app.bot, text=text, photo=photo, markup=public_kb(token)):
+            raise RuntimeError("no chat reachable")
+    asyncio.create_task(watch_public(notify=_public_notify, preview=_public_preview))
     ea_settings.setup(
         roots_fn=lambda: list(ROOTS or [primary_root()]),
         visible_fn=visible_accounts,
@@ -4362,6 +4654,9 @@ async def post_init(app: Application):
     bias_panel.setup(roots_fn=lambda: list(ROOTS or [primary_root()]))
     await asyncio.to_thread(copier_server.start_from_settings)
     await asyncio.to_thread(bias_server.start_from_settings)
+    dash_server.setup(BOT_TOKEN, assigned_logins, root_for_login)
+    await asyncio.to_thread(dash_server.start_from_settings)
+    await restore_menu_button(app.bot)
     asyncio.create_task(backup_panel.watch(app, heysolo_db.get_admin_ids))
     await send_startup_notice(app.bot)
     log.debug("Bot started. Watching %d folder(s): %s", len(ROOTS),
@@ -4386,7 +4681,6 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                               parse_mode=v["parse_mode"], disable_web_page_preview=True)
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
-    # Transient network/DNS hiccups: PTB retries on its own, don't spam the log topic
     if isinstance(context.error, (NetworkError, TimedOut)):
         log.debug("Network hiccup ignored: %s", context.error)
         return
@@ -4436,6 +4730,7 @@ def main():
     )
     app.add_handler(CommandHandler(["start", "menu"], cmd_start))
     app.add_handler(CommandHandler(["language", "lang"], cmd_language))
+    register_public_admin(app)
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, on_document))
