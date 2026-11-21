@@ -1,3 +1,5 @@
+# NO COMMENTS: every comment and docstring was intentionally removed from this file. Do not add any comments or docstrings in future edits.
+# PATH: prop/plan_status.py
 import html
 
 from language import t, ltr, status_label
@@ -31,7 +33,6 @@ GATE_GROUPS = ("Loss & Profit Limits", "Trade Limitations", "Sessions & Clock",
 SKIP_LABELS = ("balance", "equity", "today p/l", "this week p/l",
                "daily drawdown", "positions / pendings")
 
-# The panel's own row labels, said the way a trader would read them in chat
 LABEL_ALIAS = {
     "right now": "News window",
     "next event": "News ahead",
@@ -175,7 +176,6 @@ def _label(label, lang="en"):
 def _reason(label, value, tip="", lang="en"):
     shown = html.escape(_label(label, lang))
     value = _short_value(value)
-    # a bare BLOCKED/PAUSED tells the trader nothing: use the panel's own tooltip
     if value.upper().startswith(("BLOCK", "PAUSED")) and tip:
         value = tip
     value = html.escape(value)
