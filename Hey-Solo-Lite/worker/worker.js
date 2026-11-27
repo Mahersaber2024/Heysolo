@@ -542,11 +542,12 @@ async function getAccount(e, id, login) { if (!await canView(e, id, login))
     return null; const a = await e.DB.prepare("SELECT accounts.* FROM accounts WHERE login=?").bind(login).first(); return a ? { ...a, prop: parseJson(a.prop_json), running: parseJson(a.running_json), dashboard: parseJson(a.dashboard_json), settings: parseJson(a.settings_json), stale: ageSec(a.updated_at) > ONLINE_SEC } : null; }
 async function home(e, chat, uid, msg) {
   const ac = await getAccounts(e, uid), rows = accountRows(ac, "A");
+  if (String(chat) === String(uid) && e.__origin && await dashSiteURL(e) && (await tgLogins(e, uid)).length) rows.push([{ text: "◌  Dashboard  ◌", web_app: { url: `${e.__origin}/app` } }]);
   const text = ac.length ? `<b>Accounts</b> · ${ac.length}` : "No account yet. In MT5 set Send Via = SEND PY BOT / BRIDGE EA on the main EA and attach HeySolo_Bridge (WorkerURL + WorkerKey, see 🛠 Setup status). The account appears after its first heartbeat.";
   return msg ? editHTML(e, chat, msg, text, keyboard(rows)) : sendEAKeyMessage(e, chat, text, keyboard(rows));
 }
 async function adminPanel(e, chat, msg) {
-  const rows = [[ik("📓 Chat Journal", "ADM_REPORT"), ik("⚡ Copy Hub", "CP")], [ik("☁️ Online Trade Journal", "JR_ADMIN")], [ik("🛠 Setup status", "SETUP")]];
+  const rows = [[ik("👤 Access", "ADM_ACCESS"), ik("📓 Chat Journal", "ADM_REPORT")], [ik("⚡ Copy Hub", "CP"), ik("◈ Dashboard", "ADM_DS")], [ik("☁️ Online Trade Journal", "JR_ADMIN")], [ik("🛠 Setup status", "SETUP")]];
   const text = "⚙️ <b>Admin</b>\nPick an option.";
   return msg ? editHTML(e, chat, msg, text, keyboard(rows)) : sendEAKeyMessage(e, chat, text, keyboard(rows));
 }
@@ -587,7 +588,7 @@ async function helpView(e, chat, uid, msg) {
   const lines = ["❓ Help", "━━━━━━━━━━━━━━", "", "🟢 online  ·  🔴 no heartbeat for 40 s", "",
     "👤 Account page", "🏁 Prop · 🏃 Running · 📈 Positions · 🧾 Today / Yesterday · ⚙️ EA Settings", "",
     "⌨️ Commands", "/start — main menu", "/accounts · /prop · /running — pick an account", "/id — your Telegram ID"];
-  if (admin) lines.push("", "🛡 Admin", "/copier — Copy Hub", "/chat_journal — Chat Journal", "/grant <telegram_id> <login> — give access", "/revoke <telegram_id> <login> — remove access", "Buttons: 🛠 Setup status · 📓 Chat Journal · ⚡ Copy Hub");
+  if (admin) lines.push("", "🛡 Admin", "/copier — Copy Hub", "Admin → 👤 Access — grant accounts to people", "Admin → ◈ Dashboard — Telegram Mini App", "/chat_journal — Chat Journal", "/grant <telegram_id> <login> — give access", "/revoke <telegram_id> <login> — remove access", "Buttons: 🛠 Setup status · 📓 Chat Journal · ⚡ Copy Hub");
   const text = lines.join("\n"), kb = keyboard([[ik("← All accounts", "HOME")]]);
   return msg ? editMessage(e, chat, msg, text, kb) : sendMessage(e, chat, text, kb);
 }
@@ -656,7 +657,7 @@ async function provisionGroup(e, chat, uid, msg, groupId, force, fromText = fals
     await deleteBotSetting(e,`pending:${uid}`);
     return reportingView(e, chat, fromText ? undefined : msg);
 }
-async function finishAdminText(e,chat,uid,msg,text){if(await finishJournalAdminText(e,chat,uid,text)) return true; const action=await getBotSetting(e,`pending:${uid}`);if(!action)return false;if(action==="set_chat"){const groupId=text.trim();if(!/^-\d{5,}$/.test(groupId)){await sendMessage(e,chat,"Invalid group ID. Send a negative numeric supergroup ID or cancel.");return true;}await deleteBotSetting(e,`pending:${uid}`);await provisionGroup(e,chat,uid,undefined,groupId,false,true);return true;}return false;}
+async function finishAdminText(e,chat,uid,msg,text){if(await finishJournalAdminText(e,chat,uid,text)) return true; const action=await getBotSetting(e,`pending:${uid}`);if(!action)return false;if(action==="dash_site"||action==="add_user") return finishDashAccessText(e,chat,uid,text,action);if(action==="set_chat"){const groupId=text.trim();if(!/^-\d{5,}$/.test(groupId)){await sendMessage(e,chat,"Invalid group ID. Send a negative numeric supergroup ID or cancel.");return true;}await deleteBotSetting(e,`pending:${uid}`);await provisionGroup(e,chat,uid,undefined,groupId,false,true);return true;}return false;}
 // ---- Glass link buttons between the journal posts of one trade ----
 // Entry post (TRADE) gets a URL button per later result post; each result post gets a button back to the entry.
 // A result is matched to its entry by position ticket (the EA now sends "Position Ticket: N" / "Order Ticket: N").
@@ -939,6 +940,8 @@ async function webhook(req, e, ctx) {
             await editMessage(e, chat, mid, "No access. Ask the Manager admin to grant your user ID.");
             return txt("ok");
         }
+        if (await dashAccessCallbacks(e, chat, uid, mid, data))
+            return txt("ok");
         if (data === "HOME")
             await home(e, chat, uid, mid);
         else if (data.startsWith("A:"))
@@ -1459,7 +1462,9 @@ const DASH_CORS = { "access-control-allow-origin": "*", "access-control-allow-me
 function journalJSON(x, status=200) { return new Response(JSON.stringify(x), {status, headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store",...DASH_CORS}}); }
 async function journalAccess(e, req, login) {
   const token = req.headers.get("X-HeySolo-Dashboard-Key") || "";
-  if (!token || !/^\d{1,15}$/.test(String(login || "")) || !e.JOURNAL_DB) return false;
+  if (!token || !/^\d{1,15}$/.test(String(login || ""))) return false;
+  if (token.includes(".")) return tgAccess(e, token, login);
+  if (!e.JOURNAL_DB) return false;
   await ensureJournalDB(e);
   const row = await e.JOURNAL_DB.prepare("SELECT login,token_hash FROM journal_access WHERE login=?").bind(String(login)).first();
   return !!row && constantTimeEqual(await hashToken(token), row.token_hash);
@@ -1914,8 +1919,232 @@ async function eaAPI(req, e, u) {
     }
     return json({ ok: false, error: "not_found" }, 404);
 }
-export default { async fetch(req, e, ctx) { await ensureBotSettings(e); const u = new URL(req.url); if (req.method === "GET" && u.pathname === "/health")
-        return json({ ok: true, service: "Hey Solo Manager-Lite", version: 2 }); if (u.pathname === "/telegram/webhook" && req.method === "POST")
+// ---- Telegram Mini App dashboard (same flow as dashboard_web/server.py of the Python bot) ----
+// The page itself stays on the dashboard website (Cloudflare). The Worker signs the user in with Telegram initData,
+// adds the login script and the bottom navigation (tgnav.html, one shared file) and serves it at /app.
+const TG_GATE = "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\"><title>Hey Solo</title><style>html,body{height:100%;margin:0;background:#0b1118;color:#9fb0c0;font:15px sans-serif}body{display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;box-sizing:border-box}</style></head><body><div id=\"m\">...</div><script>(function(){var m=document.getElementById(\"m\");function say(t){m.textContent=t;}var d=\"\";try{d=new URLSearchParams(location.hash.slice(1)).get(\"tgWebAppData\")||\"\";}catch(e){}if(!d){try{d=JSON.parse(sessionStorage.getItem(\"__telegram__initParams\")||\"{}\").tgWebAppData||\"\";}catch(e){}}if(!d){say(\"Open this dashboard from the Telegram bot.\");return;}var t=0;try{t=Number(sessionStorage.getItem(\"hs_gate\")||0);}catch(e){}if(Date.now()-t<8000){say(\"Cookies are blocked in this browser.\");return;}var q=new XMLHttpRequest();q.open(\"POST\",\"/v1/tg/auth\",true);q.setRequestHeader(\"Content-Type\",\"application/json\");q.onload=function(){var r={};try{r=JSON.parse(q.responseText);}catch(e){}if(q.status===200&&r.ok){try{sessionStorage.setItem(\"hs_gate\",String(Date.now()));}catch(e){}location.reload();return;}say(r.error===\"no_accounts\"?\"You do not have access to this dashboard.\":\"Access denied.\");};q.onerror=function(){say(\"Could not reach the server.\");};q.send(JSON.stringify({initData:d}));})();</script></body></html>";
+const TG_INJECT = "<script>(function(){try{sessionStorage.removeItem(\"hs_gate\");}catch(e){}var d=\"\";try{d=new URLSearchParams(location.hash.slice(1)).get(\"tgWebAppData\")||\"\";}catch(e){}if(!d){try{d=JSON.parse(sessionStorage.getItem(\"__telegram__initParams\")||\"{}\").tgWebAppData||\"\";}catch(e){}}if(!d)return;window.__tgMini=true;try{sessionStorage.setItem(\"__telegram__initParams\",JSON.stringify({tgWebAppData:d}));}catch(e){}try{if(window.TelegramWebviewProxy){TelegramWebviewProxy.postEvent(\"web_app_ready\",\"{}\");TelegramWebviewProxy.postEvent(\"web_app_expand\",\"{}\");}else if(window.parent&&window.parent!==window){parent.postMessage(JSON.stringify({eventType:\"web_app_ready\",eventData:{}}),\"*\");parent.postMessage(JSON.stringify({eventType:\"web_app_expand\",eventData:{}}),\"*\");}}catch(e){}var err=\"\";try{var q=new XMLHttpRequest();q.open(\"POST\",\"/v1/tg/auth\",false);q.setRequestHeader(\"Content-Type\",\"application/json\");var last=\"\";try{last=localStorage.getItem(\"heySolo_tgLogin\")||\"\";}catch(e){}q.send(JSON.stringify({initData:d,login:last}));var r={};try{r=JSON.parse(q.responseText);}catch(e){}if(q.status===200&&r.ok){localStorage.setItem(\"heySolo_jrnCloud\",JSON.stringify({url:r.url,key:r.key,login:r.login}));localStorage.setItem(\"heySolo_tgLogin\",r.login);localStorage.setItem(\"heySolo_tgSession\",JSON.stringify({url:r.url,user:r.user,logins:r.logins,keys:r.keys}));}else{err=r.error||(\"http \"+q.status);}}catch(e){err=String(e);}if(err){window.addEventListener(\"DOMContentLoaded\",function(){var b=document.createElement(\"div\");b.textContent=err===\"no_accounts\"?\"No account is assigned to you in the bot.\":\"Telegram sign-in failed: \"+err;b.style.cssText=\"position:fixed;top:0;left:0;right:0;z-index:99999;padding:10px 14px;background:#7a1f1f;color:#fff;font:14px sans-serif;text-align:center\";document.body.appendChild(b);});}})();</script>\n";
+const TG_TOKEN_TTL = 24 * 3600, TG_INIT_MAX_AGE = 24 * 3600, TG_GATE_COOKIE = "hs_gate", TG_GATE_TTL = 120;
+const TG_STATIC = { "/sw.js": "application/javascript", "/manifest.webmanifest": "application/manifest+json", "/logo.jpg": "image/jpeg", "/n-logo.png": "image/png", "/badge.png": "image/png", "/favicon.ico": "image/x-icon" };
+const tgEnc = new TextEncoder();
+const tgHex = (b) => [...b].map(x => x.toString(16).padStart(2, "0")).join("");
+function tgB64u(bytes) { let s = ""; for (const x of bytes) s += String.fromCharCode(x); return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+function tgUnB64u(s) { s = String(s).replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "="; return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
+async function tgHmac(keyBytes, data) { const k = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]); return new Uint8Array(await crypto.subtle.sign("HMAC", k, typeof data === "string" ? tgEnc.encode(data) : data)); }
+async function tgVerifyInitData(e, initData) {
+  if (!initData || !e.TELEGRAM_BOT_TOKEN) return null;
+  const p = new URLSearchParams(initData), got = p.get("hash") || ""; p.delete("hash");
+  const check = [...new Set(p.keys())].sort().map(k => `${k}=${p.get(k)}`).join("\n");
+  const secret = await tgHmac(tgEnc.encode("WebAppData"), String(e.TELEGRAM_BOT_TOKEN));
+  const calc = tgHex(await tgHmac(secret, check));
+  if (!got || !constantTimeEqual(calc, got)) return null;
+  const auth = Number(p.get("auth_date") || 0);
+  if (!Number.isFinite(auth) || now() - auth > TG_INIT_MAX_AGE) return null;
+  try { const user = JSON.parse(p.get("user") || "{}"); return user && typeof user === "object" && user.id ? user : null; } catch { return null; }
+}
+async function tgSessionKey(e) { return tgEnc.encode(await hashToken("heysolo-tgsession-v1:" + String(e.TELEGRAM_BOT_TOKEN || ""))); }
+async function tgIssue(e, login, uid) {
+  const body = tgB64u(tgEnc.encode(JSON.stringify({ l: String(login), u: Number(uid), e: now() + TG_TOKEN_TTL })));
+  return `${body}.${tgB64u(await tgHmac(await tgSessionKey(e), body))}`;
+}
+async function tgRead(e, token) {
+  try {
+    const parts = String(token || "").split(".");
+    if (parts.length !== 2) return null;
+    const want = tgB64u(await tgHmac(await tgSessionKey(e), parts[0]));
+    if (!constantTimeEqual(parts[1], want)) return null;
+    const d = JSON.parse(new TextDecoder().decode(tgUnB64u(parts[0])));
+    if (Number(d.e) < now()) return null;
+    return { login: String(d.l), uid: String(d.u) };
+  } catch { return null; }
+}
+// Strictly the accounts granted to this person in the bot (no admin bypass), like assigned_logins() in the Python bot.
+async function tgLogins(e, uid) {
+  const r = await e.DB.prepare("SELECT a.login FROM accounts a JOIN user_accounts u ON u.login=a.login WHERE u.telegram_id=? ORDER BY a.login").bind(String(uid)).all();
+  return (r.results || []).map(x => String(x.login));
+}
+async function tgAccess(e, token, login) {
+  const t = await tgRead(e, token);
+  return !!t && t.login === String(login) && (await tgLogins(e, t.uid)).includes(String(login));
+}
+function tgCookie(req, name) {
+  for (const part of String(req.headers.get("cookie") || "").split(";")) { const i = part.indexOf("="); if (i > 0 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim(); }
+  return "";
+}
+async function dashSiteURL(e) {
+  const v = String(await getBotSetting(e, "dash_site") || e.DASHBOARD_URL || "").trim().replace(/\/+$/, "");
+  return /^https:\/\/[^\s]+$/i.test(v) ? v : "";
+}
+async function tgAuth(req, e) {
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: DASH_CORS });
+  if (req.method !== "POST") return journalJSON({ ok: false, error: "method_not_allowed" }, 405);
+  let d; try { d = await req.json(); } catch { return journalJSON({ ok: false, error: "invalid_json" }, 400); }
+  if (!d || typeof d !== "object" || Array.isArray(d)) return journalJSON({ ok: false, error: "invalid_json" }, 400);
+  const user = await tgVerifyInitData(e, String(d.initData || ""));
+  if (!user) return journalJSON({ ok: false, error: "invalid_telegram_auth" }, 403);
+  const uid = String(user.id), logins = await tgLogins(e, uid);
+  if (!logins.length) return journalJSON({ ok: false, error: "no_accounts" }, 403);
+  const want = String(d.login || ""), login = logins.includes(want) ? want : logins[0];
+  const key = await tgIssue(e, login, uid), keys = {};
+  for (const l of logins) keys[l] = await tgIssue(e, l, uid);
+  const info = { id: Number(uid), first_name: String(user.first_name || ""), last_name: String(user.last_name || ""), username: String(user.username || ""), photo_url: String(user.photo_url || "") };
+  return new Response(JSON.stringify({ ok: true, url: originOf(e, req), login, logins, key, keys, user: info }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "set-cookie": `${TG_GATE_COOKIE}=${key}; Max-Age=${TG_GATE_TTL}; Path=/; Secure; HttpOnly; SameSite=Lax`, ...DASH_CORS } });
+}
+async function tgAvatar(req, e) {
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: DASH_CORS });
+  const tok = await tgRead(e, req.headers.get("X-HeySolo-Dashboard-Key") || "");
+  if (!tok || !(await tgLogins(e, tok.uid)).length) return journalJSON({ ok: false, error: "invalid_dashboard_key" }, 403);
+  try {
+    const res = await (await fetch(`${tgURL(e, "getUserProfilePhotos")}?user_id=${encodeURIComponent(tok.uid)}&limit=1`)).json();
+    const sizes = [...(res?.result?.photos?.[0] || [])].sort((a, b) => Number(a.width || 0) - Number(b.width || 0));
+    if (!sizes.length) return journalJSON({ ok: false, error: "no_avatar" }, 404);
+    const pick = sizes.find(x => Number(x.width || 0) >= 160) || sizes[sizes.length - 1];
+    const info = await (await fetch(`${tgURL(e, "getFile")}?file_id=${encodeURIComponent(pick.file_id)}`)).json();
+    const path = info?.result?.file_path;
+    if (!path) return journalJSON({ ok: false, error: "no_avatar" }, 404);
+    const img = await fetch(`https://api.telegram.org/file/bot${e.TELEGRAM_BOT_TOKEN}/${path}`);
+    if (!img.ok) return journalJSON({ ok: false, error: "no_avatar" }, 404);
+    return new Response(await img.arrayBuffer(), { status: 200, headers: { "content-type": "image/jpeg", "cache-control": "private, max-age=3600", ...DASH_CORS } });
+  } catch { return journalJSON({ ok: false, error: "no_avatar" }, 404); }
+}
+const tgHtml = (body, status = 200) => new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+async function tgPage(req, e, fa) {
+  const site = await dashSiteURL(e);
+  if (!site) return tgHtml(TG_GATE.replace(/<script>[\s\S]*<\/script>/, "").replace('<div id="m">...</div>', '<div id="m">The dashboard website is not set yet. Ask the admin to open Admin → Dashboard in the bot.</div>'));
+  const tok = await tgRead(e, tgCookie(req, TG_GATE_COOKIE));
+  if (!tok || !(await tgLogins(e, tok.uid)).length) return tgHtml(TG_GATE);
+  const cf = { cf: { cacheTtl: 300, cacheEverything: true } };
+  const [pg, nav] = await Promise.all([fetch(`${site}${fa ? "/fa" : "/"}`, cf), fetch(`${site}/tgnav.html`, cf)]);
+  if (!pg.ok) return tgHtml("Could not load the dashboard website. Check its address in Admin → Dashboard.", 502);
+  let text = await pg.text();
+  if (!text.includes("/v1/tg/auth")) {
+    const marker = '<meta charset="UTF-8">', i = text.indexOf(marker);
+    text = i >= 0 ? text.slice(0, i + marker.length) + "\n" + TG_INJECT + text.slice(i + marker.length) : TG_INJECT + text;
+    text = text.replace("function jrConfigureOnline(reason){", "function jrConfigureOnline(reason){if(window.__tgMini)return;");
+    if (!text.includes("hs-tgnav") && nav.ok) {
+      const block = await nav.text(), j = text.lastIndexOf("</body>");
+      text = j >= 0 ? text.slice(0, j) + block + text.slice(j) : text + block;
+      text = text.replace(/<script id="hs-swipe">[\s\S]*?<\/script>/, "");
+    }
+  }
+  return new Response(text, { status: 200, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" } });
+}
+async function miniAppRoute(req, e, u) {
+  const p = u.pathname;
+  if (p === "/v1/tg/auth") return tgAuth(req, e);
+  if (p === "/v1/tg/avatar") return tgAvatar(req, e);
+  if (req.method !== "GET" && req.method !== "HEAD") return null;
+  if (p === "/app" || p === "/app/") return tgPage(req, e, false);
+  if (p === "/app/fa" || p === "/fa" || p === "/fa/") return tgPage(req, e, true);
+  if (TG_STATIC[p]) {
+    const site = await dashSiteURL(e);
+    if (!site) return json({ ok: false, error: "not_found" }, 404);
+    const r = await fetch(`${site}${p}`, { cf: { cacheTtl: 3600, cacheEverything: true } });
+    if (!r.ok) return json({ ok: false, error: "not_found" }, 404);
+    return new Response(await r.arrayBuffer(), { status: 200, headers: { "content-type": TG_STATIC[p], "cache-control": "no-cache" } });
+  }
+  return null;
+}
+// ---- Admin: Dashboard + Access panels (Python bot: ADM_DS and ADM_ACCESS) ----
+async function dashboardPanel(e, chat, uid, msg) {
+  await deleteBotSetting(e, `pending:${uid}`);
+  const site = await dashSiteURL(e), origin = e.__origin || "", priv = String(chat) === String(uid);
+  const lines = ["◈ <b>Dashboard</b> (Telegram Mini App)", "━━━━━━━━━━━━━━",
+    `▫️ Website   ${site ? `<code>${esc(site)}</code>` : "<b>not set</b>"}`,
+    `▫️ Worker    <code>${esc(origin)}/app</code>`,
+    `▫️ Journal DB  ${e.JOURNAL_DB ? "connected" : "<b>missing</b> (add the JOURNAL_DB binding)"}`, "",
+    site ? "Each person sees only the accounts granted to them in Access." : "Send the address of your dashboard website (the Cloudflare site, e.g. https://heysolo-dashboard.xxx.workers.dev) with ✎ Website."];
+  const rows = [];
+  if (site && priv && origin) rows.push([{ text: "◌  Open Dashboard  ◌", web_app: { url: `${origin}/app` } }]);
+  rows.push([ik("✎  Website", "ADM_DS_SET"), ik("⟳  Refresh", "ADM_DS")]);
+  rows.push([ik("← Back", "ADM_PANEL")]);
+  return editHTML(e, chat, msg, lines.join("\n"), keyboard(rows));
+}
+async function accessUsers(e) {
+  const ids = new Set(adminIds(e));
+  const extra = parseJson(await getBotSetting(e, "access_extra") || "[]");
+  for (const x of Array.isArray(extra) ? extra : []) ids.add(String(x));
+  const r = await e.DB.prepare("SELECT telegram_id, COUNT(*) AS n FROM user_accounts GROUP BY telegram_id").all();
+  const n = {}; for (const x of r.results || []) { ids.add(String(x.telegram_id)); n[String(x.telegram_id)] = Number(x.n); }
+  return { ids: [...ids], counts: n };
+}
+async function userName(e, id) {
+  try { const r = await (await tg(e, "getChat", { chat_id: id })).json(); const c = r?.result || {}; return [c.first_name, c.last_name].filter(Boolean).join(" ") || (c.username ? "@" + c.username : "") || String(id); } catch { return String(id); }
+}
+async function accessPanel(e, chat, uid, msg) {
+  await deleteBotSetting(e, `pending:${uid}`);
+  const { ids, counts } = await accessUsers(e);
+  const names = await Promise.all(ids.slice(0, 30).map(i => userName(e, i)));
+  const rows = ids.slice(0, 30).map((i, k) => [ik(`${isAdmin(e, i) ? "🛡" : "👤"} ${names[k]}  │  📈 ${counts[i] || 0}`, `ADM_UDET:${i}`)]);
+  rows.push([ik("➕ Add User", "ADM_ADDUSER")]); rows.push([ik("← Back", "ADM_PANEL")]);
+  const text = `👤 <b>Access</b>\n${ids.length ? "Tap a person to manage their account access." : "No one added yet."}\n▫️ 🛡 admin · 👤 user · 📈 accounts granted\n<i>Admins are set with the TELEGRAM_ADMIN_IDS variable.</i>`;
+  return editHTML(e, chat, msg, text, keyboard(rows));
+}
+async function accessDetail(e, chat, uid, msg, target) {
+  const [name, acc, granted] = await Promise.all([userName(e, target), e.DB.prepare("SELECT login FROM accounts ORDER BY login").all(), e.DB.prepare("SELECT login FROM user_accounts WHERE telegram_id=?").bind(target).all()]);
+  const g = new Set((granted.results || []).map(x => String(x.login))), logins = (acc.results || []).map(x => String(x.login));
+  const lines = [`👤 <b>${esc(name)}</b>`, `▫️ Telegram ID: <code>${esc(target)}</code>`, `▫️ Role: <b>${isAdmin(e, target) ? "Admin" : "User"}</b>`, logins.length ? "▫️ Tap an account to grant or revoke access." : "▫️ No account has reported yet, so there is nothing to grant."];
+  const rows = []; let row = [];
+  for (const l of logins) { row.push(ik(`${g.has(l) ? "✅" : "⚪"} ${l}`, `ADM_UACC:${target}:${l}`)); if (row.length === 3) { rows.push(row); row = []; } }
+  if (row.length) rows.push(row);
+  if (!isAdmin(e, target)) rows.push([ik("🗑 Remove user", `ADM_UDEL:${target}`)]);
+  rows.push([ik("← Access", "ADM_ACCESS")]);
+  return editHTML(e, chat, msg, lines.join("\n"), keyboard(rows));
+}
+async function dashAccessCallbacks(e, chat, uid, mid, data) {
+  const mine = data === "ADM_DS" || data === "ADM_DS_SET" || data === "ADM_ACCESS" || data === "ADM_ADDUSER" || /^ADM_(UDET|UACC|UDELX?):/.test(data);
+  if (!mine) return false;
+  if (!isAdmin(e, uid)) { await editMessage(e, chat, mid, "Admin only."); return true; }
+  if (data === "ADM_DS") await dashboardPanel(e, chat, uid, mid);
+  else if (data === "ADM_DS_SET") { await putBotSetting(e, `pending:${uid}`, "dash_site"); await editMessage(e, chat, mid, "Send the address of the dashboard website (https://...).", keyboard([[ik("Cancel", "ADM_DS")]])); }
+  else if (data === "ADM_ACCESS") await accessPanel(e, chat, uid, mid);
+  else if (data === "ADM_ADDUSER") { await putBotSetting(e, `pending:${uid}`, "add_user"); await editMessage(e, chat, mid, "Send the person's numeric Telegram ID (they can get it with /id).", keyboard([[ik("Cancel", "ADM_ACCESS")]])); }
+  else {
+    const [, kind, rest] = data.match(/^ADM_(\w+):(.*)$/) || [];
+    const target = rest.split(":")[0];
+    if (!/^\d{1,15}$/.test(target)) { await editMessage(e, chat, mid, "Invalid user."); return true; }
+    if (kind === "UDET") await accessDetail(e, chat, uid, mid, target);
+    else if (kind === "UACC") {
+      const login = rest.slice(target.length + 1);
+      if (!/^\d{1,15}$/.test(login)) { await editMessage(e, chat, mid, "Invalid account."); return true; }
+      const had = await e.DB.prepare("SELECT 1 AS ok FROM user_accounts WHERE telegram_id=? AND login=?").bind(target, login).first();
+      if (had) await e.DB.prepare("DELETE FROM user_accounts WHERE telegram_id=? AND login=?").bind(target, login).run();
+      else await e.DB.prepare("INSERT OR IGNORE INTO user_accounts(telegram_id,login) VALUES(?,?)").bind(target, login).run();
+      await accessDetail(e, chat, uid, mid, target);
+    }
+    else if (kind === "UDEL") await editMessage(e, chat, mid, `Remove ${target}? All account access of this person is revoked.`, keyboard([[ik("✅ Remove", `ADM_UDELX:${target}`)], [ik("Cancel", `ADM_UDET:${target}`)]]));
+    else if (kind === "UDELX") {
+      await e.DB.prepare("DELETE FROM user_accounts WHERE telegram_id=?").bind(target).run();
+      const extra = parseJson(await getBotSetting(e, "access_extra") || "[]");
+      await putBotSetting(e, "access_extra", JSON.stringify((Array.isArray(extra) ? extra : []).filter(x => String(x) !== target)));
+      await accessPanel(e, chat, uid, mid);
+    }
+  }
+  return true;
+}
+async function finishDashAccessText(e, chat, uid, text, action) {
+  const v = String(text || "").trim();
+  if (action === "dash_site") {
+    const site = v.replace(/\/+$/, "");
+    if (!/^https:\/\/[^\s/]+(\/[^\s]*)?$/i.test(site)) { await sendMessage(e, chat, "Invalid address. Send an https:// address or cancel."); return true; }
+    let ok = false; try { ok = (await fetch(`${site}/tgnav.html`)).ok; } catch { ok = false; }
+    if (!ok) { await sendMessage(e, chat, "tgnav.html was not found on that website. Upload the updated dashboard folder (it now contains tgnav.html) and send the address again."); return true; }
+    await putBotSetting(e, "dash_site", site); await deleteBotSetting(e, `pending:${uid}`);
+    await sendHTML(e, chat, "✅ Dashboard website saved.", keyboard([[ik("◈ Dashboard", "ADM_DS")]]));
+    return true;
+  }
+  if (action === "add_user") {
+    if (!/^\d{1,15}$/.test(v)) { await sendMessage(e, chat, "Send only the numeric Telegram ID or cancel."); return true; }
+    const extra = parseJson(await getBotSetting(e, "access_extra") || "[]"), list = Array.isArray(extra) ? extra.map(String) : [];
+    if (!list.includes(v)) list.push(v);
+    await putBotSetting(e, "access_extra", JSON.stringify(list)); await deleteBotSetting(e, `pending:${uid}`);
+    await sendHTML(e, chat, `✅ Added <code>${esc(v)}</code>. Open the person to grant accounts.`, keyboard([[ik("👤 Open", `ADM_UDET:${v}`)], [ik("← Access", "ADM_ACCESS")]]));
+    return true;
+  }
+  return false;
+}
+export default { async fetch(req, e, ctx) { await ensureBotSettings(e); const u = new URL(req.url); const mini = await miniAppRoute(req, e, u); if (mini) return mini; if (req.method === "GET" && u.pathname === "/health")
+        return json({ ok: true, service: "Hey Solo Manager-Lite", version: 3 }); if (u.pathname === "/telegram/webhook" && req.method === "POST")
         return webhook(req, e, ctx); if (u.pathname === "/v1/notify" && req.method === "POST")
         return relayNotification(req, e, false); if (u.pathname === "/v1/notify/photo" && req.method === "POST")
         return relayNotification(req, e, true); if (u.pathname.startsWith("/v1/ea/"))

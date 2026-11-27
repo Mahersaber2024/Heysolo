@@ -185,6 +185,17 @@ This is saved in that browser only; enter it again on another phone or PC.
 
 **Test:** with MT5 on, wait a few minutes and refresh the site: your data appears. Close MT5: the site still opens with the last data.
 
+## 5b. Optional: Telegram Mini App (dashboard inside Telegram)
+
+The same dashboard can open inside the bot, with no connection code. Telegram signs the person in, and each person sees only the accounts granted to them.
+
+1. Upload the updated `dashboard` folder again (it now contains `tgnav.html`, the bottom navigation used inside Telegram). The Worker code must be updated too.
+2. In the bot: **⚙️ Admin → ◈ Dashboard → ✎ Website**, send the address of your dashboard website (for example `https://heysolo-dashboard.<your-subdomain>.workers.dev`). The bot checks that `tgnav.html` is there.
+3. Tap **◌ Open Dashboard**. People with granted accounts also get a **◌ Dashboard** button on their home screen.
+4. Grant accounts in **⚙️ Admin → 👤 Access**: open a person and tap the accounts. (An admin also needs an account granted here to use the Mini App.)
+
+The Mini App is opened from the Worker address (`https://<WORKER_HOST>/app`), so Telegram, the journal and the alerts all use the same Worker. The `JOURNAL_DB` binding must be connected. Instead of the bot setting you can set the Worker variable `DASHBOARD_URL`.
+
 ## 6. Optional: Chat Journal
 
 1. Create a Telegram group, enable **Topics**, add the bot as admin with **Manage Topics**.
